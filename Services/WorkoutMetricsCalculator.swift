@@ -6,8 +6,8 @@ struct WorkoutMetrics {
     let totalVolumeKg: Double
     let duration: TimeInterval
     let durationFormatted: String
-    let medianExerciseGap: TimeInterval
-    let medianExerciseGapFormatted: String
+    let averageTimeBetweenSets: TimeInterval
+    let averageTimeBetweenSetsFormatted: String
     let averageBPM: Double
     let maxBPMAbsolute: Int
     let maxBPMAverage: Double
@@ -50,7 +50,7 @@ enum WorkoutMetricsCalculator {
         let endDate: Date = session.endDate ?? Date()
         let duration: TimeInterval = max(0, endDate.timeIntervalSince(session.startDate))
         let volume: Double = totalVolume(for: session)
-        let gap: TimeInterval = medianInterExerciseGap(records: records)
+        let averageSetGap: TimeInterval = averageInterSetInterval(records: records)
         let stats: HeartRateStats = heartRateStats(records: records, samples: samples)
         let averageBPM: Double = averageValue(samples: samples)
         let edwards: Double = edwardsTrainingLoad(samples: samples, hrMax: hrMax)
@@ -63,14 +63,14 @@ enum WorkoutMetricsCalculator {
         let recovery: Double = recoveryRate(records: records, samples: samples)
         let density: Double = volume / max(trimpValue, 1.0)
 
-        let gapFormatted: String = records.count >= 2 ? formatInterval(gap) : "—"
+        let averageSetGapFormatted: String = formattedSetInterval(averageSetGap)
 
         return WorkoutMetrics(
             totalVolumeKg: volume,
             duration: duration,
             durationFormatted: formatDuration(duration),
-            medianExerciseGap: gap,
-            medianExerciseGapFormatted: gapFormatted,
+            averageTimeBetweenSets: averageSetGap,
+            averageTimeBetweenSetsFormatted: averageSetGapFormatted,
             averageBPM: averageBPM,
             maxBPMAbsolute: stats.maxAbsolute,
             maxBPMAverage: stats.maxAverage,
@@ -195,34 +195,52 @@ enum WorkoutMetricsCalculator {
         return volume
     }
 
-    // MARK: Mediana entre ejercicios
+    // MARK: Media de tiempo entre series
 
-    private static func medianInterExerciseGap(records: [WorkoutExerciseRecord]) -> TimeInterval {
-        guard records.count >= 2 else { return 0 }
+    /// Media aritmética del tiempo transcurrido entre cada par de series
+    /// consecutivas de la sesión, ordenadas cronológicamente por su marca de
+    /// finalización.
+    private static func averageInterSetInterval(records: [WorkoutExerciseRecord]) -> TimeInterval {
+        let sets: [WorkoutSetRecord] = records
+            .flatMap { (record: WorkoutExerciseRecord) -> [WorkoutSetRecord] in
+                return record.sets
+            }
+            .sorted { (lhs: WorkoutSetRecord, rhs: WorkoutSetRecord) -> Bool in
+                return lhs.setCompletedTime < rhs.setCompletedTime
+            }
 
-        let startTimes: [Date] = records.map { (record: WorkoutExerciseRecord) -> Date in
-            return record.exerciseStartTime
-        }.sorted()
+        guard sets.count >= 2 else { return 0 }
 
         var intervals: [TimeInterval] = []
-        for index in 1..<startTimes.count {
-            let interval: TimeInterval = startTimes[index].timeIntervalSince(startTimes[index - 1])
+        for index in 1..<sets.count {
+            let interval: TimeInterval = sets[index].setCompletedTime
+                .timeIntervalSince(sets[index - 1].setCompletedTime)
             if interval > 0 {
                 intervals.append(interval)
             }
         }
-        return median(intervals)
+
+        // Sin marcas consecutivas válidas usamos los descansos registrados.
+        guard !intervals.isEmpty else {
+            return averageRegisteredRest(sets: sets)
+        }
+
+        let total: TimeInterval = intervals.reduce(0.0) { (sum: TimeInterval, value: TimeInterval) -> TimeInterval in
+            return sum + value
+        }
+        return total / TimeInterval(intervals.count)
     }
 
-    private static func median(_ values: [TimeInterval]) -> TimeInterval {
-        let sorted: [TimeInterval] = values.sorted()
-        guard !sorted.isEmpty else { return 0 }
-
-        let middle: Int = sorted.count / 2
-        if sorted.count % 2 == 0 {
-            return (sorted[middle - 1] + sorted[middle]) / 2.0
+    private static func averageRegisteredRest(sets: [WorkoutSetRecord]) -> TimeInterval {
+        let rests: [TimeInterval] = sets.compactMap { (set: WorkoutSetRecord) -> TimeInterval? in
+            return set.restDuration > 0 ? set.restDuration : nil
         }
-        return sorted[middle]
+        guard !rests.isEmpty else { return 0 }
+
+        let total: TimeInterval = rests.reduce(0.0) { (sum: TimeInterval, value: TimeInterval) -> TimeInterval in
+            return sum + value
+        }
+        return total / TimeInterval(rests.count)
     }
 
     // MARK: Frecuencia cardíaca por ejercicio
@@ -468,6 +486,16 @@ enum WorkoutMetricsCalculator {
             return "\(minutes) min"
         }
         return "\(seconds) s"
+    }
+
+    /// Formato compacto minuto:segundo para la media entre series.
+    static func formattedSetInterval(_ interval: TimeInterval) -> String {
+        guard interval > 0 else { return "—" }
+
+        let totalSeconds: Int = max(0, Int(interval.rounded()))
+        let minutes: Int = totalSeconds / 60
+        let seconds: Int = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 
     static func formatInterval(_ interval: TimeInterval) -> String {

@@ -149,8 +149,9 @@ struct WorkoutReviewMainMetricsView: View {
 
             WorkoutReviewMetricRow(
                 icon: "timeline.selection",
-                title: "Mediana entre ejercicios",
-                value: metrics.medianExerciseGapFormatted
+                title: "Media entre series",
+                value: metrics.averageTimeBetweenSetsFormatted,
+                subtitle: "Tiempo medio entre series"
             )
         }
         .padding(16)
@@ -173,6 +174,14 @@ struct WorkoutReviewMetricRow: View {
     let icon: String
     let title: String
     let value: String
+    let subtitle: String?
+
+    init(icon: String, title: String, value: String, subtitle: String? = nil) {
+        self.icon = icon
+        self.title = title
+        self.value = value
+        self.subtitle = subtitle
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -181,9 +190,19 @@ struct WorkoutReviewMetricRow: View {
                 .foregroundStyle(.green)
                 .frame(width: 24, alignment: .center)
 
-            Text(title)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+
+                if let subtitle: String = subtitle {
+                    Text(subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary.opacity(0.7))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+            }
 
             Spacer(minLength: 8)
 
@@ -320,9 +339,11 @@ struct WorkoutReviewExerciseHeartRateRowView: View {
 struct WorkoutReviewQualitySectionView: View {
     let metrics: WorkoutMetrics
 
+    @State private var isHelpPresented: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Calidad de hipertrofia")
+            header
 
             WorkoutReviewQualityCardView(
                 icon: "flame.fill",
@@ -355,6 +376,30 @@ struct WorkoutReviewQualitySectionView: View {
                 unit: "kg/TRIMP",
                 description: "Kg movidos por unidad de impulso cardiovascular."
             )
+        }
+        .sheet(isPresented: $isHelpPresented) {
+            HypertrophyQualityHelpSheet()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("CALIDAD DE HIPERTROFIA")
+                .font(.caption2.bold())
+                .foregroundStyle(.secondary)
+
+            Button {
+                isHelpPresented = true
+            } label: {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Explicación de las métricas de calidad de hipertrofia")
+
+            Spacer(minLength: 0)
         }
     }
 }
