@@ -171,6 +171,17 @@ struct WorkoutBackupDocument: FileDocument {
     }
 }
 
+// MARK: - Copias automáticas previas
+
+/// Copia de seguridad que la app guarda en disco antes de sobrescribir los
+/// datos al importar, para poder recuperarlos después.
+struct PreImportBackup: Identifiable, Hashable {
+    let id: String
+    let url: URL
+    let date: Date
+    let byteCount: Int
+}
+
 // MARK: - Motor de copia de seguridad
 
 /// Exporta e importa toda la base de datos SwiftData y los ajustes del
@@ -629,6 +640,39 @@ enum BackupManager {
             pruneSafetyCopies(in: directory)
         } catch {
             throw BackupError.safetyCopyFailed
+        }
+    }
+
+    /// Copias automáticas disponibles, de la más reciente a la más antigua.
+    static func availableSafetyCopies() -> [PreImportBackup] {
+        let fileManager: FileManager = FileManager.default
+        guard let directory: URL = try? safetyCopyDirectory(),
+              let contents: [URL] = try? fileManager.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: .skipsHiddenFiles
+              ) else {
+            return []
+        }
+
+        let copies: [PreImportBackup] = contents
+            .filter { (url: URL) -> Bool in
+                return url.lastPathComponent.hasPrefix("AppGym_PreImport_")
+            }
+            .compactMap { (url: URL) -> PreImportBackup? in
+                let values: URLResourceValues? = try? url.resourceValues(
+                    forKeys: [.contentModificationDateKey, .fileSizeKey]
+                )
+                return PreImportBackup(
+                    id: url.lastPathComponent,
+                    url: url,
+                    date: values?.contentModificationDate ?? Date.distantPast,
+                    byteCount: values?.fileSize ?? 0
+                )
+            }
+
+        return copies.sorted { (lhs: PreImportBackup, rhs: PreImportBackup) -> Bool in
+            return lhs.date > rhs.date
         }
     }
 

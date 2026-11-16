@@ -28,6 +28,8 @@ struct SettingsView: View {
     @State private var backupResultMessage: String = ""
     @State private var backupDocument: WorkoutBackupDocument?
     @State private var backupFileName: String = BackupManager.defaultFileName()
+    @State private var safetyCopies: [PreImportBackup] = []
+    @State private var safetyCopyPendingRestore: PreImportBackup?
 
     private var availablePlates: [Double] {
         return UserSettingsManager.parsePlates(availablePlatesRaw)
@@ -100,6 +102,18 @@ struct SettingsView: View {
                 onExportTapped: { () -> Void in exportBackup() },
                 onImportTapped: { () -> Void in showImportWarningAlert = true }
             )
+
+            if !safetyCopies.isEmpty {
+                SafetyBackupSectionView(
+                    copies: safetyCopies,
+                    onRestoreTapped: { (copy: PreImportBackup) -> Void in
+                        safetyCopyPendingRestore = copy
+                    }
+                )
+            }
+        }
+        .onAppear {
+            reloadSafetyCopies()
         }
         .scrollContentBackground(.hidden)
         .background(Color.black)
@@ -141,6 +155,32 @@ struct SettingsView: View {
             Button("Entendido", role: .cancel) {}
         } message: {
             Text(backupResultMessage)
+        }
+        .alert(
+            "Cuidado: sobrescritura de datos",
+            isPresented: Binding(
+                get: { safetyCopyPendingRestore != nil },
+                set: { (isPresented: Bool) in
+                    if !isPresented {
+                        safetyCopyPendingRestore = nil
+                    }
+                }
+            )
+        ) {
+            Button("Cancelar", role: .cancel) {
+                safetyCopyPendingRestore = nil
+            }
+
+            Button("Continuar y restaurar", role: .destructive) {
+                let pending: PreImportBackup? = safetyCopyPendingRestore
+                safetyCopyPendingRestore = nil
+
+                if let pending: PreImportBackup = pending {
+                    performRestore(pending)
+                }
+            }
+        } message: {
+            Text("Al restaurar esta copia se sobrescribirán las rutinas y las sesiones de entrenamiento actuales. ¿Quieres continuar?")
         }
     }
 
@@ -221,6 +261,7 @@ struct SettingsView: View {
         case .success(let url):
             do {
                 try BackupManager.restoreBackup(from: url, context: modelContext)
+                reloadSafetyCopies()
                 presentBackupResult(
                     message: "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo, y se ha guardado una copia automática de los datos anteriores."
                 )
@@ -232,9 +273,66 @@ struct SettingsView: View {
         }
     }
 
+    private func reloadSafetyCopies() {
+        safetyCopies = BackupManager.availableSafetyCopies()
+    }
+
+    private func performRestore(_ copy: PreImportBackup) {
+        do {
+            try BackupManager.restoreBackup(from: copy.url, context: modelContext)
+            reloadSafetyCopies()
+            presentBackupResult(
+                message: "Copia automática restaurada. Se han recuperado los datos tal y como estaban antes de esa importación."
+            )
+        } catch {
+            presentBackupResult(message: error.localizedDescription)
+        }
+    }
+
     private func presentBackupResult(message: String) {
         backupResultMessage = message
         showBackupResultAlert = true
+    }
+}
+
+// MARK: - Sección modular de copias automáticas
+
+struct SafetyBackupSectionView: View {
+    let copies: [PreImportBackup]
+    let onRestoreTapped: (PreImportBackup) -> Void
+
+    var body: some View {
+        Section {
+            ForEach(copies) { (copy: PreImportBackup) in
+                Button {
+                    onRestoreTapped(copy)
+                } label: {
+                    HStack(spacing: 12.0) {
+                        VStack(alignment: .leading, spacing: 2.0) {
+                            Text(copy.date.formatted(date: .abbreviated, time: .shortened))
+                                .font(.subheadline)
+                                .foregroundStyle(.white)
+
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(copy.byteCount), countStyle: .file))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer(minLength: 8.0)
+
+                        Image(systemName: "arrow.counterclockwise.circle.fill")
+                            .foregroundStyle(.green)
+                            .fixedSize()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Text("Copias automáticas")
+        } footer: {
+            Text("Se guardan antes de cada importación. Restaurar una copia sustituye las rutinas y las sesiones de entrenamiento actuales.")
+        }
     }
 }
 
