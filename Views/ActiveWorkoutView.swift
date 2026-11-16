@@ -1,0 +1,998 @@
+import Foundation
+import SwiftUI
+import SwiftData
+import Charts
+
+public struct ActiveWorkoutView: View {
+    @Environment(\.modelContext) private var modelContext
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+
+    @ObservedObject private var healthKitManager = HealthKitManager.shared
+    @ObservedObject private var liveActivityManager = LiveActivityManager.shared
+    @AppStorage("isBigPictureModeEnabled") private var isBigPictureModeEnabled = false
+
+    @StateObject private var viewModel: ActiveWorkoutViewModel
+    @State private var showingCancelConfirmation = false
+    @State private var showingBigPictureCancelConfirmation = false
+    @State private var showingRoutineChangeOptions = false
+    @State private var showingNewRoutineNameAlert = false
+    @State private var showingExercisePicker = false
+    @State private var exercisePendingRemoval: RoutineExercise?
+    @State private var pendingNewRoutinePromptID: UUID?
+    @State private var newRoutineName = ""
+    @Namespace private var timerAnimation
+    @State private var timerOriginCardID: UUID?
+    @State private var timerIsLaunching = false
+    @State private var timerLaunchToken = UUID()
+    @State private var timerDragOffset: CGFloat = 0
+
+    private let horizontalPadding: CGFloat = 16
+
+    public init(session: WorkoutSession, routine: Routine, modelContext: ModelContext) {
+        _viewModel = StateObject(wrappedValue: ActiveWorkoutViewModel(session: session, routine: routine, modelContext: modelContext))
+    }
+
+    public var body: some View {
+        Group {
+            if isBigPictureModeEnabled {
+                BigPictureWorkoutView(
+                    viewModel: viewModel,
+                    modelContext: modelContext,
+                    onWorkoutFinished: {
+                        dismiss()
+                    }
+                )
+            } else {
+                normalBody
+                    .onChange(of: viewModel.session.endDate) { _, endDate in
+                        if endDate != nil {
+                            viewModel.isShowingSummary = true
+                        }
+                    }
+                    .fullScreenCover(isPresented: $viewModel.isShowingSummary) {
+                        WorkoutReviewView(
+                            session: viewModel.session,
+                            isPostWorkout: true,
+                            viewModel: viewModel,
+                            onFinish: {
+                                dismiss()
+                            }
+                        )
+                        .interactiveDismissDisabled(true)
+                    }
+            }
+        }
+        .onAppear {
+            BPMManager.shared.startScanning()
+            viewModel.startWorkoutActivityIfNeeded()
+            viewModel.persistState()
+            viewModel.addBPMPoint(healthKitManager.currentBPM)
+        }
+        .onChange(of: healthKitManager.currentBPM) { _, newBPM in
+            viewModel.addBPMPoint(newBPM)
+        }
+        .onDisappear {
+            pendingNewRoutinePromptID = nil
+            try? modelContext.save()
+            BPMManager.shared.stopScanning()
+            HealthKitManager.shared.stopWorkoutSession()
+            HealthKitManager.shared.stopHeartRateQuery()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            switch newPhase {
+            case .active:
+                viewModel.handleScenePhaseActive()
+            case .inactive:
+                try? modelContext.save()
+            case .background:
+                viewModel.handleScenePhaseBackground(modelContext: modelContext)
+            @unknown default:
+                break
+            }
+        }
+        .navigationBarHidden(true)
+        .interactiveDismissDisabled(true)
+        .sheet(isPresented: $showingExercisePicker) {
+            ExercisePickerView { exercise in
+                _ = viewModel.addExercise(exercise, modelContext: modelContext)
+            }
+        }
+        .alert("¿Guardar cambios?", isPresented: $showingRoutineChangeOptions) {
+            Button("Reemplazar rutina actual", role: .destructive) {
+                _ = viewModel.finishWorkoutReplacingRoutine(modelContext: modelContext)
+            }
+            Button("Guardar como nueva rutina") {
+                newRoutineName = "\(viewModel.routine.name) (modificada)"
+                let promptID = UUID()
+                pendingNewRoutinePromptID = promptID
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    guard pendingNewRoutinePromptID == promptID else { return }
+                    showingNewRoutineNameAlert = true
+                }
+            }
+            Button("Guardar solo el historial de hoy") {
+                _ = viewModel.finishWorkoutHistoryOnly(modelContext: modelContext)
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Has añadido, quitado o modificado datos respecto a la rutina original. ¿Qué quieres hacer con los cambios?")
+        }
+        .alert("Nueva rutina", isPresented: $showingNewRoutineNameAlert) {
+            TextField("Nombre de la rutina", text: $newRoutineName)
+            Button("Guardar") {
+                _ = viewModel.finishWorkoutSavingAsNewRoutine(named: newRoutineName, modelContext: modelContext)
+            }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("Se guardará una copia con los cambios de hoy.")
+        }
+        .alert("¿Cancelar entrenamiento?", isPresented: $showingCancelConfirmation) {
+            Button("Cancelar entrenamiento", role: .destructive) {
+                pendingNewRoutinePromptID = nil
+                showingRoutineChangeOptions = false
+                showingNewRoutineNameAlert = false
+                viewModel.cancelWorkout(modelContext: modelContext)
+                dismiss()
+            }
+            Button("Seguir entrenando", role: .cancel) {}
+        } message: {
+            Text("Se descartará la sesión actual sin guardar el historial.")
+        }
+        .alert(
+            "Eliminar ejercicio",
+            isPresented: Binding(
+                get: { exercisePendingRemoval != nil },
+                set: { if !$0 { exercisePendingRemoval = nil } }
+            )
+        ) {
+            Button("Eliminar", role: .destructive) {
+                if let routineExercise = exercisePendingRemoval {
+                    viewModel.removeExercise(routineExercise, modelContext: modelContext)
+                }
+                exercisePendingRemoval = nil
+            }
+            Button("Cancelar", role: .cancel) { exercisePendingRemoval = nil }
+        } message: {
+            Text("El ejercicio se quitará del entrenamiento actual.")
+        }
+        .alert(
+            "¿Descartar entrenamiento?",
+            isPresented: $showingBigPictureCancelConfirmation
+        ) {
+            Button("Sí, descartar", role: .destructive) {
+                viewModel.cancelWorkout(modelContext: modelContext)
+                dismiss()
+            }
+            Button("Seguir entrenando", role: .cancel) {}
+        } message: {
+            Text("Se descartará la sesión actual sin guardar el historial.")
+        }
+        .withKeyboardDismiss()
+        .dismissKeyboardOnTap()
+    }
+
+    private var normalBody: some View {
+        GeometryReader { geometry in
+        ZStack(alignment: .bottom) {
+            Color.black.ignoresSafeArea()
+
+            // List of exercises on the main level
+            ScrollView {
+                LazyVStack(spacing: 24) {
+                    // Header Status & BPM
+                    workoutHeader
+                        .padding(.top, 10)
+
+                    if healthKitManager.currentBPM == 0 {
+                        healthKitDiagnosticBanner
+                    }
+
+                    let _ = viewModel.structureVersion
+
+                    ForEach(viewModel.routine.exercises.sorted(by: { $0.sortOrder < $1.sortOrder })) { routineExercise in
+                        if let exercise = routineExercise.exercise {
+                            ExerciseCardView(
+                                routineExercise: routineExercise,
+                                exercise: exercise,
+                                sets: viewModel.activeSets[routineExercise.id] ?? [],
+                                isTimerOrigin: timerIsLaunching && timerOriginCardID == routineExercise.id,
+                                onToggleSet: { setIndex in
+                                    toggleSet(for: routineExercise, setIndex: setIndex)
+                                },
+                                onUpdateSet: { setIndex, weight, reps in
+                                    viewModel.updateSetValues(
+                                        for: routineExercise.id,
+                                        setIndex: setIndex,
+                                        weight: weight,
+                                        reps: reps,
+                                        modelContext: modelContext
+                                    )
+                                },
+                                onRemove: {
+                                    exercisePendingRemoval = routineExercise
+                                }
+                            )
+                        }
+                    }
+
+                    Button {
+                        showingExercisePicker = true
+                    } label: {
+                        Label("Añadir ejercicio", systemImage: "plus.circle.fill")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(.systemGray6).opacity(0.2))
+                            .cornerRadius(12)
+                    }
+
+                    // Finish Workout Button
+                    Button(action: {
+                        if viewModel.hasWorkoutChanges {
+                            showingRoutineChangeOptions = true
+                        } else {
+                            _ = viewModel.finishWorkout(modelContext: modelContext)
+                        }
+                    }) {
+                        Text("Finalizar Entrenamiento")
+                            .font(.headline)
+                            .foregroundColor(.black)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.white)
+                            .cornerRadius(12)
+                    }
+                    .padding(.top, 8)
+
+                    Button(action: {
+                        showingCancelConfirmation = true
+                    }) {
+                        Label("Cancelar entrenamiento", systemImage: "xmark.circle")
+                            .font(.subheadline.bold())
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.red.opacity(0.12))
+                            .cornerRadius(12)
+                    }
+
+                    // Reserva el mismo espacio inferior exista o no temporizador flotante.
+                    Color.clear
+                        .frame(height: 80)
+                }
+                .padding(.horizontal, horizontalPadding)
+                .padding(.vertical, 20)
+                .frame(width: geometry.size.width)
+            }
+            .frame(width: geometry.size.width)
+
+            // Temporizador maximizado
+            if viewModel.isResting && (!viewModel.isTimerMinimized || (!viewModel.hasActiveRestTimer && !viewModel.isRestFinishing)) {
+                ZStack {
+                    Color.black
+                        .ignoresSafeArea()
+                        .opacity(viewModel.isRestFinishing ? 0 : 1)
+                        .transition(.opacity)
+
+                    VStack {
+                        Spacer()
+                        TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                            CircularTimerView(
+                                timeRemaining: displayedRestTime(at: timeline.date),
+                                totalSeconds: viewModel.totalRestSeconds,
+                                isPaused: viewModel.isRestPaused,
+                                onAdd10: { viewModel.add10Seconds() },
+                                onSub10: { viewModel.sub10Seconds() },
+                                onTogglePause: {
+                                    if viewModel.isRestPaused {
+                                        viewModel.resumeRest()
+                                    } else {
+                                        viewModel.pauseRest()
+                                    }
+                                },
+                                onSkip: { skipRest() },
+                                onMinimize: { minimizeTimer() }
+                            )
+                        }
+                        .matchedGeometryEffect(id: timerIsLaunching ? "timerContainer-inactive" : "timerContainer", in: timerAnimation, isSource: false)
+                        .scaleEffect(viewModel.isRestFinishing ? 1.05 : 1)
+                        .opacity(viewModel.isRestFinishing ? 0 : 1)
+                        .offset(y: timerDragOffset)
+                        .scaleEffect(timerDragOffset > 0 ? max(0.92, 1 - timerDragOffset / 1200) : 1)
+                        .gesture(timerDragGesture)
+                        .transition(.opacity)
+                        Spacer()
+                    }
+                }
+                .allowsHitTesting(!viewModel.isRestFinishing)
+                .zIndex(2)
+            }
+
+            // Temporizador minimizado flotando sobre la lista
+            if viewModel.isResting && viewModel.isTimerMinimized && viewModel.hasActiveRestTimer {
+                TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                    MinimizedTimerView(
+                        timeRemaining: displayedRestTime(at: timeline.date),
+                        totalSeconds: viewModel.totalRestSeconds,
+                        isPaused: viewModel.isRestPaused,
+                        onExpand: { expandTimer() },
+                        onTogglePause: {
+                            if viewModel.isRestPaused {
+                                viewModel.resumeRest()
+                            } else {
+                                viewModel.pauseRest()
+                            }
+                        },
+                        onAdd10: { viewModel.add10Seconds() },
+                        onSub10: { viewModel.sub10Seconds() },
+                        onSkip: { skipRest() }
+                    )
+                }
+                .matchedGeometryEffect(id: "timerContainer", in: timerAnimation, isSource: true)
+                .padding(.horizontal, horizontalPadding)
+                .frame(width: geometry.size.width)
+                .padding(.bottom, 8)
+                .offset(y: viewModel.isRestFinishing ? 44 : 0)
+                .opacity(viewModel.isRestFinishing ? 0 : 1)
+                .allowsHitTesting(!viewModel.isRestFinishing)
+                .transition(.opacity)
+                .zIndex(1)
+            }
+        }
+        .animation(.easeInOut(duration: 0.25), value: viewModel.isResting)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: viewModel.isTimerMinimized)
+        .animation(.easeIn(duration: 0.22), value: viewModel.isRestFinishing)
+        }
+    }
+
+    /// Relleno superior (cerrar + nombre de rutina).
+    @ViewBuilder
+    private var bigPictureTopBar: some View {
+        HStack {
+            Button {
+                showingBigPictureCancelConfirmation = true
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.white)
+            }
+            .padding(.top, 6)
+            .padding(.leading, 6)
+
+            Spacer()
+
+            Text(viewModel.routine.name)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .padding(.top, 6)
+        }
+        .padding(.horizontal, 20)
+    }
+
+    /// Encabezado de pulsaciones (BPM).
+    @ViewBuilder
+    private var headerBPMView: some View {
+        HStack {
+            Spacer()
+            HStack(spacing: 8) {
+                Image(systemName: "heart.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
+                Text("\(Int(healthKitManager.currentBPM)) BPM")
+                    .font(.title2.bold())
+                    .foregroundStyle(.red)
+                    .contentTransition(.numericText())
+            }
+        }
+        .padding(.top, 2)
+        .padding(.horizontal, 24)
+    }
+
+    /// Título del ejercicio, rango objetivo en verde y siguiente ejercicio.
+    @ViewBuilder
+    private var exerciseTitleView: some View {
+        VStack(spacing: 4) {
+            Text(viewModel.bigPictureCurrentExercise)
+                .font(.title2.bold())
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+
+            if let routineExercise = viewModel.bigPictureCurrentRoutineExercise {
+                Text("\(routineExercise.targetRepsMin) - \(routineExercise.targetRepsMax) reps")
+                    .font(.subheadline.bold())
+                    .foregroundColor(.green)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+
+            if !viewModel.bigPictureNextExercise.isEmpty {
+                Text(viewModel.bigPictureNextExercise)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        }
+        .padding(.horizontal, 24)
+    }
+
+    /// Barra de descanso con temporizador centrado y botones de pausa/saltar,
+    /// o botón "Registrar serie" cuando no hay descanso activo.
+    @ViewBuilder
+    private var restTimerProgressView: some View {
+        if viewModel.bigPictureIsTimerShowing {
+            bigPictureTimerBar
+            bigPictureTimerControls
+        } else {
+            Button {
+                viewModel.bigPictureRegisterSet(modelContext: modelContext)
+            } label: {
+                Text("REGISTRAR SERIE")
+                    .font(.title2.bold())
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(Color.white)
+                    .cornerRadius(14)
+            }
+            .padding(.horizontal, 32)
+            .padding(.bottom, 8)
+        }
+    }
+
+    private var bigPictureTimerBar: some View {
+        TimelineView(.periodic(from: .now, by: 1.0)) { _ in
+            GeometryReader { geometry in
+                let barWidth: CGFloat = geometry.size.width
+                let progress: CGFloat = CGFloat(viewModel.bigPictureRestProgress)
+                let filledWidth: CGFloat = max(0, barWidth * progress)
+
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.white.opacity(0.12))
+                        .frame(width: barWidth, height: 36)
+
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.white)
+                        .frame(
+                            width: filledWidth,
+                            height: 36
+                        )
+                        .animation(.linear(duration: 1.0), value: viewModel.bigPictureRestProgress)
+
+                    Text(viewModel.bigPictureRemainingTimeFormatted)
+                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .blendMode(.difference)
+                        .frame(width: barWidth, alignment: .center)
+                }
+                .frame(width: barWidth, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            .frame(height: 36)
+            .padding(.horizontal, 24)
+            .padding(.bottom, 6)
+        }
+    }
+
+    private var bigPictureTimerControls: some View {
+        HStack(spacing: 14) {
+            Button {
+                if viewModel.isRestPaused {
+                    viewModel.resumeRest()
+                } else {
+                    viewModel.pauseRest()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: viewModel.isRestPaused ? "play.fill" : "pause.fill")
+                    Text(viewModel.isRestPaused ? "Reanudar" : "Pausar")
+                }
+                .font(.subheadline.bold())
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.white)
+                .cornerRadius(10)
+            }
+
+            Button {
+                viewModel.skipRest()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "forward.end.fill")
+                    Text("Saltar")
+                }
+                .font(.subheadline.bold())
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(Color.red)
+                .cornerRadius(10)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 6)
+    }
+
+
+
+    private var timerDragGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard !viewModel.isRestFinishing else { return }
+                timerDragOffset = max(0, value.translation.height)
+            }
+            .onEnded { value in
+                guard !viewModel.isRestFinishing else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        timerDragOffset = 0
+                    }
+                    return
+                }
+
+                if value.translation.height > 90 || value.predictedEndTranslation.height > 150 {
+                    minimizeTimer()
+                } else {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        timerDragOffset = 0
+                    }
+                }
+            }
+    }
+
+    private func toggleSet(for routineExercise: RoutineExercise, setIndex: Int) {
+        guard let sets = viewModel.activeSets[routineExercise.id], sets.indices.contains(setIndex) else { return }
+        let isCompleting = !sets[setIndex].isCompleted
+
+        if isCompleting {
+            beginTimerLaunch(from: routineExercise.id)
+        }
+
+        withAnimation(.easeInOut(duration: 0.25)) {
+            viewModel.toggleSetCompletion(for: routineExercise.id, setIndex: setIndex, modelContext: modelContext)
+        }
+    }
+
+    private func beginTimerLaunch(from routineExerciseID: UUID) {
+        let token = UUID()
+        timerLaunchToken = token
+        timerOriginCardID = routineExerciseID
+        timerIsLaunching = true
+        timerDragOffset = 0
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            guard timerLaunchToken == token else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                timerIsLaunching = false
+            }
+        }
+    }
+
+    private func minimizeTimer() {
+        guard !viewModel.isRestFinishing else { return }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            timerDragOffset = 0
+            viewModel.isTimerMinimized = true
+        }
+    }
+
+    private func expandTimer() {
+        guard !viewModel.isRestFinishing else { return }
+        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            timerDragOffset = 0
+            viewModel.isTimerMinimized = false
+        }
+    }
+
+    private func skipRest() {
+        guard viewModel.isResting, !viewModel.isRestFinishing else { return }
+        withAnimation(.easeIn(duration: 0.22)) {
+            viewModel.skipRest()
+        }
+    }
+
+    private func displayedRestTime(at date: Date) -> Int {
+        if viewModel.isRestPaused {
+            return viewModel.restTimeRemaining
+        }
+
+        guard let endDate = viewModel.restTimerEndDate else {
+            return viewModel.restTimeRemaining
+        }
+
+        return max(0, Int(ceil(endDate.timeIntervalSince(date))))
+    }
+
+    private var healthKitDiagnosticBanner: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "heart.text.square.fill")
+                    .font(.subheadline)
+                    .foregroundStyle(.red)
+
+                Text("Diagnóstico")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.white)
+
+                Spacer(minLength: 0)
+            }
+
+            Text("Estado: \(healthKitManager.debugMessage)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+
+            Text("Live Activity: \(liveActivityManager.debugMessage)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .multilineTextAlignment(.leading)
+
+            Button {
+                HealthKitManager.shared.requestAuthorization()
+            } label: {
+                Label("Conectar Apple Salud / AirPods", systemImage: "heart.fill")
+                    .font(.footnote.bold())
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(Color.white, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Conectar Apple Salud o AirPods")
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color(.systemGray6).opacity(0.12),
+            in: RoundedRectangle(cornerRadius: 16)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.red.opacity(0.25), lineWidth: 1)
+        )
+    }
+
+    private var workoutHeader: some View {
+        ZStack {
+            VStack(spacing: 2) {
+                Text(viewModel.routine.name)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                Text("\(Int(viewModel.session.totalVolumeKg)) kg")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 44)
+
+            HStack {
+                Button {
+                    showingCancelConfirmation = true
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color(.systemGray6).opacity(0.3))
+                        .clipShape(Circle())
+                }
+                .accessibilityLabel("Cancelar entrenamiento")
+
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color.black)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
+    }
+}
+
+// MARK: - Exercise Card Component
+struct ExerciseCardView: View {
+    let routineExercise: RoutineExercise
+    let exercise: Exercise
+    let sets: [ActiveWorkoutViewModel.SetInputState]
+    let isTimerOrigin: Bool
+    let onToggleSet: (Int) -> Void
+    let onUpdateSet: (Int, Double, Int) -> Void
+    let onRemove: () -> Void
+
+    @State private var notesExpanded = false
+    @State private var showingEquipmentSheet = false
+
+    private var notesBinding: Binding<String> {
+        Binding(
+            get: { routineExercise.notes },
+            set: { routineExercise.notes = $0 }
+        )
+    }
+
+    /// Peso de la serie activa (primera pendiente) o, si ya están hechas,
+    /// el de la última serie configurada.
+    private var activeWeight: Double {
+        if let pending = sets.first(where: { (set: ActiveWorkoutViewModel.SetInputState) -> Bool in
+            return !set.isCompleted
+        }) {
+            return pending.weight
+        }
+        if let last = sets.last {
+            return last.weight
+        }
+        return routineExercise.defaultWeight
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(exercise.name)
+                        .font(.title3.bold())
+                        .foregroundStyle(.white)
+                    Text("\(exercise.muscleGroup.rawValue) • \(exercise.equipmentType.rawValue)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("Objetivo: \(routineExercise.targetRepsText) reps")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+
+                    if exercise.requiresStraps {
+                        Label("Recoger Straps", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.orange.opacity(0.15))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Spacer()
+
+                VStack(spacing: 8.0) {
+                    Button(action: onRemove) {
+                        Image(systemName: "trash")
+                            .font(.subheadline)
+                            .foregroundStyle(.red.opacity(0.9))
+                            .frame(width: 32, height: 32)
+                            .background(Color.red.opacity(0.12))
+                            .clipShape(Circle())
+                    }
+                    .accessibilityLabel("Eliminar ejercicio")
+
+                    equipmentIconView
+                }
+            }
+
+            // Table Header
+            HStack {
+                Text("SERIE")
+                    .frame(width: 40, alignment: .center)
+                Text("ANTERIOR (GHOST)")
+                    .frame(maxWidth: .infinity, alignment: .center)
+                Text("KG")
+                    .frame(width: 60, alignment: .center)
+                Text("REPS")
+                    .frame(width: 50, alignment: .center)
+                Text("OK")
+                    .frame(width: 32, alignment: .center)
+            }
+            .font(.caption2.bold())
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+
+            Divider().background(Color.gray.opacity(0.3))
+
+            // Set Rows
+            ForEach(Array(sets.enumerated()), id: \.element.id) { index, set in
+                SetRowView(
+                    set: set,
+                    targetRepsMin: routineExercise.targetRepsMin,
+                    targetRepsMax: routineExercise.targetRepsMax,
+                    onToggle: { onToggleSet(index) },
+                    onUpdate: { w, r in onUpdateSet(index, w, r) }
+                )
+            }
+
+            Divider().background(Color.gray.opacity(0.3))
+
+            DisclosureGroup(isExpanded: $notesExpanded) {
+                TextField("Consejos, altura de poleas, agarre...", text: notesBinding, axis: .vertical)
+                    .font(.subheadline)
+                    .foregroundStyle(.white)
+                    .lineLimit(2...6)
+                    .padding(10)
+                    .background(Color(.systemGray6).opacity(0.2))
+                    .cornerRadius(10)
+            } label: {
+                Label("Notas", systemImage: "note.text")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(.systemGray6).opacity(0.1))
+        .cornerRadius(16)
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(isTimerOrigin ? Color.green.opacity(0.45) : Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .sheet(isPresented: $showingEquipmentSheet) {
+            ExerciseEquipmentSheet(
+                equipmentType: exercise.equipmentType,
+                weight: activeWeight
+            )
+            .presentationDetents([.height(260)])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    // MARK: - Equipment icon
+
+    @ViewBuilder
+    private var equipmentIconView: some View {
+        if exercise.equipmentType.usesPlates {
+            Button {
+                showingEquipmentSheet = true
+            } label: {
+                EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
+                    .padding(6.0)
+                    .background(Color.green.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 8.0))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Ver discos de \(exercise.equipmentType.rawValue)")
+        } else {
+            EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+// MARK: - Equipment Sheet
+
+private struct ExerciseEquipmentSheet: View {
+    let equipmentType: EquipmentType
+    let weight: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12.0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(equipmentType.rawValue)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+
+                Spacer()
+
+                Text("\(UserSettingsManager.formatted(weight)) kg")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.green)
+            }
+
+            EquipmentVisualizerView(
+                equipmentType: equipmentType,
+                weight: weight
+            )
+
+            Spacer(minLength: 0.0)
+        }
+        .padding(16.0)
+        .background(Color.black.ignoresSafeArea())
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Set Row Component
+struct SetRowView: View {
+    let set: ActiveWorkoutViewModel.SetInputState
+    let targetRepsMin: Int
+    let targetRepsMax: Int
+    let onToggle: () -> Void
+    let onUpdate: (Double, Int) -> Void
+
+    @State private var weightString: String
+    @State private var repsString: String
+
+    init(
+        set: ActiveWorkoutViewModel.SetInputState,
+        targetRepsMin: Int,
+        targetRepsMax: Int,
+        onToggle: @escaping () -> Void,
+        onUpdate: @escaping (Double, Int) -> Void
+    ) {
+        self.set = set
+        self.targetRepsMin = targetRepsMin
+        self.targetRepsMax = targetRepsMax
+        self.onToggle = onToggle
+        self.onUpdate = onUpdate
+        _weightString = State(initialValue: set.weight == 0 ? "" : String(format: "%.1f", set.weight))
+        _repsString = State(initialValue: set.reps == 0 ? "" : "\(set.reps)")
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // Set Number
+            Text("\(set.setNumber)")
+                .font(.subheadline.bold())
+                .foregroundStyle(set.isCompleted ? Color.green : Color.secondary)
+                .frame(width: 40, alignment: .center)
+                .multilineTextAlignment(.center)
+
+            // Ghost Reference
+            Text(ghostText)
+                .font(.caption)
+                .foregroundStyle(.secondary.opacity(0.7))
+                .frame(maxWidth: .infinity, alignment: .center)
+                .multilineTextAlignment(.center)
+
+            // Weight Input
+            TextField("0", text: $weightString)
+                .keyboardType(.decimalPad)
+                .multilineTextAlignment(.center)
+                .font(.subheadline)
+                .padding(6)
+                .background(Color(.systemGray6).opacity(0.3))
+                .cornerRadius(8)
+                .frame(width: 60, height: 32)
+                .onChange(of: weightString) { _, newValue in
+                    if let w = Double(newValue) {
+                        onUpdate(w, set.reps)
+                    }
+                }
+
+            // Reps Input
+            TextField(targetRepsMax > 0 ? "\(targetRepsMax)" : "0", text: $repsString)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.center)
+                .font(.subheadline)
+                .padding(6)
+                .background(Color(.systemGray6).opacity(0.3))
+                .cornerRadius(8)
+                .frame(width: 50, height: 32)
+                .onChange(of: repsString) { _, newValue in
+                    if let r = Int(newValue) {
+                        onUpdate(set.weight, r)
+                    }
+                }
+
+            // Checkmark Button
+            Button(action: onToggle) {
+                Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .font(.subheadline)
+                    .foregroundStyle(set.isCompleted ? .green : .gray)
+                    .frame(width: 28, height: 28)
+            }
+            .frame(width: 34, height: 32)
+            .accessibilityLabel(set.isCompleted ? "Serie completada" : "Marcar serie como completada")
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(set.isCompleted ? Color.green.opacity(0.12) : Color.clear)
+        .cornerRadius(8)
+    }
+
+    private var ghostText: String {
+        guard let gw = set.ghostWeight, let gr = set.ghostReps else { return "—" }
+        return "\(String(format: "%.0f", gw))kg × \(gr)"
+    }
+}
+

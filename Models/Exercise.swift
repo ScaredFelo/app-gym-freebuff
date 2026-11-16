@@ -1,0 +1,65 @@
+import Foundation
+import SwiftData
+
+@Model
+public final class Exercise {
+    public var id: UUID
+    public var name: String
+    public var muscleGroupRaw: String
+    public var equipmentTypeRaw: String
+    public var requiresStraps: Bool
+    public var targetRepsMin: Int = 8
+    public var targetRepsMax: Int = 12
+    public var defaultRestConditionData: Data
+
+    @Relationship(deleteRule: .cascade, inverse: \WorkoutSetLog.exercise)
+    public var logs: [WorkoutSetLog] = []
+
+    @Transient
+    public var muscleGroup: MuscleGroup {
+        get { MuscleGroup(rawValue: muscleGroupRaw) ?? .pecho }
+        set { muscleGroupRaw = newValue.rawValue }
+    }
+
+    @Transient
+    public var equipmentType: EquipmentType {
+        get { EquipmentType.fromStoredRawValue(equipmentTypeRaw) }
+        set { equipmentTypeRaw = newValue.rawValue }
+    }
+
+    @Transient
+    public var defaultRestCondition: RestCondition {
+        get {
+            (try? JSONDecoder().decode(RestCondition.self, from: defaultRestConditionData)) ?? .timer(seconds: 90)
+        }
+        set {
+            defaultRestConditionData = (try? JSONEncoder().encode(newValue)) ?? Data()
+        }
+    }
+
+    @Transient
+    public var targetRepsText: String {
+        "\(targetRepsMin) - \(targetRepsMax)"
+    }
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        muscleGroup: MuscleGroup,
+        equipmentType: EquipmentType = .olympicBar,
+        requiresStraps: Bool = false,
+        targetRepsMin: Int = 8,
+        targetRepsMax: Int = 12,
+        defaultRestCondition: RestCondition = .timer(seconds: 90)
+    ) {
+        self.id = id
+        self.name = name
+        self.muscleGroupRaw = muscleGroup.rawValue
+        self.equipmentTypeRaw = equipmentType.rawValue
+        self.requiresStraps = requiresStraps
+        let lower = max(1, min(targetRepsMin, targetRepsMax))
+        self.targetRepsMin = lower
+        self.targetRepsMax = max(lower, targetRepsMax)
+        self.defaultRestConditionData = (try? JSONEncoder().encode(defaultRestCondition)) ?? Data()
+    }
+}

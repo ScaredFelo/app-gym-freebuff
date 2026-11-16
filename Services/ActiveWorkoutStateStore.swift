@@ -1,0 +1,80 @@
+import Foundation
+
+// MARK: - Persistencia de la sesión de entrenamiento activa
+
+struct PersistedWorkoutSet: Codable, Hashable {
+    var routineExerciseID: UUID
+    var setNumber: Int
+    var weight: Double
+    var reps: Int
+    var date: Date
+}
+
+struct PersistedBPMPoint: Codable, Hashable {
+    var timestamp: Date
+    var bpm: Int
+}
+
+struct PersistedWorkoutState: Codable, Hashable {
+    var activeWorkoutID: UUID
+    var routineID: UUID
+    var workoutStartDate: Date
+    var completedSets: [PersistedWorkoutSet]
+    var restTimerEndDate: Date?
+    /// Lecturas de BPM de los últimos minutos. Opcional para mantener la
+    /// compatibilidad con estados guardados por versiones anteriores.
+    var bpmHistory: [PersistedBPMPoint]? = nil
+    /// Acumulado y número de lecturas de toda la sesión para calcular el BPM
+    /// medio real. Opcionales por compatibilidad con estados anteriores.
+    var bpmTotal: Int? = nil
+    var bpmCount: Int? = nil
+
+    // Estado auxiliar para reanudar el temporizador exactamente donde se quedó.
+    var timerStartDate: Date?
+    var totalRestSeconds: Int
+    var restTimeRemaining: Int
+    var isResting: Bool
+    var isRestPaused: Bool
+    var isRestTimerActive: Bool
+    var isTimerMinimized: Bool
+    var restCondition: RestCondition?
+    var restTargetBpm: Int?
+    var currentExerciseName: String
+    var currentRestModeTitle: String
+    var restingSetNumber: Int
+    var restingTotalSets: Int
+
+    var updatedAt: Date
+}
+
+enum ActiveWorkoutStateStore {
+    private static let storageKey = "activeWorkoutState.v1"
+    private static let encoder = JSONEncoder()
+    private static let decoder = JSONDecoder()
+
+    static func save(_ state: PersistedWorkoutState) {
+        guard let data = try? encoder.encode(state) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
+    }
+
+    static func load() -> PersistedWorkoutState? {
+        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return nil }
+
+        do {
+            return try decoder.decode(PersistedWorkoutState.self, from: data)
+        } catch {
+            // Estado ilegible (datos corruptos o de una versión incompatible):
+            // lo descartamos para volver de forma segura a la pantalla principal.
+            UserDefaults.standard.removeObject(forKey: storageKey)
+            return nil
+        }
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: storageKey)
+    }
+
+    static var hasActiveWorkout: Bool {
+        load() != nil
+    }
+}

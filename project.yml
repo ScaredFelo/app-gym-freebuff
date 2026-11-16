@@ -1,0 +1,95 @@
+name: AppGym
+options:
+  bundleIdPrefix: com.jordiferres
+  objectVersion: 56
+
+fileGroups:
+  - AppGym/AppGym.entitlements
+
+targets:
+  AppGym:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    bundleId: com.jordiferres.appgym
+    entitlements:
+      path: AppGym/AppGym.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
+    attributes:
+      SystemCapabilities:
+        com.apple.HealthKit:
+          enabled: 1
+    sources:
+      - path: App.swift
+      - path: Assets.xcassets
+      - path: Attributes
+      - path: Models
+      - path: Services
+      - path: ViewModels
+      - path: Views
+    dependencies:
+      - target: AppGymWidgets
+    frameworks:
+      - sdk: HealthKit.framework
+      - sdk: CoreBluetooth.framework
+      - sdk: ActivityKit.framework
+    info:
+      path: Info.plist
+      properties:
+        UILaunchScreen: {}
+        NSSupportsLiveActivities: true
+        UIBackgroundModes:
+          - processing
+          - audio
+        NSBluetoothAlwaysUsageDescription: "AppGym requiere acceso a Bluetooth para conectar con el sensor de pulso cardíaco."
+        NSBluetoothPeripheralUsageDescription: "AppGym requiere acceso a Bluetooth para conectar con el sensor de pulso cardíaco."
+        NSHealthShareUsageDescription: "Necesitamos acceder a tus pulsaciones para mostrar tu frecuencia cardíaca en el temporizador."
+        NSHealthUpdateUsageDescription: "Necesitamos registrar tus sesiones de entrenamiento en Apple Health."
+    settings:
+      base:
+        PRODUCT_NAME: AppGym
+        PRODUCT_BUNDLE_IDENTIFIER: com.jordiferres.appgym
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: "minimal"
+        GENERATE_INFOPLIST_FILE: "NO"
+      configs:
+        Debug:
+          CODE_SIGN_ENTITLEMENTS: AppGym/AppGym.entitlements
+        Release:
+          CODE_SIGN_ENTITLEMENTS: AppGym/AppGym.entitlements
+
+  AppGymWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    bundleId: com.jordiferres.appgym.widgets
+    sources:
+      - path: Widgets
+      - path: Attributes/WorkoutActivityAttributes.swift
+    frameworks:
+      - sdk: WidgetKit.framework
+      - sdk: ActivityKit.framework
+      - sdk: SwiftUI.framework
+    info:
+      path: Widgets/Info.plist
+      properties:
+        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.0.0"
+        NSSupportsLiveActivities: true
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_NAME: AppGymWidgets
+        PRODUCT_BUNDLE_IDENTIFIER: com.jordiferres.appgym.widgets
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: "minimal"
+        GENERATE_INFOPLIST_FILE: "NO"
