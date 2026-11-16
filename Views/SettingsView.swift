@@ -111,16 +111,21 @@ struct SettingsView: View {
             isPresented: $showFileExporter,
             document: backupDocument,
             contentTypes: [.json],
-            defaultFilename: backupFileName
-        ) { (result: Result<URL, Error>) in
-            handleExportResult(result)
-        }
+            defaultFilename: backupFileName,
+            onCompletion: { (result: Result<URL, Error>) in
+                handleExportResult(result)
+            },
+            onCancellation: {
+                // El usuario ha cerrado el selector sin guardar: sin cambios.
+            }
+        )
         .fileImporter(
             isPresented: $showFileImporter,
-            allowedContentTypes: [.json]
-        ) { (result: Result<URL, Error>) in
-            handleImportResult(result)
-        }
+            allowedContentTypes: [.json],
+            onCompletion: { (result: Result<URL, Error>) in
+                handleImportResult(result)
+            }
+        )
         .alert("Cuidado: sobrescritura de datos", isPresented: $showImportWarningAlert) {
             Button("Cancelar", role: .cancel) {
                 // Sin acción: se conserva la base de datos actual.
@@ -133,9 +138,7 @@ struct SettingsView: View {
             Text("Al importar un archivo se sobrescribirán las rutinas y las sesiones de entrenamiento actuales. ¿Quieres continuar?")
         }
         .alert("Copia de seguridad", isPresented: $showBackupResultAlert) {
-            Button("Entendido", role: .cancel) {
-                backupResultMessage = ""
-            }
+            Button("Entendido", role: .cancel) {}
         } message: {
             Text(backupResultMessage)
         }
@@ -194,14 +197,11 @@ struct SettingsView: View {
 
     private func exportBackup() {
         do {
-            backupDocument = try BackupManager.createBackupDocument(
-                context: modelContext,
-                settings: UserSettingsManager.self
-            )
+            backupDocument = try BackupManager.createBackupDocument(context: modelContext)
             backupFileName = BackupManager.defaultFileName()
             showFileExporter = true
         } catch {
-            presentBackupResult(message: BackupManager.message(for: error))
+            presentBackupResult(message: error.localizedDescription)
         }
     }
 
@@ -212,7 +212,7 @@ struct SettingsView: View {
                 message: "Exportación completada. El archivo incluye tus rutinas, ejercicios, sesiones de entrenamiento y ajustes del gimnasio."
             )
         case .failure(let error):
-            presentBackupResult(message: BackupManager.message(for: error))
+            presentBackupResult(message: error.localizedDescription)
         }
     }
 
@@ -220,19 +220,15 @@ struct SettingsView: View {
         switch result {
         case .success(let url):
             do {
-                try BackupManager.restoreBackup(
-                    from: url,
-                    context: modelContext,
-                    settings: UserSettingsManager.self
-                )
+                try BackupManager.restoreBackup(from: url, context: modelContext)
                 presentBackupResult(
-                    message: "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo."
+                    message: "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo, y se ha guardado una copia automática de los datos anteriores."
                 )
             } catch {
-                presentBackupResult(message: BackupManager.message(for: error))
+                presentBackupResult(message: error.localizedDescription)
             }
         case .failure(let error):
-            presentBackupResult(message: BackupManager.message(for: error))
+            presentBackupResult(message: error.localizedDescription)
         }
     }
 

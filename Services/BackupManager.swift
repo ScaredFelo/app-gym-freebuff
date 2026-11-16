@@ -12,7 +12,8 @@ enum BackupError: LocalizedError {
     case invalidFile
     case unsupportedVersion(version: Int)
     case encodingFailed
-    case saveFailed
+    case safetyCopyFailed
+    case restoreFailed
 
     var errorDescription: String? {
         switch self {
@@ -24,8 +25,10 @@ enum BackupError: LocalizedError {
             return "El archivo pertenece a una versión más reciente de AppGym (v\(version)). Actualiza la app para poder importarlo."
         case .encodingFailed:
             return "No se ha podido generar el archivo de copia de seguridad."
-        case .saveFailed:
-            return "No se han podido guardar los datos importados."
+        case .safetyCopyFailed:
+            return "No se ha podido guardar la copia automática de tus datos actuales, así que la importación se ha cancelado."
+        case .restoreFailed:
+            return "No se ha podido aplicar la importación. Tus datos actuales se han conservado."
         }
     }
 }
@@ -149,11 +152,10 @@ struct AppBackupData: Codable {
 /// Documento que integra el backup con `.fileExporter` / `.fileImporter`.
 struct WorkoutBackupDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.json] }
-    static var writableContentTypes: [UTType] { [.json] }
 
     let data: Data
 
-    init(data: Data = Data()) {
+    init(data: Data) {
         self.data = data
     }
 
@@ -174,31 +176,23 @@ struct WorkoutBackupDocument: FileDocument {
 /// Exporta e importa toda la base de datos SwiftData y los ajustes del
 /// gimnasio en un único archivo JSON.
 ///
-/// `UserSettingsManager` es un enumerado de utilidades estáticas (no tiene
-/// instancias), por eso la dependencia se declara con su metatipo
-/// (`UserSettingsManager.Type`) y se invoca como `UserSettingsManager.self`.
+/// Los ajustes se leen y escriben a través de `UserSettingsManager` (utilidades
+/// estáticas sobre `UserDefaults`), que es la única fuente de verdad de la
+/// configuración del gimnasio.
 enum BackupManager {
     // MARK: - Export
 
     /// Nombre por defecto del archivo: `AppGym_Backup_YYYY-MM-DD.json`.
-    static func defaultFileName(for date: Date = Date()) -> String {
-        let formatter: DateFormatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.dateFormat = "yyyy-MM-dd"
-        return "AppGym_Backup_\(formatter.string(from: date)).json"
+    static func defaultFileName() -> String {
+        return "AppGym_Backup_\(makeDateFormatter("yyyy-MM-dd").string(from: Date())).json"
     }
 
     /// Genera el documento JSON con rutinas, ejercicios, sesiones (series,
     /// tiempos y muestras de BPM) y ajustes del gimnasio.
-    static func createBackupDocument(
-        context: ModelContext,
-        settings: UserSettingsManager.Type = UserSettingsManager.self
-    ) throws -> WorkoutBackupDocument {
+    static func createBackupDocument(context: ModelContext) throws -> WorkoutBackupDocument {
         let backup: AppBackupData = try makeBackupData(
             context: context,
-            exportDate: Date(),
-            settings: settings
+            exportDate: Date()
         )
 
         do {
@@ -212,12 +206,9 @@ enum BackupManager {
     // MARK: - Import
 
     /// Sustituye las rutinas, las sesiones y los ajustes actuales por los del
-    /// archivo indicado.
-    static func restoreBackup(
-        from url: URL,
-        context: ModelContext,
-        settings: UserSettingsManager.Type = UserSettingsManager.self
-    ) throws {
+    /// archivo indicado, guardando antes una copia automática de los datos que
+    /// se van a sobrescribir.
+    static func restoreBackup(from url: URL, context: ModelContext) throws {
         let hasAccess: Bool = url.startAccessingSecurityScopedResource()
         defer {
             if hasAccess {
@@ -243,23 +234,17 @@ enum BackupManager {
             throw BackupError.unsupportedVersion(version: backup.version)
         }
 
-        try applyBackup(backup, context: context, settings: settings)
-    }
+        // Copia automática previa: si no se puede guardar, no se toca nada.
+        try saveSafetyCopy(context: context)
 
-    /// Mensaje legible para cualquier error producido por el motor.
-    static func message(for error: Error) -> String {
-        if let backupError: BackupError = error as? BackupError {
-            return backupError.errorDescription ?? "Se ha producido un error inesperado."
-        }
-        return error.localizedDescription
+        try applyBackup(backup, context: context)
     }
 
     // MARK: - Construcción del backup
 
     private static func makeBackupData(
         context: ModelContext,
-        exportDate: Date,
-        settings: UserSettingsManager.Type
+        exportDate: Date
     ) throws -> AppBackupData {
         let routines: [Routine] = try context.fetch(
             FetchDescriptor<Routine>(sortBy: [SortDescriptor(\Routine.sortOrder)])
@@ -286,7 +271,7 @@ enum BackupManager {
             exportDate: exportDate,
             routines: routineDTOs,
             sessions: sessionDTOs,
-            settings: makeSettingsDTO(settings: settings)
+            settings: makeSettingsDTO()
         )
     }
 
@@ -346,36 +331,36 @@ enum BackupManager {
         _ session: WorkoutSession,
         exerciseSnapshots: [String: ExerciseBackupDTO]
     ) -> WorkoutSessionBackupDTO {
-        let records: [WorkoutExerciseRecord] = session.exerciseRecords
-        let exercises: [WorkoutExerciseBackupDTO]
+        // Las sesiones antiguas sin registros detallados se reconstruyen con el
+        // mismo cálculo que usa la app al finalizar un entrenamiento.
+        let storedRecords: [WorkoutExerciseRecord] = session.exerciseRecords
+        let records: [WorkoutExerciseRecord] = storedRecords.isEmpty
+            ? WorkoutMetricsCalculator.buildExerciseRecords(for: session)
+            : storedRecords
 
-        if records.isEmpty {
-            exercises = fallbackExercises(for: session)
-        } else {
-            exercises = records.map { (record: WorkoutExerciseRecord) -> WorkoutExerciseBackupDTO in
-                let sortedSets: [WorkoutSetRecord] = record.sets.sorted { (lhs: WorkoutSetRecord, rhs: WorkoutSetRecord) -> Bool in
-                    return lhs.setNumber < rhs.setNumber
-                }
-                let setSnapshots: [WorkoutSetBackupDTO] = sortedSets.map { (setRecord: WorkoutSetRecord) -> WorkoutSetBackupDTO in
-                    return WorkoutSetBackupDTO(
-                        id: setRecord.id,
-                        setNumber: setRecord.setNumber,
-                        weight: setRecord.weight,
-                        reps: setRecord.reps,
-                        setCompletedTime: setRecord.setCompletedTime,
-                        restDuration: setRecord.restDuration
-                    )
-                }
-
-                return WorkoutExerciseBackupDTO(
-                    id: record.id,
-                    exerciseName: record.exerciseName,
-                    exercise: exerciseSnapshots[normalizedName(record.exerciseName)],
-                    exerciseStartTime: record.exerciseStartTime,
-                    exerciseEndTime: record.exerciseEndTime,
-                    sets: setSnapshots
+        let exercises: [WorkoutExerciseBackupDTO] = records.map { (record: WorkoutExerciseRecord) -> WorkoutExerciseBackupDTO in
+            let sortedSets: [WorkoutSetRecord] = record.sets.sorted { (lhs: WorkoutSetRecord, rhs: WorkoutSetRecord) -> Bool in
+                return lhs.setNumber < rhs.setNumber
+            }
+            let setSnapshots: [WorkoutSetBackupDTO] = sortedSets.map { (setRecord: WorkoutSetRecord) -> WorkoutSetBackupDTO in
+                return WorkoutSetBackupDTO(
+                    id: setRecord.id,
+                    setNumber: setRecord.setNumber,
+                    weight: setRecord.weight,
+                    reps: setRecord.reps,
+                    setCompletedTime: setRecord.setCompletedTime,
+                    restDuration: setRecord.restDuration
                 )
             }
+
+            return WorkoutExerciseBackupDTO(
+                id: record.id,
+                exerciseName: record.exerciseName,
+                exercise: exerciseSnapshots[normalizedName(record.exerciseName)],
+                exerciseStartTime: record.exerciseStartTime,
+                exerciseEndTime: record.exerciseEndTime,
+                sets: setSnapshots
+            )
         }
 
         let samples: [BPMSampleBackupDTO] = session.bpmSamples.map { (sample: BPMSample) -> BPMSampleBackupDTO in
@@ -397,56 +382,7 @@ enum BackupManager {
         )
     }
 
-    /// Sesiones antiguas sin `exerciseRecords`: reconstruye el historial a
-    /// partir de los `WorkoutSetLog` para no perder series ni pesos.
-    private static func fallbackExercises(for session: WorkoutSession) -> [WorkoutExerciseBackupDTO] {
-        let logs: [WorkoutSetLog] = session.setsCompleted
-            .filter { (log: WorkoutSetLog) -> Bool in
-                return log.isCompleted
-            }
-            .sorted { (lhs: WorkoutSetLog, rhs: WorkoutSetLog) -> Bool in
-                return lhs.date < rhs.date
-            }
-
-        var order: [String] = []
-        var grouped: [String: [WorkoutSetLog]] = [:]
-        for log in logs {
-            let name: String = log.exercise?.name ?? "Ejercicio"
-            if grouped[name] == nil {
-                order.append(name)
-                grouped[name] = []
-            }
-            grouped[name]?.append(log)
-        }
-
-        return order.map { (name: String) -> WorkoutExerciseBackupDTO in
-            let exerciseLogs: [WorkoutSetLog] = grouped[name] ?? []
-            let startDate: Date = exerciseLogs.first?.date ?? session.startDate
-            let endDate: Date = exerciseLogs.last?.date ?? startDate
-
-            let sets: [WorkoutSetBackupDTO] = exerciseLogs.enumerated().map { (index: Int, log: WorkoutSetLog) -> WorkoutSetBackupDTO in
-                return WorkoutSetBackupDTO(
-                    id: log.id,
-                    setNumber: log.setNumber ?? (index + 1),
-                    weight: log.weight,
-                    reps: log.reps,
-                    setCompletedTime: log.date,
-                    restDuration: 0
-                )
-            }
-
-            return WorkoutExerciseBackupDTO(
-                id: UUID(),
-                exerciseName: name,
-                exercise: nil,
-                exerciseStartTime: startDate,
-                exerciseEndTime: endDate,
-                sets: sets
-            )
-        }
-    }
-
-    private static func makeSettingsDTO(settings: UserSettingsManager.Type) -> SettingsBackupDTO {
+    private static func makeSettingsDTO() -> SettingsBackupDTO {
         return SettingsBackupDTO(
             isBigPictureMode: UserDefaults.standard.bool(forKey: UserSettingsManager.isBigPictureModeEnabledKey),
             multipowerBarWeight: UserSettingsManager.multipowerBarWeight,
@@ -459,12 +395,44 @@ enum BackupManager {
 
     // MARK: - Restauración
 
-    private static func applyBackup(
-        _ backup: AppBackupData,
-        context: ModelContext,
-        settings: UserSettingsManager.Type
-    ) throws {
-        try deleteExistingData(context: context)
+    /// Reemplaza el contenido de la base de datos de forma atómica: no hay
+    /// ningún `save()` intermedio entre el borrado y la reconstrucción, de modo
+    /// que un fallo deshace todos los cambios pendientes con `rollback()` y deja
+    /// intactos los datos que el usuario ya tenía.
+    private static func applyBackup(_ backup: AppBackupData, context: ModelContext) throws {
+        let wasAutosaveEnabled: Bool = context.autosaveEnabled
+        context.autosaveEnabled = false
+        defer {
+            context.autosaveEnabled = wasAutosaveEnabled
+        }
+
+        do {
+            try replaceExistingData(with: backup, context: context)
+            try context.save()
+        } catch {
+            context.rollback()
+            throw BackupError.restoreFailed
+        }
+
+        // Los ajustes se escriben solo cuando la importación ya está guardada,
+        // para no dejar `UserDefaults` a medias si algo falla antes.
+        applySettings(backup.settings)
+    }
+
+    private static func replaceExistingData(with backup: AppBackupData, context: ModelContext) throws {
+        let sessions: [WorkoutSession] = try context.fetch(FetchDescriptor<WorkoutSession>())
+        for session in sessions {
+            let logs: [WorkoutSetLog] = session.setsCompleted
+            for log in logs {
+                context.delete(log)
+            }
+            context.delete(session)
+        }
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        for routine in routines {
+            context.delete(routine)
+        }
 
         var exerciseCache: [String: Exercise] = makeExerciseCache(context: context)
 
@@ -505,36 +473,6 @@ enum BackupManager {
 
         for sessionDTO in backup.sessions {
             insertSession(sessionDTO, cache: &exerciseCache, context: context)
-        }
-
-        applySettings(backup.settings)
-
-        do {
-            try context.save()
-        } catch {
-            throw BackupError.saveFailed
-        }
-    }
-
-    private static func deleteExistingData(context: ModelContext) throws {
-        do {
-            let sessions: [WorkoutSession] = try context.fetch(FetchDescriptor<WorkoutSession>())
-            for session in sessions {
-                let logs: [WorkoutSetLog] = session.setsCompleted
-                for log in logs {
-                    context.delete(log)
-                }
-                context.delete(session)
-            }
-
-            let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
-            for routine in routines {
-                context.delete(routine)
-            }
-
-            try context.save()
-        } catch {
-            throw BackupError.saveFailed
         }
     }
 
@@ -670,7 +608,83 @@ enum BackupManager {
         defaults.set(settings.hrRest, forKey: UserSettingsManager.hrRestBPMKey)
     }
 
+    // MARK: - Copia automática previa a la importación
+
+    /// Copias automáticas que se conservan en disco.
+    private static let maximumSafetyCopies: Int = 3
+
+    /// Guarda en disco un JSON con los datos actuales antes de sobrescribirlos.
+    /// Es lanzado desde `restoreBackup`, de modo que cada importación deja una
+    /// copia recuperable aunque sus datos originales se sustituyan.
+    static func saveSafetyCopy(context: ModelContext) throws {
+        do {
+            let date: Date = Date()
+            let backup: AppBackupData = try makeBackupData(context: context, exportDate: date)
+            let data: Data = try makeEncoder().encode(backup)
+            let fileName: String = "AppGym_PreImport_\(makeDateFormatter("yyyy-MM-dd_HH-mm-ss").string(from: date)).json"
+
+            let directory: URL = try safetyCopyDirectory()
+            try data.write(to: directory.appendingPathComponent(fileName), options: .atomic)
+
+            pruneSafetyCopies(in: directory)
+        } catch {
+            throw BackupError.safetyCopyFailed
+        }
+    }
+
+    private static func safetyCopyDirectory() throws -> URL {
+        let fileManager: FileManager = FileManager.default
+        guard let base: URL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            throw BackupError.safetyCopyFailed
+        }
+
+        let directory: URL = base.appendingPathComponent("Backups", isDirectory: true)
+        guard !fileManager.fileExists(atPath: directory.path) else {
+            return directory
+        }
+
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            throw BackupError.safetyCopyFailed
+        }
+        return directory
+    }
+
+    /// Conserva solo las copias automáticas más recientes (el nombre incluye la
+    /// fecha, así que ordena lexicográficamente).
+    private static func pruneSafetyCopies(in directory: URL) {
+        let fileManager: FileManager = FileManager.default
+        guard let contents: [URL] = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        ) else {
+            return
+        }
+
+        let copies: [URL] = contents
+            .filter { (url: URL) -> Bool in
+                return url.lastPathComponent.hasPrefix("AppGym_PreImport_")
+            }
+            .sorted { (lhs: URL, rhs: URL) -> Bool in
+                return lhs.lastPathComponent > rhs.lastPathComponent
+            }
+
+        for url in copies.dropFirst(maximumSafetyCopies) {
+            try? fileManager.removeItem(at: url)
+        }
+    }
+
     // MARK: - Utilidades
+
+    private static func makeDateFormatter(_ format: String) -> DateFormatter {
+        let formatter: DateFormatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.dateFormat = format
+        return formatter
+    }
 
     private static func normalizedName(_ name: String) -> String {
         return name
