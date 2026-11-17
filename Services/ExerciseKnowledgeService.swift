@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 
 // MARK: - Resultado resuelto
 
@@ -60,6 +61,10 @@ private struct ExerciseKnowledgeProfile {
 /// un perfil genérico a partir del equipamiento y del grupo muscular objetivo.
 public enum ExerciseKnowledgeService {
 
+    /// Bandera de la migración del catálogo a los nuevos grupos musculares y
+    /// a los rangos de repeticiones 6-8 / 8-10.
+    public static let migrationFlagKey: String = "didMigrateExercisesToNewMusclesAndReps_v1"
+
     // MARK: API pública
 
     public static func resolvedInfo(for exercise: Exercise) -> ResolvedExerciseInfo {
@@ -74,9 +79,9 @@ public enum ExerciseKnowledgeService {
             || !exercise.whenNotRecommended.isEmpty
         let hasStoredKnowledge: Bool = hasStoredMuscles || hasStoredTexts
 
-        let primary: [MuscleGroup] = hasStoredMuscles ? storedPrimary : inferred.primaryMuscles
-        let rawSecondary: [MuscleGroup] = hasStoredMuscles ? storedSecondary : inferred.secondaryMuscles
-        let secondary: [MuscleGroup] = rawSecondary.filter { (muscle: MuscleGroup) -> Bool in
+        let primary: [MuscleGroup] = storedPrimary.isEmpty ? inferred.primaryMuscles : storedPrimary
+        let secondarySource: [MuscleGroup] = storedSecondary.isEmpty ? inferred.secondaryMuscles : storedSecondary
+        let secondary: [MuscleGroup] = secondarySource.filter { (muscle: MuscleGroup) -> Bool in
             return !primary.contains(muscle)
         }
         let isCompound: Bool = hasStoredKnowledge ? exercise.isCompound : inferred.isCompound
@@ -93,6 +98,54 @@ public enum ExerciseKnowledgeService {
             whenRecommended: firstNonEmpty(exercise.whenRecommended, fallback: inferred.whenRecommended),
             whenNotRecommended: firstNonEmpty(exercise.whenNotRecommended, fallback: inferred.whenNotRecommended)
         )
+    }
+
+    /// Migración idempotente del catálogo ya guardado en SwiftData.
+    ///
+    /// Reclasifica músculos, grupo objetivo, tipo de movimiento y rango de
+    /// repeticiones (6-8 complejos, 8-10 aislamiento) conservando notas,
+    /// equipamiento e historial de sesiones.
+    @MainActor
+    public static func migrateExistingExercisesIfNeeded(context: ModelContext) {
+        let defaults: UserDefaults = UserDefaults.standard
+        guard !defaults.bool(forKey: migrationFlagKey) else { return }
+
+        let descriptor: FetchDescriptor<Exercise> = FetchDescriptor<Exercise>()
+        guard let exercises: [Exercise] = try? context.fetch(descriptor) else { return }
+
+        for exercise in exercises {
+            let inferred: ResolvedExerciseInfo = inferredInfo(for: exercise)
+
+            let primary: [MuscleGroup] = inferred.primaryMuscles
+            exercise.primaryMuscles = primary
+            exercise.secondaryMuscles = inferred.secondaryMuscles
+            exercise.isCompound = inferred.isCompound
+            exercise.requiresStraps = inferred.requiresStraps
+
+            let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: inferred.isCompound)
+            exercise.targetRepsMin = range.min
+            exercise.targetRepsMax = range.max
+
+            if exercise.whyGoodExercise.isEmpty {
+                exercise.whyGoodExercise = inferred.whyGoodExercise
+            }
+            if exercise.whyBadExercise.isEmpty {
+                exercise.whyBadExercise = inferred.whyBadExercise
+            }
+            if exercise.whenRecommended.isEmpty {
+                exercise.whenRecommended = inferred.whenRecommended
+            }
+            if exercise.whenNotRecommended.isEmpty {
+                exercise.whenNotRecommended = inferred.whenNotRecommended
+            }
+        }
+
+        do {
+            try context.save()
+            defaults.set(true, forKey: migrationFlagKey)
+        } catch {
+            print("Error migrando el catálogo de ejercicios: \(error)")
+        }
     }
 
     // MARK: Inferencia
@@ -154,7 +207,7 @@ public enum ExerciseKnowledgeService {
         case .chest:
             return [.frontShoulders, .triceps]
         case .upperBack:
-            return [.biceps, .rearShoulders]
+            return [.rearShoulders, .biceps]
         case .lats:
             return [.biceps, .upperBack]
         case .lowerBack:
@@ -228,9 +281,9 @@ public enum ExerciseKnowledgeService {
 
     private static func fallbackWhenText(compound: Bool) -> String {
         if compound {
-            return "Al inicio de la sesión, con el sistema nervioso fresco, en bloques de fuerza (4-8 reps) o hipertrofia (8-12 reps) y descansos largos."
+            return "Al inicio de la sesión, con el sistema nervioso fresco, en 6-8 repeticiones y descansos largos."
         }
-        return "A mitad o al final de la sesión, cuando el objetivo es acumular volumen y tensión mecánica sin añadir fatiga sistémica."
+        return "A mitad o al final de la sesión, cuando el objetivo es acumular volumen y tensión mecánica en 8-10 repeticiones."
     }
 
     private static func fallbackWhenNotText(equipment: EquipmentType, compound: Bool) -> String {
@@ -285,17 +338,34 @@ public enum ExerciseKnowledgeService {
 
     // MARK: Base de conocimiento
 
+    /// Perfiles muy específicos que deben resolverse antes que los patrones
+    /// genéricos (por ejemplo, "press banca cerrado" antes que "press banca").
+    private static let specificProfiles: [ExerciseKnowledgeProfile] = [
+        make(
+            keywords: ["press cerrado", "press banca cerrado", "close grip", "jm press"],
+            primary: [.triceps],
+            secondary: [.chest, .frontShoulders],
+            compound: true,
+            straps: false,
+            reps: "6-8",
+            good: "Es el ejercicio de tríceps con mayor capacidad de carga: permite mover peso como un patrón multiarticular y progresar en fuerza de extensión de codo.",
+            bad: "Exige una posición de hombro y muñeca muy concreta; si el agarre es demasiado estrecho el codo se resiente y el pectoral se lleva el trabajo.",
+            when: "Al inicio del bloque de tríceps o como segundo empuje del día, en 6-8 repeticiones con descansos de 2 minutos.",
+            whenNot: "Con molestia en el codo o el hombro en la fase baja, o si aún no controlas la trayectoria del press."
+        )
+    ]
+
     private static let pressProfiles: [ExerciseKnowledgeProfile] = [
         make(
-            keywords: ["press banca inclinado", "press inclinado", "incline press", "inclined press"],
+            keywords: ["press banca inclinado", "press inclinado", "incline press", "incline bench"],
             primary: [.chest],
             secondary: [.frontShoulders, .triceps],
             compound: true,
             straps: false,
-            reps: "6-10",
+            reps: "6-8",
             good: "Prioriza la porción clavicular del pectoral con un perfil de resistencia estable y cargas progresables, sobre todo en Multipower donde la trayectoria es fija.",
             bad: "Si la inclinación pasa de 45 grados el trabajo se traslada al deltoides anterior y el hombro pierde margen de seguridad en la fase baja.",
-            when: "Como primer ejercicio de pecho para la porción superior, en 6-10 reps con descansos de 2 minutos.",
+            when: "Como primer ejercicio de pecho para la porción superior, en 6-8 repeticiones con descansos de 2 minutos.",
             whenNot: "Con molestia en el hombro anterior en abducción y rotación externa, o si el banco supera los 45 grados."
         ),
         make(
@@ -304,34 +374,58 @@ public enum ExerciseKnowledgeService {
             secondary: [.frontShoulders, .triceps],
             compound: true,
             straps: false,
-            reps: "5-10",
+            reps: "6-8",
             good: "Es el mayor estímulo mecánico para el pectoral con cargas progresables: el perfil de resistencia del press plano es muy estable y permite medir la sobrecarga semana a semana.",
             bad: "Exige estabilidad escapular y control del arco torácico; con fatiga alta el hombro pierde posición y el estrés se concentra en la articulación.",
-            when: "Como primer ejercicio de empuje, en bloques de fuerza (3-6 reps) o hipertrofia (6-12 reps) con descansos largos.",
+            when: "Como primer ejercicio de empuje, en 6-8 repeticiones con descansos largos.",
             whenNot: "Con fatiga de empuje acumulada, molestia de hombro anterior o sin control escapular para fijar la escápula."
         ),
         make(
-            keywords: ["cable fly", "aperturas", "pec deck", "cruces de polea", "contractor", "seated fly", "aperturas con mancuerna"],
+            keywords: ["press declinado", "press banca declinado", "decline press"],
+            primary: [.chest],
+            secondary: [.triceps, .frontShoulders],
+            compound: true,
+            straps: false,
+            reps: "6-8",
+            good: "El banco declinado alarga el recorrido útil del pectoral y concentra la tensión en la porción esternocostal con una posición de hombro más protegida.",
+            bad: "La salida y entrada de la barra requieren ayuda, y la posición declinada puede aumentar la presión en la cabeza y en el cuello.",
+            when: "Como ejercicio principal de pecho en 6-8 repeticiones cuando quieres priorizar la porción inferior del pectoral.",
+            whenNot: "Con problemas cervicales o de presión arterial, o si no tienes ayuda para colocar la barra."
+        ),
+        make(
+            keywords: ["fondos", "paralelas", "dips", "fondos en paralelas"],
+            primary: [.chest],
+            secondary: [.triceps, .frontShoulders],
+            compound: true,
+            straps: false,
+            reps: "6-8",
+            good: "Trabaja el pectoral con el peso corporal en un patrón de empuje descendente que también exige mucho al tríceps y a la estabilidad escapular.",
+            bad: "La posición de hombro en rotación interna con descenso profundo es exigente; sin control de la excéntrica el tendón del pectoral recibe mucha carga.",
+            when: "Como segundo empuje del día o sustituto del press cuando no hay material, en 6-8 repeticiones controladas.",
+            whenNot: "Con molestia en el hombro anterior o el pectoral, o si no puedes bajar de forma controlada."
+        ),
+        make(
+            keywords: ["cable fly", "aperturas", "pec deck", "pec-deck", "cruces de polea", "contractor", "seated fly", "aperturas con mancuerna", "aperturas en polea"],
             primary: [.chest],
             secondary: [.frontShoulders],
             compound: false,
             straps: false,
-            reps: "10-15",
+            reps: "8-10",
             good: "Aísla el pectoral con tensión constante en el punto de máxima contracción y permite un estiramiento controlado sin perder carga en el recorrido.",
             bad: "El torso apoyado reduce el trabajo de estabilizadores y la lectura de progresión con cable engaña: la tensión inicial ya es alta.",
-            when: "A mitad o final de la sesión de pecho para acumular volumen, con 2-3 series de 10-15 reps y pausa en la contracción.",
+            when: "A mitad o final de la sesión de pecho para acumular volumen, con 2-3 series de 8-10 repeticiones y pausa en la contracción.",
             whenNot: "Si es el único estímulo de pecho de la sesión o cuando el hombro anterior está irritado."
         ),
         make(
-            keywords: ["press militar", "shoulder press", "press hombro", "press de hombro", "push press"],
+            keywords: ["press militar", "shoulder press", "press hombro", "press de hombro", "press arnold", "arnold press", "press hombros", "push press"],
             primary: [.frontShoulders],
             secondary: [.triceps, .upperBack, .abs],
             compound: true,
             straps: false,
-            reps: "6-10",
+            reps: "6-8",
             good: "Patrón de empuje vertical con gran transferencia y alta demanda de estabilidad del core; permite una progresión clara en fuerza de hombro.",
             bad: "La demanda escapular y lumbar es alta: sin movilidad torácica suficiente la carga se escapa a la zona lumbar y el deltoides anterior se lleva el trabajo.",
-            when: "Al inicio de la sesión de hombro, en 4-8 reps para fuerza o 8-12 para hipertrofia.",
+            when: "Al inicio de la sesión de hombro, en 6-8 repeticiones con descansos de 2 minutos.",
             whenNot: "Con movilidad torácica limitada, hombro doloroso en flexión alta o fatiga lumbar acumulada."
         ),
         make(
@@ -340,22 +434,34 @@ public enum ExerciseKnowledgeService {
             secondary: [.upperBack],
             compound: false,
             straps: false,
-            reps: "12-20",
+            reps: "8-10",
             good: "Aísla el deltoides medio, el principal responsable de la amplitud del hombro, con el pico de tensión cerca de la horizontal.",
             bad: "Se convierte en un balanceo con cargas altas y el supraespinoso recibe estrés si se sube por encima del hombro; además el trapecio compensa con facilidad.",
-            when: "A mitad o final de la sesión, con 3-4 series de 12-20 reps buscando congestión y tolerancia alta a la fatiga.",
+            when: "A mitad o final de la sesión, con 3-4 series de 8-10 repeticiones buscando congestión y control del tempo.",
             whenNot: "Con pinzamiento subacromial activo o si el torso acaba impulsando las repeticiones."
         ),
         make(
-            keywords: ["reverse fly", "pajaros", "deltoide posterior", "rear delt", "posterior fly"],
+            keywords: ["elevaciones frontales", "elevacion frontal", "front raise"],
+            primary: [.frontShoulders],
+            secondary: [.upperBack],
+            compound: false,
+            straps: false,
+            reps: "8-10",
+            good: "Concentra la tensión en la porción anterior del deltoides con un brazo casi extendido, útil para completar el trabajo de hombro sin mucha carga",
+            bad: "Es fácil compensar con impulso de cadera y trapecio, y el deltoides anterior ya recibe mucho trabajo en todos los press.",
+            when: "Al final del entreno de hombro, 2-3 series de 8-10 repeticiones con tempo lento.",
+            whenNot: "Si acumulas mucho press en la semana o hay molestia en la inserción anterior del hombro."
+        ),
+        make(
+            keywords: ["reverse fly", "pajaros", "aperturas inversas", "deltoide posterior", "rear delt", "posterior fly"],
             primary: [.rearShoulders],
             secondary: [.upperBack],
             compound: false,
             straps: false,
-            reps: "12-20",
+            reps: "8-10",
             good: "Aísla el deltoides posterior con tensión constante desde el cruce, clave para equilibrar el hombro y mejorar la postura tras mucho press.",
             bad: "Las cargas son muy ligeras y es fácil compensar con trapecio; si se eleva el codo de más, el rango útil se acorta.",
-            when: "Al final del entreno de tirón o de hombro, 3 series de 12-20 reps con pausa en la apertura.",
+            when: "Al final del entreno de tirón o de hombro, 3 series de 8-10 repeticiones con pausa en la apertura.",
             whenNot: "Con dolor en la inserción posterior del hombro o cuando la prioridad es el deltoides medio."
         ),
         make(
@@ -364,26 +470,38 @@ public enum ExerciseKnowledgeService {
             secondary: [.upperBack, .forearms],
             compound: false,
             straps: false,
-            reps: "15-20",
+            reps: "8-10",
             good: "Combina rotación externa y retracción escapular, un patrón que equilibra el trabajo de press y protege la articulación del hombro.",
             bad: "La carga es muy ligera y se puede ejecutar con el trapecio alto en vez del deltoides posterior, acumulando tensión cervical.",
-            when: "Al final de empuje o tirón, 2-3 series de 15-20 reps como trabajo correctivo.",
-            whenNot: "Si necesitas fuerza o hipertrofia como objetivo principal: es un ejercicio de salud articular, no el motor del bloque."
+            when: "Al final de empuje o tirón, 2-3 series de 8-10 repeticiones como trabajo de salud articular.",
+            whenNot: "Si necesitas fuerza o hipertrofia como objetivo principal: es un ejercicio complementario."
         )
     ]
 
     private static let pullProfiles: [ExerciseKnowledgeProfile] = [
         make(
-            keywords: ["jalon", "pulldown", "pull down", "pull-down", "traccion vertical"],
-            primary: [.lats],
-            secondary: [.biceps, .upperBack, .rearShoulders],
+            keywords: ["remo al menton", "upright row"],
+            primary: [.upperBack],
+            secondary: [.frontShoulders, .biceps],
+            compound: false,
+            straps: false,
+            reps: "8-10",
+            good: "Estímulo directo del trapecio y del deltoides lateral en un recorrido corto que permite acumular tensión en la espalda alta.",
+            bad: "Con agarre estrecho y tirón hasta la barbilla la rotación interna del hombro puede generar pinzamiento subacromial.",
+            when: "Al final de la sesión de hombro o espalda, 2-3 series de 8-10 repeticiones con agarre amplio.",
+            whenNot: "Con pinzamiento de hombro o si el rango sube por encima de la clavícula."
+        ),
+        make(
+            keywords: ["remo pendlay", "pendlay", "remo con pecho apoyado", "remo en maquina", "remo maquina", "remo apoyado", "seated row", "remo sentado"],
+            primary: [.upperBack],
+            secondary: [.lats, .biceps, .rearShoulders],
             compound: true,
             straps: true,
-            reps: "8-12",
-            good: "Trabaja el dorsal en aducción desde un estiramiento largo y con tensión mantenida: excelente para acumular volumen de espalda sin cargar la lumbar.",
-            bad: "Si se convierte en un remo hacia atrás con balanceo, el dorsal pierde tensión; además el bíceps y los flexores del antebrazo limitan antes que la espalda.",
-            when: "Como primer ejercicio de tirón vertical (6-10 reps) o al final de la sesión para acumular volumen.",
-            whenNot: "Con molestia de hombro en abducción alta o sin control escapular para iniciar el tirón."
+            reps: "6-8",
+            good: "La espalda media trabaja con el torso estabilizado, lo que permite tirar cerca del fallo con un recorrido estable y una gran conexión con el dorsal.",
+            bad: "El soporte reduce la demanda de estabilizadores y la trayectoria fija puede no coincidir con tu anatomía, limitando el rango útil.",
+            when: "Como segundo ejercicio de espalda o al inicio si priorizas espalda alta, en 6-8 repeticiones con descansos de 2 minutos.",
+            whenNot: "Si buscas transferencia a patrones libres o hay molestia en el hombro posterior con la máquina."
         ),
         make(
             keywords: ["dominadas", "pull up", "pull-up", "tracciones en barra"],
@@ -391,34 +509,46 @@ public enum ExerciseKnowledgeService {
             secondary: [.biceps, .upperBack, .rearShoulders],
             compound: true,
             straps: true,
-            reps: "5-10",
+            reps: "6-8",
             good: "Ejercicio de tracción con peso corporal que combina dorsal, espalda media y agarre con una gran transferencia a la fuerza relativa.",
             bad: "El agarre falla antes que la espalda y la técnica se degrada al final de la serie; sin control escapular el hombro se lleva el esfuerzo.",
-            when: "Al inicio de la sesión de espalda, en series de 5-10 reps o con lastre en bloques de fuerza.",
+            when: "Al inicio de la sesión de espalda, en 6-8 repeticiones o con lastre en bloques de fuerza.",
             whenNot: "Si aún no puedes dominar el rango completo sin balanceo o con molestias de codo y hombro."
         ),
         make(
-            keywords: ["remo en maquina", "remo maquina", "remo sentado", "seated row", "remo polea"],
-            primary: [.upperBack],
-            secondary: [.lats, .biceps, .rearShoulders],
+            keywords: ["jalon", "pulldown", "pull down", "pull-down", "traccion vertical"],
+            primary: [.lats],
+            secondary: [.biceps, .upperBack, .rearShoulders],
             compound: true,
             straps: true,
-            reps: "8-15",
-            good: "El soporte del torso elimina la demanda lumbar y permite acercarse al fallo con un recorrido estable y tensión constante en la espalda media.",
-            bad: "El trabajo de estabilizadores es bajo y la trayectoria fija puede no coincidir con tu anatomía, limitando el rango útil del dorsal.",
-            when: "Como segundo ejercicio de espalda o al final, en 8-15 reps buscando volumen con buena conexión.",
-            whenNot: "Si buscas transferencia a patrones libres o hay molestia en el hombro posterior con la máquina."
+            reps: "6-8",
+            good: "Trabaja el dorsal en aducción desde un estiramiento largo y con tensión mantenida: excelente para acumular volumen de espalda sin cargar la lumbar.",
+            bad: "Si se convierte en un remo hacia atrás con balanceo, el dorsal pierde tensión; además el bíceps limita antes que la espalda.",
+            when: "Como primer ejercicio de tirón vertical, en 6-8 repeticiones buscando carga progresiva.",
+            whenNot: "Con molestia de hombro en abducción alta o sin control escapular para iniciar el tirón."
+        ),
+        make(
+            keywords: ["pullover"],
+            primary: [.lats],
+            secondary: [.chest, .triceps],
+            compound: false,
+            straps: false,
+            reps: "8-10",
+            good: "Lleva el dorsal a un estiramiento máximo con el brazo casi extendido, un perfil de tensión que ningún remo o jalón alcanza.",
+            bad: "El recorrido sobre la cabeza exige movilidad de hombro y es fácil convertirlo en un pullover de tríceps si el codo se flexiona.",
+            when: "Al final de la sesión de espalda, 2-3 series de 8-10 repeticiones con control del estiramiento.",
+            whenNot: "Con movilidad de hombro limitada o molestia en la cápsula anterior."
         ),
         make(
             keywords: ["remo", "row"],
-            primary: [.upperBack],
-            secondary: [.lats, .biceps, .rearShoulders, .lowerBack],
+            primary: [.lats],
+            secondary: [.upperBack, .biceps, .rearShoulders, .lowerBack],
             compound: true,
             straps: true,
-            reps: "6-10",
-            good: "Carga alta en el plano horizontal con gran estímulo para espalda media y dorsal, y buena transferencia a la fuerza general y a la postura.",
+            reps: "6-8",
+            good: "Carga alta en el plano horizontal con gran estímulo para dorsal y espalda media, y buena transferencia a la fuerza general y a la postura.",
             bad: "La demanda lumbar es alta: cuando la técnica falla, la columna absorbe el esfuerzo. Además el bíceps y el agarre suelen limitar antes que la espalda.",
-            when: "Al inicio de la sesión de espalda, en 5-10 reps con el torso estable y descansos de 2 minutos.",
+            when: "Al inicio de la sesión de espalda, en 6-8 repeticiones con el torso estable y descansos de 2 minutos.",
             whenNot: "Con fatiga lumbar acumulada, dolor discal o si no puedes mantener la bisagra de cadera sin redondear la espalda."
         ),
         make(
@@ -427,35 +557,47 @@ public enum ExerciseKnowledgeService {
             secondary: [.forearms],
             compound: false,
             straps: true,
-            reps: "10-15",
+            reps: "8-10",
             good: "Estímulo directo del trapecio superior con un recorrido corto que admite mucha carga y progresión sencilla.",
             bad: "El rango es corto y se compensa fácilmente con rotación de hombro; el exceso de trapecio superior sin trabajo escapular puede empeorar la postura.",
-            when: "Al final de la sesión de espalda u hombro, 2-3 series de 10-15 reps con pausa arriba.",
+            when: "Al final de la sesión de espalda u hombro, 2-3 series de 8-10 repeticiones con pausa arriba.",
             whenNot: "Con cervicobraquialgia o tensión cervical alta, donde el trabajo de trapecio superior añade síntomas."
         ),
         make(
-            keywords: ["peso muerto rumano", "rumano", "rdl", "romanian deadlift", "stiff leg"],
+            keywords: ["peso muerto rumano", "rumano", "rdl", "romanian deadlift", "stiff leg", "piernas rigidas"],
             primary: [.hamstrings],
             secondary: [.glutes, .lowerBack, .upperBack],
             compound: true,
             straps: true,
-            reps: "6-10",
+            reps: "6-8",
             good: "Excelente bisagra de cadera para isquios y glúteo en estiramiento con cargas altas y una transferencia directa a la fuerza posterior.",
             bad: "Si la barra se aleja del cuerpo o la lumbar se redondea, la carga se traslada a la columna; el agarre suele fallar antes que los isquios, de ahí el uso de straps.",
-            when: "Como primer ejercicio de femoral, en 6-10 reps con descansos de 2-3 minutos.",
+            when: "Como primer ejercicio de femoral, en 6-8 repeticiones con descansos de 2-3 minutos.",
             whenNot: "Con fatiga lumbar acumulada, isquios acortados con molestia o sin control de la bisagra de cadera."
         ),
         make(
             keywords: ["peso muerto", "deadlift"],
-            primary: [.glutes],
-            secondary: [.hamstrings, .lowerBack, .upperBack, .forearms],
+            primary: [.lowerBack],
+            secondary: [.glutes, .hamstrings, .upperBack, .forearms],
             compound: true,
             straps: true,
-            reps: "3-6",
-            good: "El ejercicio con mayor producción de fuerza total: recluta glúteo, isquios y espalda en un patrón que transfiere a casi todo lo demás.",
+            reps: "6-8",
+            good: "El ejercicio con mayor producción de fuerza total: recluta erectores, glúteo e isquios en un patrón que transfiere a casi todo lo demás.",
             bad: "La fatiga sistémica y el estrés lumbar son máximos; un fallo técnico o un exceso de volumen comprometen la recuperación de toda la semana.",
-            when: "Al inicio de la sesión, en bloques de fuerza de 3-6 reps y con descansos de 3 minutos o más.",
+            when: "Al inicio de la sesión, en bloques de fuerza de 6-8 repeticiones y con descansos de 3 minutos o más.",
             whenNot: "Con molestias lumbares, técnica inestable o si acumulas mucho volumen de bisagra en la misma semana."
+        ),
+        make(
+            keywords: ["hiperextension", "banco romano", "extension lumbar", "back extension", "good morning", "extension de espalda"],
+            primary: [.lowerBack],
+            secondary: [.glutes, .hamstrings],
+            compound: false,
+            straps: false,
+            reps: "8-10",
+            good: "Refuerza erectores y glúteo con un patrón de extensión de cadera que protege la lumbar en el resto de la sesión.",
+            bad: "Si se hiperextiende la columna al final del recorrido, el estrés se concentra en la lumbar sin ganancia extra y aumenta el riesgo de molestia.",
+            when: "Como calentamiento específico o al final de piernas y espalda, con 2-3 series de 8-10 repeticiones controladas.",
+            whenNot: "Con dolor lumbar agudo o inmediatamente después de un peso muerto pesado."
         )
     ]
 
@@ -466,22 +608,22 @@ public enum ExerciseKnowledgeService {
             secondary: [.calves],
             compound: false,
             straps: false,
-            reps: "8-15",
+            reps: "8-10",
             good: "Es el único patrón que flexiona la rodilla contra resistencia y trabaja los isquios en acortamiento, complementando el estímulo del peso muerto rumano.",
             bad: "El pico de tensión llega en la flexión y el estiramiento queda poco cargado; con el pie en flexión plantar el gemelo se lleva parte del trabajo.",
-            when: "Después del trabajo de bisagra, 3 series de 8-15 reps con control excéntrico de 2-3 segundos.",
+            when: "Después del trabajo de bisagra, 3 series de 8-10 repeticiones con control excéntrico de 2-3 segundos.",
             whenNot: "Con molestia en la parte posterior de la rodilla o tendinopatía de isquios en fase aguda."
         ),
         make(
-            keywords: ["extension de cuadriceps", "extension de quadriceps", "leg extension", "extension de piernas", "extension de cuadricep"],
+            keywords: ["extension de cuadriceps", "extension de quadriceps", "leg extension", "extension de piernas"],
             primary: [.quads],
             secondary: [],
             compound: false,
             straps: false,
-            reps: "10-15",
+            reps: "8-10",
             good: "Aísla el cuádriceps con tensión constante en la extensión y permite acumular volumen cuando la sentadilla ya no es de calidad.",
             bad: "Genera fuerzas de cizallamiento sobre la rótula y poca transferencia a patrones multiarticulares; el rango final suele completarse por inercia.",
-            when: "Al final de la sesión de pierna, 3 series de 10-15 reps con pausa de un segundo en la extensión.",
+            when: "Al final de la sesión de pierna, 3 series de 8-10 repeticiones con pausa de un segundo en la extensión.",
             whenNot: "Con dolor patelofemoral o tras un gran volumen de sentadillas y prensa con la rodilla irritada."
         ),
         make(
@@ -490,10 +632,10 @@ public enum ExerciseKnowledgeService {
             secondary: [.glutes, .hamstrings, .adductors, .lowerBack],
             compound: true,
             straps: false,
-            reps: "6-10",
+            reps: "6-8",
             good: "El patrón de sentadilla con carga desarrolla cuádriceps y glúteo con el mayor estímulo sistémico y la mejor transferencia global de pierna.",
             bad: "Es muy demandante: la técnica se degrada con la fatiga y la lumbar o la rodilla absorben el fallo antes que el músculo objetivo.",
-            when: "Al inicio de la sesión de pierna, en 5-10 reps con descansos largos y la rodilla bien alineada.",
+            when: "Al inicio de la sesión de pierna, en 6-8 repeticiones con descansos largos y la rodilla bien alineada.",
             whenNot: "Con fatiga acumulada, dolor lumbar o de rodilla, o como último ejercicio de una sesión ya larga."
         ),
         make(
@@ -502,22 +644,22 @@ public enum ExerciseKnowledgeService {
             secondary: [.hamstrings, .lowerBack],
             compound: true,
             straps: false,
-            reps: "8-12",
+            reps: "6-8",
             good: "Maximiza la tensión del glúteo en su rango de máxima contracción (extensión de cadera) con una demanda lumbar muy controlada.",
             bad: "El rango útil es corto y es fácil compensar con la lumbar o con los isquios si se empuja con los pies demasiado lejos.",
-            when: "Como primer ejercicio de glúteo, en 8-12 reps con pausa de un segundo arriba.",
+            when: "Como primer ejercicio de glúteo, en 6-8 repeticiones con pausa de un segundo arriba.",
             whenNot: "Con molestia en la cadera anterior o si no puedes mantener la pelvis neutra en la extensión."
         ),
         make(
-            keywords: ["patada de gluteo", "patada gluteo", "glute kickback", "kickback de gluteo"],
+            keywords: ["patada de gluteo", "patada gluteo", "glute kickback", "kickback de gluteo", "abduccion", "abductor"],
             primary: [.glutes],
             secondary: [.hamstrings],
             compound: false,
             straps: false,
-            reps: "12-20",
-            good: "Aísla la extensión de cadera con poca fatiga general, útil para acumular volumen de glúteo al final de la sesión.",
-            bad: "El recorrido es corto y la tensión se pierde en el punto de máxima extensión; sin control lumbar es fácil arquear la espalda.",
-            when: "Al final de la sesión de pierna o glúteo, 2-3 series de 12-20 reps por lado.",
+            reps: "8-10",
+            good: "Aísla la extensión o la abducción de cadera con poca fatiga general, útil para acumular volumen de glúteo al final de la sesión.",
+            bad: "El recorrido es corto y la tensión se pierde al final; sin control lumbar es fácil arquear la espalda o compensar con el tensor de la fascia lata.",
+            when: "Al final de la sesión de pierna o glúteo, 2-3 series de 8-10 repeticiones por lado.",
             whenNot: "Si la prioridad es fuerza o hipertrofia con carga alta: aquí el estímulo es limitado."
         ),
         make(
@@ -526,34 +668,22 @@ public enum ExerciseKnowledgeService {
             secondary: [],
             compound: false,
             straps: false,
-            reps: "12-20",
+            reps: "8-10",
             good: "Trabaja el tríceps sural con un rango completo y alta tolerancia al volumen; con la rodilla flexionada se prioriza el sóleo, con la rodilla extendida el gastrocnemio.",
             bad: "El recorrido es corto y muy fácil de rebotar: sin pausa arriba y sin bajar el talón el estímulo se pierde casi por completo.",
-            when: "Al final de la sesión de pierna, 3-4 series de 12-20 reps con pausa de un segundo en la contracción.",
+            when: "Al final de la sesión de pierna, 3-4 series de 8-10 repeticiones con pausa de un segundo en la contracción.",
             whenNot: "Con tendinopatía aquílea en fase irritada o justo antes de un ejercicio que necesite el tobillo estable."
         ),
         make(
-            keywords: ["hiperextension", "extension lumbar", "back extension", "good morning", "extension de espalda"],
-            primary: [.lowerBack],
-            secondary: [.glutes, .hamstrings],
-            compound: true,
-            straps: false,
-            reps: "12-15",
-            good: "Refuerza erectores y glúteo con un patrón de extensión de cadera que protege la lumbar en el resto de la sesión.",
-            bad: "Si se hiperextiende la columna al final del recorrido, el estrés se concentra en la lumbar sin ganancia extra y aumenta el riesgo de molestia.",
-            when: "Como calentamiento específico o al final de piernas y espalda, con 2-3 series de 12-15 reps controladas.",
-            whenNot: "Con dolor lumbar agudo o inmediatamente después de un peso muerto pesado."
-        ),
-        make(
-            keywords: ["aductor", "aductores", "copenhagen", "aduccion de cadera"],
+            keywords: ["aductor", "aductores", "aduccion", "copenhagen"],
             primary: [.adductors],
             secondary: [.quads, .glutes],
             compound: false,
             straps: false,
-            reps: "12-15",
+            reps: "8-10",
             good: "Trabaja el aductor con control, clave para la estabilidad de cadera y para tolerar mejor la sentadilla y los cambios de dirección.",
             bad: "El rango se acorta si no se controla y es fácil cargar en exceso un músculo poco acostumbrado a la tensión directa.",
-            when: "Como accesorio de pierna, 2-3 series de 12-15 reps con progresión lenta semana a semana.",
+            when: "Como accesorio de pierna, 2-3 series de 8-10 repeticiones con progresión lenta semana a semana.",
             whenNot: "Con molestia inguinal aguda o sin haber calentado la cadera."
         )
     ]
@@ -565,19 +695,19 @@ public enum ExerciseKnowledgeService {
             secondary: [.forearms],
             compound: false,
             straps: false,
-            reps: "8-12",
+            reps: "8-10",
             good: "La polea baja por detrás del torso mantiene el bíceps en estiramiento con tensión desde el inicio del recorrido, un perfil muy favorable para hipertrofia.",
             bad: "El rango final es corto y el torso puede balancearse para mover más carga, reduciendo el estímulo real sobre el bíceps.",
-            when: "Como primer o segundo ejercicio de bíceps, en 8-12 reps con tempo controlado.",
+            when: "Como primer o segundo ejercicio de bíceps, en 8-10 repeticiones con tempo controlado.",
             whenNot: "Con molestia en la porción larga del bíceps en estiramiento máximo o si el apoyo fuerza la lumbar."
         ),
         make(
-            keywords: ["spider curl", "curl araña"],
+            keywords: ["spider curl", "curl arana"],
             primary: [.biceps],
             secondary: [.forearms],
             compound: false,
             straps: false,
-            reps: "10-12",
+            reps: "8-10",
             good: "Fija el húmero en posición vertical y concentra el pico de tensión en la flexión máxima, donde el bíceps está más acortado.",
             bad: "El rango de estiramiento es mínimo, así que aporta menos estímulo en longitud larga y limita la ganancia global si es el único curl.",
             when: "Al final del trabajo de bíceps para acumular tensión mecánica con cargas moderadas.",
@@ -589,34 +719,34 @@ public enum ExerciseKnowledgeService {
             secondary: [.forearms],
             compound: false,
             straps: false,
-            reps: "8-12",
+            reps: "8-10",
             good: "El banco predicador elimina el balanceo y aísla el bíceps con una gran tensión en la porción corta durante la flexión.",
             bad: "La fase de estiramiento queda muy cargada y es la posición de mayor riesgo para el tendón distal si se baja sin control.",
-            when: "A mitad del trabajo de bíceps, en 8-12 reps con excéntrica lenta.",
+            when: "A mitad del trabajo de bíceps, en 8-10 repeticiones con excéntrica lenta.",
             whenNot: "Con antecedentes de molestia en el codo o tendinitis distal del bíceps."
         ),
         make(
-            keywords: ["curl martillo", "hammer curl", "curl neutro"],
+            keywords: ["curl martillo", "hammer curl", "curl alterno", "curl neutro"],
             primary: [.biceps],
             secondary: [.forearms],
             compound: false,
             straps: false,
-            reps: "10-12",
+            reps: "8-10",
             good: "El agarre neutro reparte el trabajo entre bíceps y braquial, añadiendo grosor al brazo con menos estrés en la muñeca que el curl supinado.",
             bad: "Al mantener el agarre neutro se pierde parte del estímulo específico de la porción corta del bíceps y se carga menos el pico de contracción.",
-            when: "Después del curl supinado, en 3 series de 10-12 reps como trabajo complementario.",
+            when: "Después del curl supinado, en 3 series de 8-10 repeticiones como trabajo complementario.",
             whenNot: "Si el objetivo es maximizar el bíceps en supinación o hay molestia en el codo."
         ),
         make(
-            keywords: ["curl de muneca", "curl muneca", "antebrazo", "forearm", "wrist curl", "farmer"],
+            keywords: ["curl de muneca", "curl muneca", "curl invertido", "antebrazo", "forearm", "wrist curl", "farmer"],
             primary: [.forearms],
             secondary: [.biceps],
             compound: false,
             straps: false,
-            reps: "15-20",
-            good: "Refuerza los flexores del antebrazo y mejora el agarre, lo que se traduce en mejor rendimiento en remos, dominadas y peso muerto.",
-            bad: "El recorrido es corto y aporta poco a la hipertrofia visible del antebrazo si solo se trabaja la flexión de muñeca.",
-            when: "Al final de la sesión, 2 series de 15-20 reps con pausa breve.",
+            reps: "8-10",
+            good: "Refuerza flexores y extensores del antebrazo y mejora el agarre, lo que se traduce en mejor rendimiento en remos, dominadas y peso muerto.",
+            bad: "El recorrido es corto y aporta poco a la hipertrofia visible del antebrazo si solo se trabaja una de las dos funciones de la muñeca.",
+            when: "Al final de la sesión, 2 series de 8-10 repeticiones con pausa breve.",
             whenNot: "Con epicondilitis, molestia de muñeca o después de un trabajo de agarre ya muy exigente."
         ),
         make(
@@ -625,22 +755,22 @@ public enum ExerciseKnowledgeService {
             secondary: [.forearms],
             compound: false,
             straps: false,
-            reps: "8-12",
+            reps: "8-10",
             good: "Es el estímulo directo más eficiente para el bíceps: la flexión con el brazo en el plano escapular permite cargar tanto la porción corta como la larga.",
             bad: "Con barra recta se fuerza la supinación y puede molestar la muñeca; además es fácil compensar con balanceo del torso y perder tensión.",
-            when: "Al inicio del trabajo de bíceps, 3-4 series de 8-12 reps con tempo controlado.",
+            when: "Al inicio del trabajo de bíceps, 3-4 series de 8-10 repeticiones con tempo controlado.",
             whenNot: "Con dolor de muñeca o codo, o al final del entreno cuando el agarre ya está fatigado."
         ),
         make(
-            keywords: ["pushdown", "extension de triceps", "extension triceps", "triceps", "press frances", "skull", "fondos", "patada de triceps", "kickback"],
+            keywords: ["pushdown", "extension de triceps", "extension triceps", "triceps", "press frances", "skull", "tras nuca", "patada de triceps", "kickback"],
             primary: [.triceps],
             secondary: [.forearms],
             compound: false,
             straps: false,
-            reps: "10-15",
+            reps: "8-10",
             good: "Aísla el tríceps con tensión constante y permite trabajar alto volumen cerca del fallo sin apenas fatiga sistémica.",
             bad: "El cable favorece el pico de tensión en la extensión y relaja el estiramiento; con cargas excesivas se compensa con hombro y torso.",
-            when: "Al final del entreno de empuje para completar el volumen de tríceps con 2-3 series de 10-15 reps.",
+            when: "Al final del entreno de empuje para completar el volumen de tríceps con 2-3 series de 8-10 repeticiones.",
             whenNot: "Con dolor de codo en extensión forzada o si buscas el estímulo del tríceps largo estirado, que pide trabajo por encima de la cabeza."
         )
     ]
@@ -652,14 +782,14 @@ public enum ExerciseKnowledgeService {
             secondary: [.lowerBack],
             compound: false,
             straps: false,
-            reps: "12-20",
+            reps: "8-10",
             good: "Trabaja la flexión y la anti-extensión del tronco con un coste sistémico bajo, útil para reforzar el core sin interferir con el resto de la sesión.",
             bad: "El rango es corto y es fácil tirar del cuello o usar inercia; sin control del tempo el estímulo real es muy bajo.",
-            when: "Al final de cualquier sesión, 2-3 series de 12-20 reps o isométricos de 30-45 segundos.",
+            when: "Al final de cualquier sesión, 2-3 series de 8-10 repeticiones o isométricos de 30-45 segundos.",
             whenNot: "Con dolor cervical o lumbar agudo, o justo antes de levantamientos pesados que necesitan el core fresco."
         )
     ]
 
     private static let allProfiles: [ExerciseKnowledgeProfile] =
-        pressProfiles + pullProfiles + legProfiles + armProfiles + coreProfiles
+        specificProfiles + pressProfiles + pullProfiles + legProfiles + armProfiles + coreProfiles
 }

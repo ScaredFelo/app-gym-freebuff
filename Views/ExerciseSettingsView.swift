@@ -65,6 +65,9 @@ struct ExerciseSettingsView: View {
                         Text("Aislamiento").tag(false)
                     }
                     .pickerStyle(.segmented)
+                    .onChange(of: isCompound) { _, newValue in
+                        applyDefaultTargetRepsIfNeeded(for: newValue)
+                    }
 
                     Toggle("Requiere Straps", isOn: $requiresStraps)
                 }
@@ -176,11 +179,37 @@ struct ExerciseSettingsView: View {
         notes = exercise.notes
     }
 
+    /// Si el rango actual es uno de los valores por defecto, al cambiar entre
+    /// Complejo y Aislamiento se aplica el objetivo global 6-8 / 8-10.
+    private func applyDefaultTargetRepsIfNeeded(for isCompound: Bool) {
+        guard exercise.hasDefaultTargetReps else { return }
+        let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: isCompound)
+        exercise.targetRepsMin = range.min
+        exercise.targetRepsMax = range.max
+    }
+
     private func saveChanges() {
+        let selectedGroup: MuscleGroup = exercise.muscleGroup
+        var resolvedPrimary: [MuscleGroup] = primaryMuscles
+
+        if let first: MuscleGroup = resolvedPrimary.first {
+            if first != selectedGroup {
+                resolvedPrimary.removeAll { (muscle: MuscleGroup) -> Bool in
+                    return muscle == selectedGroup
+                }
+                resolvedPrimary.insert(selectedGroup, at: 0)
+            }
+        } else {
+            resolvedPrimary = [selectedGroup]
+        }
+
         exercise.isCompound = isCompound
         exercise.requiresStraps = requiresStraps
-        exercise.primaryMuscles = primaryMuscles
-        exercise.secondaryMuscles = secondaryMuscles
+        // El setter sincroniza el grupo muscular objetivo con el primero.
+        exercise.primaryMuscles = resolvedPrimary
+        exercise.secondaryMuscles = secondaryMuscles.filter { (muscle: MuscleGroup) -> Bool in
+            return !resolvedPrimary.contains(muscle)
+        }
         exercise.whyGoodExercise = whyGoodExercise
         exercise.whyBadExercise = whyBadExercise
         exercise.whenRecommended = whenRecommended

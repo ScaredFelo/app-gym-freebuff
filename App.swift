@@ -29,6 +29,7 @@ struct AppGymApp: App {
                 .onAppear {
                     let context = container.mainContext
                     MockDataGenerator.seedIfNeeded(context: context)
+                    ExerciseKnowledgeService.migrateExistingExercisesIfNeeded(context: context)
                 }
         }
         .modelContainer(container)

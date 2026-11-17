@@ -8,8 +8,8 @@ public final class Exercise {
     public var muscleGroupRaw: String
     public var equipmentTypeRaw: String
     public var requiresStraps: Bool
-    public var targetRepsMin: Int = 8
-    public var targetRepsMax: Int = 12
+    public var targetRepsMin: Int = 6
+    public var targetRepsMax: Int = 8
     public var defaultRestConditionData: Data
 
     // MARK: - Conocimiento biomecánico (retrocompatible con datos antiguos)
@@ -29,6 +29,46 @@ public final class Exercise {
 
     @Relationship(deleteRule: .cascade, inverse: \WorkoutSetLog.exercise)
     public var logs: [WorkoutSetLog] = []
+
+    // MARK: - Regla global de repeticiones objetivo
+
+    /// Rango objetivo de los ejercicios complejos.
+    public static let compoundTargetReps: (min: Int, max: Int) = (min: 6, max: 8)
+    /// Rango objetivo de los ejercicios de aislamiento.
+    public static let isolationTargetReps: (min: Int, max: Int) = (min: 8, max: 10)
+
+    public static func defaultTargetReps(for isCompound: Bool) -> (min: Int, max: Int) {
+        return isCompound ? Exercise.compoundTargetReps : Exercise.isolationTargetReps
+    }
+
+    /// Rango que impone la regla global según el tipo de movimiento.
+    public var ruleTargetReps: (min: Int, max: Int) {
+        return Exercise.defaultTargetReps(for: isCompound)
+    }
+
+    /// `true` si el rango guardado coincide con alguno de los valores por
+    /// defecto (el actual o el antiguo `8-12`).
+    public var hasDefaultTargetReps: Bool {
+        if targetRepsMin == 6 && targetRepsMax == 8 {
+            return true
+        }
+        if targetRepsMin == 8 && targetRepsMax == 10 {
+            return true
+        }
+        if targetRepsMin == 8 && targetRepsMax == 12 {
+            return true
+        }
+        return false
+    }
+
+    /// Aplica el rango de la regla global sin tocar el tipo de movimiento.
+    public func applyDefaultTargetReps() {
+        let range: (min: Int, max: Int) = ruleTargetReps
+        targetRepsMin = range.min
+        targetRepsMax = range.max
+    }
+
+    // MARK: - Propiedades derivadas
 
     @Transient
     public var muscleGroup: MuscleGroup {
@@ -57,10 +97,18 @@ public final class Exercise {
         "\(targetRepsMin)-\(targetRepsMax)"
     }
 
+    /// Los músculos principales mantienen sincronizado el grupo muscular
+    /// objetivo (el primero de la lista) con el que se filtran y agrupan los
+    /// ejercicios en toda la app.
     @Transient
     public var primaryMuscles: [MuscleGroup] {
         get { MuscleGroup.decodeList(primaryMusclesRaw) }
-        set { primaryMusclesRaw = MuscleGroup.encodeList(newValue) }
+        set {
+            primaryMusclesRaw = MuscleGroup.encodeList(newValue)
+            if let first: MuscleGroup = newValue.first {
+                muscleGroupRaw = first.rawValue
+            }
+        }
     }
 
     @Transient
@@ -75,8 +123,8 @@ public final class Exercise {
         muscleGroup: MuscleGroup,
         equipmentType: EquipmentType = .olympicBar,
         requiresStraps: Bool = false,
-        targetRepsMin: Int = 8,
-        targetRepsMax: Int = 12,
+        targetRepsMin: Int? = nil,
+        targetRepsMax: Int? = nil,
         defaultRestCondition: RestCondition = .timer(seconds: 90),
         isCompound: Bool = true,
         primaryMuscles: [MuscleGroup] = [],
@@ -92,9 +140,14 @@ public final class Exercise {
         self.muscleGroupRaw = muscleGroup.rawValue
         self.equipmentTypeRaw = equipmentType.rawValue
         self.requiresStraps = requiresStraps
-        let lower = max(1, min(targetRepsMin, targetRepsMax))
+
+        let ruleRange: (min: Int, max: Int) = Exercise.defaultTargetReps(for: isCompound)
+        let requestedMin: Int = targetRepsMin ?? ruleRange.min
+        let requestedMax: Int = targetRepsMax ?? ruleRange.max
+        let lower: Int = max(1, min(requestedMin, requestedMax))
         self.targetRepsMin = lower
-        self.targetRepsMax = max(lower, targetRepsMax)
+        self.targetRepsMax = max(lower, requestedMax)
+
         self.defaultRestConditionData = (try? JSONEncoder().encode(defaultRestCondition)) ?? Data()
         self.isCompound = isCompound
         self.primaryMusclesRaw = MuscleGroup.encodeList(primaryMuscles)
@@ -104,5 +157,9 @@ public final class Exercise {
         self.whenRecommended = whenRecommended
         self.whenNotRecommended = whenNotRecommended
         self.notes = notes
+
+        if let firstMuscle: MuscleGroup = primaryMuscles.first {
+            self.muscleGroupRaw = firstMuscle.rawValue
+        }
     }
 }

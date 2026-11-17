@@ -164,9 +164,10 @@ public struct AddExerciseView: View {
     @State private var name = ""
     @State private var muscleGroup: MuscleGroup = .chest
     @State private var equipmentType: EquipmentType = .dumbbell
+    @State private var isCompound: Bool = true
     @State private var requiresStraps = false
-    @State private var targetRepsMin = 8
-    @State private var targetRepsMax = 12
+    @State private var targetRepsMin = 6
+    @State private var targetRepsMax = 8
     @State private var restSeconds = 90
     @State private var useBpmDrop = false
     @State private var targetBpm = 110
@@ -185,6 +186,14 @@ public struct AddExerciseView: View {
                         ForEach(EquipmentType.allCases) { eq in
                             Text(eq.rawValue).tag(eq)
                         }
+                    }
+                    Picker("Tipo de movimiento", selection: $isCompound) {
+                        Text("Complejo").tag(true)
+                        Text("Aislamiento").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: isCompound) { _, newValue in
+                        applyDefaultTargetReps(for: newValue)
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Reps objetivo: \(targetRepsMin) - \(targetRepsMax) reps")
@@ -230,7 +239,9 @@ public struct AddExerciseView: View {
                             requiresStraps: requiresStraps,
                             targetRepsMin: targetRepsMin,
                             targetRepsMax: targetRepsMax,
-                            defaultRestCondition: restCondition
+                            defaultRestCondition: restCondition,
+                            isCompound: isCompound,
+                            primaryMuscles: [muscleGroup]
                         )
                         modelContext.insert(newExercise)
                         try? modelContext.save()
@@ -240,5 +251,17 @@ public struct AddExerciseView: View {
                 }
             }
         }
+    }
+
+    /// Mantiene la regla global 6-8 / 8-10 mientras el usuario no haya
+    /// personalizado el rango de repeticiones.
+    private func applyDefaultTargetReps(for isCompound: Bool) {
+        let isDefaultRange: Bool = (targetRepsMin == 6 && targetRepsMax == 8)
+            || (targetRepsMin == 8 && targetRepsMax == 10)
+        guard isDefaultRange else { return }
+
+        let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: isCompound)
+        targetRepsMin = range.min
+        targetRepsMax = range.max
     }
 }
