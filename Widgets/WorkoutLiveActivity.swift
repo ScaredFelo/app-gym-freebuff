@@ -139,30 +139,37 @@ struct LiveActivityTimerTextView: View {
     let window: LiveActivityRestWindow
     let font: Font
     let tint: Color
+    /// Centra la cuenta atrás en el ancho disponible. El dial circular lo deja
+    /// activo para que el reloj quede centrado en el anillo; la vista compacta
+    /// lo desactiva para conservar su alineación a la izquierda.
+    var centersText: Bool = true
+
+    private var textAlignment: Alignment {
+        return centersText ? Alignment.center : Alignment.leading
+    }
+
+    /// `Text(timerInterval:)` se expande al ancho propuesto por defecto: en el
+    /// dial lo limitamos y centramos explícitamente; en la compacta dejamos que
+    /// el texto mida su ancho natural.
+    private var textMaxWidth: CGFloat? {
+        return centersText ? CGFloat.infinity : nil
+    }
 
     var body: some View {
-        if window.isRunning {
-            // `Text(timerInterval:)` se expande al ancho propuesto por defecto:
-            // centramos explícitamente para que no quede pegado al borde
-            // izquierdo del anillo.
-            Text(timerInterval: window.range, countsDown: true, showsHours: false)
-                .font(font)
-                .monospacedDigit()
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity, alignment: .center)
-        } else {
-            Text("00:00")
-                .font(font)
-                .monospacedDigit()
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity, alignment: .center)
+        Group {
+            if window.isRunning {
+                Text(timerInterval: window.range, countsDown: true, showsHours: false)
+            } else {
+                Text("00:00")
+            }
         }
+        .font(font)
+        .monospacedDigit()
+        .foregroundStyle(tint)
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
+        .multilineTextAlignment(centersText ? TextAlignment.center : TextAlignment.leading)
+        .frame(maxWidth: textMaxWidth, alignment: textAlignment)
     }
 }
 
@@ -284,10 +291,13 @@ struct CompactRestTimerView: View {
         HStack(spacing: 4) {
             LiveActivityTimerRingView(window: window, diameter: 18, lineWidth: 2.5)
 
+            // Compacta: el reloj no se centra, mantiene su ancho natural
+            // pegado a la izquierda junto al anillo pequeño.
             LiveActivityTimerTextView(
                 window: window,
                 font: .system(size: 12, weight: .semibold, design: .monospaced),
-                tint: LiveActivityTheme.timer
+                tint: LiveActivityTheme.timer,
+                centersText: false
             )
             .frame(minWidth: 28, maxWidth: 40, alignment: .leading)
         }

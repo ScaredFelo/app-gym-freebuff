@@ -55,6 +55,8 @@ targets:
         UIBackgroundModes:
           - processing
           - audio
+          - bluetooth-central
+          - workout-processing
         NSBluetoothAlwaysUsageDescription: "AppGym requiere acceso a Bluetooth para conectar con el sensor de pulso cardíaco."
         NSBluetoothPeripheralUsageDescription: "AppGym requiere acceso a Bluetooth para conectar con el sensor de pulso cardíaco."
         NSHealthShareUsageDescription: "Necesitamos acceder a tus pulsaciones para mostrar tu frecuencia cardíaca en el temporizador."
