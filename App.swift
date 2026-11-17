@@ -30,6 +30,8 @@ struct AppGymApp: App {
                     let context = container.mainContext
                     MockDataGenerator.seedIfNeeded(context: context)
                     ExerciseKnowledgeService.migrateExistingExercisesIfNeeded(context: context)
+                    ExerciseKnowledgeService.alignStrapsWithKnowledgeIfNeeded(context: context)
+                    MockDataGenerator.seedMissingCatalogExercisesIfNeeded(context: context)
                 }
         }
         .modelContainer(container)

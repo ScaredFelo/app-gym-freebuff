@@ -84,7 +84,8 @@ public enum ExerciseKnowledgeService {
             return !primary.contains(muscle)
         }
         let isCompound: Bool = hasStoredKnowledge ? exercise.isCompound : inferred.isCompound
-        let requiresStraps: Bool = exercise.requiresStraps || (!hasStoredKnowledge && inferred.requiresStraps)
+        // El perfil manda por defecto; una elección manual del usuario manda siempre.
+        let requiresStraps: Bool = exercise.hasCustomRequiresStraps ? exercise.requiresStraps : inferred.requiresStraps
 
         return ResolvedExerciseInfo(
             primaryMuscles: primary,
@@ -114,30 +115,7 @@ public enum ExerciseKnowledgeService {
 
         for exercise in exercises {
             let inferred: ResolvedExerciseInfo = inferredInfo(for: exercise)
-
-            let primary: [MuscleGroup] = inferred.primaryMuscles
-            exercise.primaryMuscles = primary
-            exercise.secondaryMuscles = inferred.secondaryMuscles
-            exercise.isCompound = inferred.isCompound
-
-            // `requiresStraps`, notas, equipamiento y descanso se conservan:
-            // la migración no toca configuración hecha por el usuario.
-            let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: inferred.isCompound)
-            exercise.targetRepsMin = range.min
-            exercise.targetRepsMax = range.max
-
-            if exercise.whyGoodExercise.isEmpty {
-                exercise.whyGoodExercise = inferred.whyGoodExercise
-            }
-            if exercise.whyBadExercise.isEmpty {
-                exercise.whyBadExercise = inferred.whyBadExercise
-            }
-            if exercise.whenRecommended.isEmpty {
-                exercise.whenRecommended = inferred.whenRecommended
-            }
-            if exercise.whenNotRecommended.isEmpty {
-                exercise.whenNotRecommended = inferred.whenNotRecommended
-            }
+            apply(inferred, to: exercise, overwriteTexts: false)
         }
 
         do {
@@ -148,34 +126,110 @@ public enum ExerciseKnowledgeService {
         }
     }
 
+    /// Bandera de la alineación del aviso de straps con la base de conocimiento.
+    public static let strapsAlignmentFlagKey: String = "didAlignExerciseStraps_v1"
+
+    /// Alinea `requiresStraps` con el perfil para los ejercicios que el usuario
+    /// nunca configuró a mano. Las elecciones manuales no se tocan.
+    @MainActor
+    public static func alignStrapsWithKnowledgeIfNeeded(context: ModelContext) {
+        let defaults: UserDefaults = UserDefaults.standard
+        guard !defaults.bool(forKey: strapsAlignmentFlagKey) else { return }
+
+        let descriptor: FetchDescriptor<Exercise> = FetchDescriptor<Exercise>()
+        guard let exercises: [Exercise] = try? context.fetch(descriptor) else { return }
+
+        for exercise in exercises where !exercise.hasCustomRequiresStraps {
+            let inferred: ResolvedExerciseInfo = inferredInfo(for: exercise)
+            exercise.requiresStraps = inferred.requiresStraps
+        }
+
+        do {
+            try context.save()
+            defaults.set(true, forKey: strapsAlignmentFlagKey)
+        } catch {
+            print("Error alineando los straps: \(error)")
+        }
+    }
+
+    /// Reaplica el perfil por nombre, incluidos los textos biomecánicos.
+    @MainActor
+    public static func refreshKnowledge(for exercise: Exercise) {
+        let inferred: ResolvedExerciseInfo = inferredInfo(for: exercise)
+        apply(inferred, to: exercise, overwriteTexts: true)
+    }
+
+    private static func apply(
+        _ info: ResolvedExerciseInfo,
+        to exercise: Exercise,
+        overwriteTexts: Bool
+    ) {
+        exercise.primaryMuscles = info.primaryMuscles
+        exercise.secondaryMuscles = info.secondaryMuscles
+        exercise.isCompound = info.isCompound
+
+        if !exercise.hasCustomRequiresStraps {
+            exercise.requiresStraps = info.requiresStraps
+        }
+
+        let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: info.isCompound)
+        exercise.targetRepsMin = range.min
+        exercise.targetRepsMax = range.max
+
+        if overwriteTexts || exercise.whyGoodExercise.isEmpty {
+            exercise.whyGoodExercise = info.whyGoodExercise
+        }
+        if overwriteTexts || exercise.whyBadExercise.isEmpty {
+            exercise.whyBadExercise = info.whyBadExercise
+        }
+        if overwriteTexts || exercise.whenRecommended.isEmpty {
+            exercise.whenRecommended = info.whenRecommended
+        }
+        if overwriteTexts || exercise.whenNotRecommended.isEmpty {
+            exercise.whenNotRecommended = info.whenNotRecommended
+        }
+    }
+
     // MARK: Inferencia
 
-    private static func inferredInfo(for exercise: Exercise) -> ResolvedExerciseInfo {
-        let normalizedName: String = normalize(exercise.name)
+    /// Resuelve el perfil por nombre sin necesitar una instancia de `Exercise`
+    /// (lo usa el catálogo inicial).
+    public static func inferredInfo(
+        named name: String,
+        fallbackGroup: MuscleGroup,
+        equipmentType: EquipmentType
+    ) -> ResolvedExerciseInfo {
+        let normalizedName: String = normalize(name)
 
         if !normalizedName.isEmpty {
             for profile in allProfiles {
                 for keyword in profile.keywords {
                     if normalizedName.contains(keyword) {
-                        return info(from: profile, targetRepsText: exercise.targetRepsText)
+                        return info(from: profile)
                     }
                 }
             }
         }
 
-        return fallbackInfo(for: exercise)
+        return fallbackInfo(primary: fallbackGroup, equipmentType: equipmentType)
     }
 
-    private static func info(
-        from profile: ExerciseKnowledgeProfile,
-        targetRepsText: String
-    ) -> ResolvedExerciseInfo {
+    private static func inferredInfo(for exercise: Exercise) -> ResolvedExerciseInfo {
+        return inferredInfo(
+            named: exercise.name,
+            fallbackGroup: exercise.muscleGroup,
+            equipmentType: exercise.equipmentType
+        )
+    }
+
+    private static func info(from profile: ExerciseKnowledgeProfile) -> ResolvedExerciseInfo {
+        let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: profile.isCompound)
         return ResolvedExerciseInfo(
             primaryMuscles: profile.primaryMuscles,
             secondaryMuscles: profile.secondaryMuscles,
             isCompound: profile.isCompound,
             requiresStraps: profile.requiresStraps,
-            targetRepsText: targetRepsText,
+            targetRepsText: "\(range.min)-\(range.max)",
             whyGoodExercise: profile.whyGoodExercise,
             whyBadExercise: profile.whyBadExercise,
             whenRecommended: profile.whenRecommended,
@@ -183,22 +237,21 @@ public enum ExerciseKnowledgeService {
         )
     }
 
-    private static func fallbackInfo(for exercise: Exercise) -> ResolvedExerciseInfo {
-        let primary: MuscleGroup = exercise.muscleGroup
+    private static func fallbackInfo(primary: MuscleGroup, equipmentType: EquipmentType) -> ResolvedExerciseInfo {
         let secondary: [MuscleGroup] = defaultSecondaryMuscles(for: primary)
         let compound: Bool = compoundGroups.contains(primary)
-        let equipment: EquipmentType = exercise.equipmentType
+        let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: compound)
 
         return ResolvedExerciseInfo(
             primaryMuscles: [primary],
             secondaryMuscles: secondary,
             isCompound: compound,
-            requiresStraps: equipment == .olympicBar && compound,
-            targetRepsText: exercise.targetRepsText,
-            whyGoodExercise: fallbackGoodText(equipment: equipment, compound: compound),
-            whyBadExercise: fallbackBadText(equipment: equipment, compound: compound),
+            requiresStraps: equipmentType == .olympicBar && compound,
+            targetRepsText: "\(range.min)-\(range.max)",
+            whyGoodExercise: fallbackGoodText(equipment: equipmentType, compound: compound),
+            whyBadExercise: fallbackBadText(equipment: equipmentType, compound: compound),
             whenRecommended: fallbackWhenText(compound: compound),
-            whenNotRecommended: fallbackWhenNotText(equipment: equipment, compound: compound)
+            whenNotRecommended: fallbackWhenNotText(equipment: equipmentType, compound: compound)
         )
     }
 
@@ -349,6 +402,18 @@ public enum ExerciseKnowledgeService {
             bad: "Exige una posición de hombro y muñeca muy concreta; si el agarre es demasiado estrecho el codo se resiente y el pectoral se lleva el trabajo.",
             when: "Al inicio del bloque de tríceps o como segundo empuje del día, en 6-8 repeticiones con descansos de 2 minutos.",
             whenNot: "Con molestia en el codo o el hombro en la fase baja, o si aún no controlas la trayectoria del press."
+        ),
+        // "Aperturas inversas" debe resolverse antes que "aperturas" de pecho.
+        make(
+            keywords: ["reverse fly", "pajaros", "aperturas inversas", "deltoide posterior", "rear delt", "posterior fly"],
+            primary: [.rearShoulders],
+            secondary: [.upperBack],
+            compound: false,
+            straps: false,
+            good: "Aísla el deltoides posterior con tensión constante desde el cruce, clave para equilibrar el hombro y mejorar la postura tras mucho press.",
+            bad: "Las cargas son muy ligeras y es fácil compensar con trapecio; si se eleva el codo de más, el rango útil se acorta.",
+            when: "Al final del entreno de tirón o de hombro, 3 series de 8-10 repeticiones con pausa en la apertura.",
+            whenNot: "Con dolor en la inserción posterior del hombro o cuando la prioridad es el deltoides medio."
         )
     ]
 
@@ -440,17 +505,6 @@ public enum ExerciseKnowledgeService {
             bad: "Es fácil compensar con impulso de cadera y trapecio, y el deltoides anterior ya recibe mucho trabajo en todos los press.",
             when: "Al final del entreno de hombro, 2-3 series de 8-10 repeticiones con tempo lento.",
             whenNot: "Si acumulas mucho press en la semana o hay molestia en la inserción anterior del hombro."
-        ),
-        make(
-            keywords: ["reverse fly", "pajaros", "aperturas inversas", "deltoide posterior", "rear delt", "posterior fly"],
-            primary: [.rearShoulders],
-            secondary: [.upperBack],
-            compound: false,
-            straps: false,
-            good: "Aísla el deltoides posterior con tensión constante desde el cruce, clave para equilibrar el hombro y mejorar la postura tras mucho press.",
-            bad: "Las cargas son muy ligeras y es fácil compensar con trapecio; si se eleva el codo de más, el rango útil se acorta.",
-            when: "Al final del entreno de tirón o de hombro, 3 series de 8-10 repeticiones con pausa en la apertura.",
-            whenNot: "Con dolor en la inserción posterior del hombro o cuando la prioridad es el deltoides medio."
         ),
         make(
             keywords: ["face pull"],
@@ -660,15 +714,15 @@ public enum ExerciseKnowledgeService {
 
     private static let armProfiles: [ExerciseKnowledgeProfile] = [
         make(
-            keywords: ["curl bayesiano", "bayesian curl"],
+            keywords: ["curl en mancuerna", "curl con mancuerna", "curl mancuerna", "dumbbell curl"],
             primary: [.biceps],
             secondary: [.forearms],
             compound: false,
             straps: false,
-            good: "La polea baja por detrás del torso mantiene el bíceps en estiramiento con tensión desde el inicio del recorrido, un perfil muy favorable para hipertrofia.",
-            bad: "El rango final es corto y el torso puede balancearse para mover más carga, reduciendo el estímulo real sobre el bíceps.",
-            when: "Como primer o segundo ejercicio de bíceps, en 8-10 repeticiones con tempo controlado.",
-            whenNot: "Con molestia en la porción larga del bíceps en estiramiento máximo o si el apoyo fuerza la lumbar."
+            good: "El curl con mancuerna deja el brazo en el plano escapular y permite supinar de forma progresiva mientras trabaja cada lado por separado, corrigiendo desequilibrios.",
+            bad: "Es fácil impulsar la mancuerna con el torso y, al no fijar la posición del codo, parte de la tensión se reparte con el deltoides anterior.",
+            when: "Como primero o segundo ejercicio de bíceps, en 3-4 series de 8-10 repeticiones con tempo controlado.",
+            whenNot: "Con dolor de codo en supinación forzada o si necesitas mover la máxima carga: la barra aporta más estabilidad."
         ),
         make(
             keywords: ["spider curl", "curl arana"],

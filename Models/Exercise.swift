@@ -26,6 +26,8 @@ public final class Exercise {
     public var whenNotRecommended: String = ""
     /// Notas libres del usuario sobre el ejercicio.
     public var notes: String = ""
+    /// `true` cuando el usuario ha decidido manualmente el aviso de straps.
+    public var hasCustomRequiresStraps: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \WorkoutSetLog.exercise)
     public var logs: [WorkoutSetLog] = []
@@ -121,7 +123,8 @@ public final class Exercise {
         whyBadExercise: String = "",
         whenRecommended: String = "",
         whenNotRecommended: String = "",
-        notes: String = ""
+        notes: String = "",
+        hasCustomRequiresStraps: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -145,6 +148,7 @@ public final class Exercise {
         self.whenRecommended = whenRecommended
         self.whenNotRecommended = whenNotRecommended
         self.notes = notes
+        self.hasCustomRequiresStraps = hasCustomRequiresStraps
 
         if let firstMuscle: MuscleGroup = primaryMuscles.first {
             self.muscleGroupRaw = firstMuscle.rawValue

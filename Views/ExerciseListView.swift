@@ -243,6 +243,13 @@ public struct AddExerciseView: View {
                             isCompound: isCompound,
                             primaryMuscles: [muscleGroup]
                         )
+                        if requiresStraps {
+                            newExercise.hasCustomRequiresStraps = true
+                        } else {
+                            let info: ResolvedExerciseInfo = ExerciseKnowledgeService.resolvedInfo(for: newExercise)
+                            newExercise.requiresStraps = info.requiresStraps
+                            newExercise.secondaryMuscles = info.secondaryMuscles
+                        }
                         modelContext.insert(newExercise)
                         try? modelContext.save()
                         dismiss()

@@ -19,6 +19,7 @@ struct ExerciseSettingsView: View {
     @State private var whenRecommended: String = ""
     @State private var whenNotRecommended: String = ""
     @State private var notes: String = ""
+    @State private var initialRequiresStraps: Bool = false
     @State private var didLoadValues: Bool = false
 
     var body: some View {
@@ -170,6 +171,7 @@ struct ExerciseSettingsView: View {
 
         isCompound = resolved.isCompound
         requiresStraps = resolved.requiresStraps
+        initialRequiresStraps = resolved.requiresStraps
         primaryMuscles = resolved.primaryMuscles
         secondaryMuscles = resolved.secondaryMuscles
         whyGoodExercise = resolved.whyGoodExercise
@@ -204,6 +206,9 @@ struct ExerciseSettingsView: View {
         }
 
         exercise.isCompound = isCompound
+        if requiresStraps != initialRequiresStraps {
+            exercise.hasCustomRequiresStraps = true
+        }
         exercise.requiresStraps = requiresStraps
         // El setter sincroniza el grupo muscular objetivo con el primero.
         exercise.primaryMuscles = resolvedPrimary
