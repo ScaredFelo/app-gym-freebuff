@@ -7,11 +7,25 @@ import SwiftData
 /// (lo habitual: uno en castellano y otro en inglés) y los unifica en un único
 /// registro. Del grupo se conserva el que tiene historial de sesiones y el
 /// resultado queda siempre con el nombre en castellano del catálogo.
+///
+/// Sólo se fusionan dos ejercicios cuando:
+/// - sus nombres están en la tabla explícita del catálogo (`canonicalGroups`) y
+///   apuntan al mismo nombre canónico, o
+/// - sus nombres coinciden al normalizarlos (mayúsculas, acentos y espacios).
+///
+/// No hay traducciones automáticas ni comparaciones por palabras sueltas: un
+/// nombre fuera de la tabla nunca se agrupa con otro distinto.
+///
+/// Antes de renombrar o eliminar nada se escribe una copia de seguridad en
+/// disco con el detalle de los ejercicios afectados (series, rutinas y
+/// registros de sesión) y un resumen legible de la fusión.
 @MainActor
 public enum ExerciseDuplicateService {
 
     /// Bandera de la unificación, para ejecutarla una sola vez por instalación.
-    public static let mergeFlagKey: String = "didMergeDuplicateExercises_v1"
+    public static let mergeFlagKey: String = "didMergeDuplicateExercises_v2"
+    /// Ruta de la última copia de seguridad escrita antes de unificar.
+    public static let backupPathKey: String = "lastExerciseMergeBackupPath_v2"
 
     // MARK: Punto de entrada
 
@@ -24,52 +38,84 @@ public enum ExerciseDuplicateService {
         let descriptor: FetchDescriptor<Exercise> = FetchDescriptor<Exercise>()
         guard let exercises: [Exercise] = try? context.fetch(descriptor) else { return }
 
-        let groups: [String: [Exercise]] = Dictionary(grouping: exercises) { (exercise: Exercise) -> String in
-            return canonicalKey(for: exercise.name)
-        }
-
-        var didChange: Bool = false
-        for group in groups.values {
-            if merge(group: group, context: context) {
-                didChange = true
-            }
-        }
-
-        guard didChange else {
+        let plans: [MergePlan] = makePlans(from: exercises)
+        guard !plans.isEmpty else {
             defaults.set(true, forKey: mergeFlagKey)
             return
+        }
+
+        // La copia de seguridad es obligatoria: si no se puede escribir no se
+        // toca ningún ejercicio y la unificación se reintenta en el arranque
+        // siguiente.
+        guard let backupURL: URL = writeBackup(for: plans, context: context) else {
+            print("Unificación de ejercicios cancelada: no se pudo guardar la copia de seguridad.")
+            return
+        }
+        defaults.set(backupURL.path, forKey: backupPathKey)
+        print("Copia de seguridad de la unificación: \(backupURL.path)")
+
+        for plan in plans {
+            apply(plan, context: context)
         }
 
         do {
             try context.save()
             defaults.set(true, forKey: mergeFlagKey)
         } catch {
-            print("Error unificando ejercicios duplicados: \(error)")
+            print("Error unificando ejercicios duplicados (la copia de seguridad está en \(backupURL.path)): \(error)")
         }
     }
 
-    // MARK: Fusión
+    // MARK: Planes de fusión
 
-    private static func merge(group: [Exercise], context: ModelContext) -> Bool {
-        guard let keeper: Exercise = bestCandidate(in: group) else { return false }
+    private struct MergePlan {
+        let canonicalName: String
+        let keeper: Exercise
+        let targetName: String
+        let duplicates: [Exercise]
+    }
 
-        let targetName: String = displayName(for: keeper.name)
-        var didChange: Bool = false
+    /// Agrupa por clave canónica y devuelve sólo los grupos que cambian algo:
+    /// fusiones reales o renombrados a la forma canónica del catálogo.
+    private static func makePlans(from exercises: [Exercise]) -> [MergePlan] {
+        let groups: [String: [Exercise]] = Dictionary(grouping: exercises) { (exercise: Exercise) -> String in
+            return canonicalKey(for: exercise.name)
+        }
 
+        var plans: [MergePlan] = []
+        for key in groups.keys.sorted() {
+            guard let group: [Exercise] = groups[key],
+                  let keeper: Exercise = bestCandidate(in: group) else { continue }
+
+            let targetName: String = displayName(for: keeper.name)
+            let duplicates: [Exercise] = group.filter { (exercise: Exercise) -> Bool in
+                return exercise !== keeper
+            }
+
+            guard !duplicates.isEmpty || keeper.name != targetName else { continue }
+
+            plans.append(MergePlan(
+                canonicalName: key,
+                keeper: keeper,
+                targetName: targetName,
+                duplicates: duplicates
+            ))
+        }
+
+        return plans
+    }
+
+    private static func apply(_ plan: MergePlan, context: ModelContext) {
         // El nombre en castellano se aplica antes de absorber el resto para que
         // los registros históricos de sesión se reescriban ya con ese nombre.
-        if keeper.name != targetName {
-            keeper.name = targetName
-            ExerciseKnowledgeService.fillMissingKnowledge(for: keeper)
-            didChange = true
+        if plan.keeper.name != plan.targetName {
+            plan.keeper.name = plan.targetName
+            ExerciseKnowledgeService.fillMissingKnowledge(for: plan.keeper)
         }
 
-        for duplicate in group where duplicate !== keeper {
-            absorb(duplicate, into: keeper, context: context)
-            didChange = true
+        for duplicate in plan.duplicates {
+            absorb(duplicate, into: plan.keeper, context: context)
         }
-
-        return didChange
     }
 
     /// Gana el que más series registradas tiene; en empate, el que ya está con
@@ -174,14 +220,251 @@ public enum ExerciseDuplicateService {
         }
     }
 
+    // MARK: Copia de seguridad
+
+    private struct Backup: Codable {
+        let generatedAt: Date
+        let reason: String
+        let totalGroups: Int
+        let totalRemoved: Int
+        let totalLogsMoved: Int
+        let summary: [String]
+        let groups: [BackupGroup]
+    }
+
+    private struct BackupGroup: Codable {
+        let canonicalName: String
+        let keptName: String
+        let finalName: String
+        let kept: BackupExercise
+        let removed: [BackupExercise]
+    }
+
+    private struct BackupExercise: Codable {
+        let id: UUID
+        let name: String
+        let muscleGroup: String
+        let equipment: String
+        let requiresStraps: Bool
+        let hasCustomRequiresStraps: Bool
+        let isCompound: Bool
+        let targetReps: String
+        let primaryMuscles: [String]
+        let secondaryMuscles: [String]
+        let notes: String
+        let logs: [BackupLog]
+        let routines: [BackupRoutineEntry]
+        let sessionRecords: [BackupSessionRecord]
+    }
+
+    private struct BackupLog: Codable {
+        let id: UUID
+        let date: Date
+        let weight: Double
+        let reps: Int
+        let setNumber: Int?
+        let isCompleted: Bool
+        let sessionID: UUID?
+    }
+
+    private struct BackupRoutineEntry: Codable {
+        let routineID: UUID
+        let routineName: String
+        let defaultSets: Int
+        let targetRepsMin: Int
+        let targetRepsMax: Int
+        let sortOrder: Int
+        let defaultWeight: Double
+    }
+
+    private struct BackupSessionRecord: Codable {
+        let sessionID: UUID
+        let startDate: Date
+        let recordID: UUID
+        let exerciseName: String
+        let sets: Int
+    }
+
+    /// Escribe la copia de seguridad (JSON con todo el detalle y TXT con el
+    /// resumen) y devuelve la ruta del JSON, o `nil` si no se pudo guardar.
+    private static func writeBackup(for plans: [MergePlan], context: ModelContext) -> URL? {
+        let routinesDescriptor: FetchDescriptor<Routine> = FetchDescriptor<Routine>()
+        let routines: [Routine] = (try? context.fetch(routinesDescriptor)) ?? []
+        let sessionsDescriptor: FetchDescriptor<WorkoutSession> = FetchDescriptor<WorkoutSession>()
+        let sessions: [WorkoutSession] = (try? context.fetch(sessionsDescriptor)) ?? []
+
+        var groups: [BackupGroup] = []
+        var summary: [String] = []
+        var totalRemoved: Int = 0
+        var totalLogsMoved: Int = 0
+
+        for plan in plans {
+            let keptSnapshot: BackupExercise = snapshot(of: plan.keeper, routines: routines, sessions: sessions)
+            let removedSnapshots: [BackupExercise] = plan.duplicates.map { (exercise: Exercise) -> BackupExercise in
+                return snapshot(of: exercise, routines: routines, sessions: sessions)
+            }
+            let movedLogs: Int = removedSnapshots.reduce(0) { (partial: Int, item: BackupExercise) -> Int in
+                return partial + item.logs.count
+            }
+
+            groups.append(BackupGroup(
+                canonicalName: plan.canonicalName,
+                keptName: keptSnapshot.name,
+                finalName: plan.targetName,
+                kept: keptSnapshot,
+                removed: removedSnapshots
+            ))
+
+            if plan.duplicates.isEmpty {
+                summary.append("Renombrado «\(keptSnapshot.name)» → «\(plan.targetName)» (sin duplicados).")
+            } else {
+                let removedNames: String = removedSnapshots
+                    .map { (item: BackupExercise) -> String in return "«\(item.name)»" }
+                    .joined(separator: ", ")
+                totalRemoved += removedSnapshots.count
+                totalLogsMoved += movedLogs
+                summary.append("«\(plan.targetName)»: se conserva «\(keptSnapshot.name)» con \(keptSnapshot.logs.count) series y se absorbe \(removedNames) (\(movedLogs) series).")
+            }
+        }
+
+        let backup: Backup = Backup(
+            generatedAt: Date(),
+            reason: "Unificación de ejercicios duplicados: sólo nombres de la tabla explícita del catálogo o el mismo nombre normalizado.",
+            totalGroups: groups.count,
+            totalRemoved: totalRemoved,
+            totalLogsMoved: totalLogsMoved,
+            summary: summary,
+            groups: groups
+        )
+
+        let encoder: JSONEncoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data: Data = try? encoder.encode(backup) else { return nil }
+        guard let directory: URL = backupDirectory() else { return nil }
+
+        let fileStamp: String = "\(timestamp())-\(String(UUID().uuidString.prefix(4)))"
+        let jsonURL: URL = directory.appendingPathComponent("Ejercicios-unificados-\(fileStamp).json")
+        let textURL: URL = directory.appendingPathComponent("Ejercicios-unificados-\(fileStamp).txt")
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: jsonURL, options: .atomic)
+            _ = try? summaryText(for: backup).write(to: textURL, atomically: true, encoding: String.Encoding.utf8)
+            return jsonURL
+        } catch {
+            print("No se pudo escribir la copia de seguridad de la unificación: \(error)")
+            return nil
+        }
+    }
+
+    private static func backupDirectory() -> URL? {
+        let fileManager: FileManager = FileManager.default
+        guard let base: URL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return base
+            .appendingPathComponent("AppGym", isDirectory: true)
+            .appendingPathComponent("CopiasEjercicios", isDirectory: true)
+    }
+
+    private static func timestamp() -> String {
+        let formatter: DateFormatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd'T'HH-mm-ss"
+        return formatter.string(from: Date())
+    }
+
+    private static func summaryText(for backup: Backup) -> String {
+        let isoFormatter: ISO8601DateFormatter = ISO8601DateFormatter()
+        var lines: [String] = []
+        lines.append("AppGym · copia de seguridad de la unificación de ejercicios")
+        lines.append("Generada: \(isoFormatter.string(from: backup.generatedAt))")
+        lines.append("Grupos afectados: \(backup.totalGroups)")
+        lines.append("Ejercicios eliminados: \(backup.totalRemoved)")
+        lines.append("Series trasladadas: \(backup.totalLogsMoved)")
+        lines.append("")
+        lines.append("Detalle:")
+        for line in backup.summary {
+            lines.append("- \(line)")
+        }
+        lines.append("")
+        lines.append("El JSON junto a este archivo contiene las series, las rutinas y los registros de sesión de cada ejercicio afectado.")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func snapshot(of exercise: Exercise, routines: [Routine], sessions: [WorkoutSession]) -> BackupExercise {
+        var routineEntries: [BackupRoutineEntry] = []
+        for routine in routines {
+            for item in routine.exercises where item.exercise === exercise {
+                routineEntries.append(BackupRoutineEntry(
+                    routineID: routine.id,
+                    routineName: routine.name,
+                    defaultSets: item.defaultSets,
+                    targetRepsMin: item.targetRepsMin,
+                    targetRepsMax: item.targetRepsMax,
+                    sortOrder: item.sortOrder,
+                    defaultWeight: item.defaultWeight
+                ))
+            }
+        }
+
+        let exerciseKey: String = canonicalKey(for: exercise.name)
+        var sessionRecords: [BackupSessionRecord] = []
+        for session in sessions {
+            for record in session.exerciseRecords {
+                let matchesIdentifier: Bool = record.exerciseID == exercise.id
+                let matchesName: Bool = canonicalKey(for: record.exerciseName) == exerciseKey
+                guard matchesIdentifier || matchesName else { continue }
+                sessionRecords.append(BackupSessionRecord(
+                    sessionID: session.id,
+                    startDate: session.startDate,
+                    recordID: record.id,
+                    exerciseName: record.exerciseName,
+                    sets: record.sets.count
+                ))
+            }
+        }
+
+        let logs: [BackupLog] = exercise.logs.map { (log: WorkoutSetLog) -> BackupLog in
+            return BackupLog(
+                id: log.id,
+                date: log.date,
+                weight: log.weight,
+                reps: log.reps,
+                setNumber: log.setNumber,
+                isCompleted: log.isCompleted,
+                sessionID: log.session?.id
+            )
+        }
+
+        return BackupExercise(
+            id: exercise.id,
+            name: exercise.name,
+            muscleGroup: exercise.muscleGroupRaw,
+            equipment: exercise.equipmentTypeRaw,
+            requiresStraps: exercise.requiresStraps,
+            hasCustomRequiresStraps: exercise.hasCustomRequiresStraps,
+            isCompound: exercise.isCompound,
+            targetReps: exercise.targetRepsText,
+            primaryMuscles: exercise.primaryMuscles.map { (muscle: MuscleGroup) -> String in return muscle.rawValue },
+            secondaryMuscles: exercise.secondaryMuscles.map { (muscle: MuscleGroup) -> String in return muscle.rawValue },
+            notes: exercise.notes,
+            logs: logs,
+            routines: routineEntries,
+            sessionRecords: sessionRecords
+        )
+    }
+
     // MARK: Clave canónica
 
-    /// Clave que identifica el movimiento independientemente del idioma, los
-    /// acentos, el orden de las palabras y los plurales.
+    /// Clave del movimiento: el nombre canónico del catálogo cuando el nombre
+    /// aparece en la tabla explícita y, si no, el propio nombre normalizado.
+    /// Dos nombres distintos nunca comparten clave por traducción.
     public static func canonicalKey(for name: String) -> String {
-        let canonicalName: String = aliasIndex[normalize(name)] ?? name
-        let tokens: String = tokenKey(from: canonicalName)
-        return tokens.isEmpty ? normalize(canonicalName) : tokens
+        let normalizedName: String = normalize(name)
+        return aliasIndex[normalizedName] ?? normalizedName
     }
 
     /// Nombre en castellano del catálogo para un nombre conocido, si existe.
@@ -205,165 +488,11 @@ public enum ExerciseDuplicateService {
         return collapsed
     }
 
-    private static func tokenKey(from text: String) -> String {
-        let prepared: String = replacePhrases(in: normalize(text))
-        let rawTokens: [String] = prepared
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { (token: String) -> Bool in return !token.isEmpty }
-
-        var tokens: [String] = []
-        for rawToken in rawTokens {
-            let translated: [String] = tokenTranslations[rawToken]?.components(separatedBy: " ") ?? [rawToken]
-            for token in translated {
-                let cleanToken: String = singular(token)
-                guard !cleanToken.isEmpty, !stopWords.contains(cleanToken) else { continue }
-                if !tokens.contains(cleanToken) {
-                    tokens.append(cleanToken)
-                }
-            }
-        }
-
-        return tokens.sorted().joined(separator: " ")
-    }
-
-    private static func replacePhrases(in text: String) -> String {
-        var result: String = text
-        for phrase in phraseTranslations.keys.sorted(by: { (lhs: String, rhs: String) -> Bool in
-            return lhs.count > rhs.count
-        }) {
-            guard let replacement: String = phraseTranslations[phrase] else { continue }
-            result = result.replacingOccurrences(of: phrase, with: replacement)
-        }
-        return result
-    }
-
-    private static func singular(_ token: String) -> String {
-        if token.count > 4 && token.hasSuffix("es") {
-            return String(token.dropLast(2))
-        }
-        if token.count > 3 && token.hasSuffix("s") {
-            return String(token.dropLast())
-        }
-        return token
-    }
-
-    // MARK: Diccionarios de traducción
-
-    private static let stopWords: Set<String> = [
-        "de", "del", "con", "en", "el", "la", "los", "las", "un", "una", "al", "a", "y", "e", "o",
-        "para", "por", "sobre", "the", "of", "with", "on", "for", "and", "to", "in", "at", "by"
-    ]
-
-    private static let phraseTranslations: [String: String] = [
-        "close grip bench press": "press cerrado",
-        "close grip press": "press cerrado",
-        "incline bench press": "press banca inclinado",
-        "decline bench press": "press declinado",
-        "flat bench press": "press banca plano",
-        "barbell bench press": "press banca plano",
-        "dumbbell bench press": "press banca mancuerna",
-        "bench press": "press banca",
-        "shoulder press": "press hombro",
-        "overhead press": "press sobre cabeza",
-        "military press": "press militar",
-        "arnold press": "press arnold",
-        "leg press": "prensa",
-        "leg extension": "extension de cuadriceps",
-        "leg curl": "curl femoral",
-        "calf raise": "elevacion de gemelos",
-        "lateral raise": "elevacion lateral",
-        "front raise": "elevacion frontal",
-        "rear delt fly": "aperturas inversas",
-        "reverse fly": "aperturas inversas",
-        "pec deck": "aperturas en maquina",
-        "cable fly": "aperturas en polea",
-        "cable crossover": "cruces de polea",
-        "pull up": "dominada",
-        "chin up": "dominada",
-        "romanian deadlift": "peso muerto rumano",
-        "stiff leg deadlift": "peso muerto rumano",
-        "hip thrust": "empuje de cadera",
-        "skull crusher": "press frances",
-        "upright row": "remo al menton",
-        "hammer curl": "curl martillo",
-        "preacher curl": "curl predicador",
-        "wrist curl": "curl de muneca",
-        "reverse curl": "curl invertido",
-        "spider curl": "curl arana",
-        "hack squat": "sentadilla hack",
-        "front squat": "sentadilla frontal",
-        "back squat": "sentadilla trasera",
-        "glute bridge": "puente de gluteo",
-        "glute kickback": "patada de gluteo",
-        "hip abduction": "abduccion de cadera",
-        "hip adduction": "aduccion de cadera",
-        "seated row": "remo sentado",
-        "bent over row": "remo inclinado",
-        "t bar row": "remo en t",
-        "lat pulldown": "jalon al pecho",
-        "overhead extension": "extension sobre la cabeza",
-        "calf press": "elevacion de gemelos"
-    ]
-
-    private static let tokenTranslations: [String: String] = [
-        "bench": "banca",
-        "incline": "inclinado",
-        "inclined": "inclinado",
-        "decline": "declinado",
-        "declined": "declinado",
-        "flat": "plano",
-        "dumbbell": "mancuerna",
-        "barbell": "barra",
-        "bar": "barra",
-        "cable": "polea",
-        "machine": "maquina",
-        "smith": "multipower",
-        "seated": "sentado",
-        "standing": "pie",
-        "lying": "tumbado",
-        "hanging": "colgado",
-        "row": "remo",
-        "rowing": "remo",
-        "pulldown": "jalon",
-        "pushdown": "extension",
-        "squat": "sentadilla",
-        "deadlift": "peso muerto",
-        "lunge": "zancada",
-        "raise": "elevacion",
-        "fly": "aperturas",
-        "flyes": "aperturas",
-        "shrug": "encogimiento",
-        "hammer": "martillo",
-        "kickback": "patada",
-        "thrust": "empuje",
-        "crossover": "cruce",
-        "dip": "fondo",
-        "dips": "fondo",
-        "grip": "agarre",
-        "close": "cerrado",
-        "wide": "ancho",
-        "shoulder": "hombro",
-        "overhead": "sobre cabeza",
-        "front": "frontal",
-        "rear": "posterior",
-        "back": "espalda",
-        "chest": "pecho",
-        "leg": "pierna",
-        "calf": "gemelo",
-        "hamstring": "femoral",
-        "quad": "cuadriceps",
-        "glute": "gluteo",
-        "abs": "abdominales",
-        "wrist": "muneca",
-        "preacher": "predicador",
-        "pulley": "polea",
-        "single": "unilateral"
-    ]
-
     // MARK: Tabla de nombres canónicos
 
     /// Nombre en castellano de cada ejercicio del catálogo con sus alias
-    /// (variantes en castellano y nombres en inglés habituales).
+    /// (variantes en castellano y nombres en inglés habituales). Es la única
+    /// fuente de equivalencias: lo que no esté aquí sólo casa consigo mismo.
     private static let canonicalGroups: [String: [String]] = [
         "Press banca plano": [
             "press banca", "press de banca", "press plano", "bench press",
