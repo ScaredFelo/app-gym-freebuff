@@ -23,26 +23,23 @@ struct WorkoutLiveActivity: Widget {
             .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
-                // Estado 1 · Maximizada: ejercicio + series realizadas.
-                DynamicIslandExpandedRegion(.leading) {
-                    ExpandedExerciseSummaryView(
+                // Estado 1 · Maximizada: todo el contenido vive en `.bottom`
+                // para usar el ancho completo por debajo de las cámaras y no
+                // recortar el título con la curva superior izquierda.
+                DynamicIslandExpandedRegion(.bottom) {
+                    ExpandedWorkoutView(
                         state: context.state,
                         workoutName: context.attributes.workoutName
                     )
                 }
-
-                // Estado 1 · Maximizada: temporizador circular grande con BPM.
-                DynamicIslandExpandedRegion(.trailing) {
-                    ExpandedRestDialView(state: context.state)
-                }
             } compactLeading: {
-                // Estado 2 · Compacta: anillo pequeño + tiempo digital.
+                // Estado 2 · Compacta: anillo limpio + tiempo digital al lado.
                 CompactRestTimerView(state: context.state)
             } compactTrailing: {
                 // Estado 2 · Compacta: ♥ BPM 103.
                 CompactBPMView(bpm: context.state.currentBPM)
             } minimal: {
-                // Estado 3 · Minimizada: anillo con los BPM dentro.
+                // Estado 3 · Minimizada: solo los BPM dentro del anillo.
                 MinimalBPMTimerView(state: context.state)
             }
             .keylineTint(.red)
@@ -82,6 +79,10 @@ enum LiveActivityFormat {
         return bpm > 0 ? "\(bpm)" : "--"
     }
 
+    static func bpmWithUnit(_ bpm: Int) -> String {
+        return bpm > 0 ? "\(bpm) BPM" : "-- BPM"
+    }
+
     static func setLabel(_ set: LiveActivityCompletedSet) -> String {
         return "Serie \(set.id): \(weightText(set.weight)) kg × \(set.reps)"
     }
@@ -90,11 +91,15 @@ enum LiveActivityFormat {
 private enum LiveActivityTheme {
     static let timer: Color = .green
     static let heart: Color = .red
+    static let body: Color = Color.white.opacity(0.9)
+    static let muted: Color = Color.white.opacity(0.45)
 }
 
 // MARK: - Componentes compartidos
 
 /// Anillo de progreso nativo. Se vacía segundo a segundo sin refrescos de app.
+/// Las etiquetas van vacías para que SwiftUI dibuje solo el anillo y no
+/// superponga números blancos dentro del círculo.
 struct LiveActivityTimerRingView: View {
     let window: LiveActivityRestWindow
     let diameter: CGFloat
@@ -103,10 +108,14 @@ struct LiveActivityTimerRingView: View {
     var body: some View {
         ZStack {
             if window.isRunning {
-                ProgressView(timerInterval: window.range, countsDown: true)
-                    .progressViewStyle(.circular)
-                    .tint(LiveActivityTheme.timer)
-                    .labelsHidden()
+                ProgressView(
+                    timerInterval: window.range,
+                    countsDown: true,
+                    label: { EmptyView() },
+                    currentValueLabel: { EmptyView() }
+                )
+                .progressViewStyle(.circular)
+                .tint(LiveActivityTheme.timer)
             } else {
                 ZStack {
                     Circle()
@@ -129,44 +138,46 @@ struct LiveActivityTimerRingView: View {
 struct LiveActivityTimerTextView: View {
     let window: LiveActivityRestWindow
     let font: Font
+    let tint: Color
 
     var body: some View {
         if window.isRunning {
             Text(timerInterval: window.range, countsDown: true, showsHours: false)
                 .font(font)
                 .monospacedDigit()
-                .foregroundStyle(LiveActivityTheme.timer)
+                .foregroundStyle(tint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
         } else {
             Text("00:00")
                 .font(font)
                 .monospacedDigit()
-                .foregroundStyle(LiveActivityTheme.timer)
+                .foregroundStyle(tint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
         }
     }
 }
 
-/// Fila "Serie 1: 80 kg × 10".
+/// Fila "Serie 1: 60 kg × 8".
 struct LiveActivitySetRowView: View {
     let set: LiveActivityCompletedSet
     let font: Font
+    let tint: Color
 
     var body: some View {
         Text(LiveActivityFormat.setLabel(set))
             .font(font)
             .monospacedDigit()
-            .foregroundStyle(.white)
+            .foregroundStyle(tint)
             .lineLimit(1)
-            .minimumScaleFactor(0.7)
+            .minimumScaleFactor(0.8)
     }
 }
 
 // MARK: - Estado 1 · Maximizada
 
-struct ExpandedExerciseSummaryView: View {
+struct ExpandedWorkoutView: View {
     let state: WorkoutActivityAttributes.ContentState
     let workoutName: String
 
@@ -181,28 +192,37 @@ struct ExpandedExerciseSummaryView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 15, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            if visibleSets.isEmpty {
-                Text("Sin series completadas")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.gray)
-                    .lineLimit(1)
-            } else {
-                ForEach(visibleSets) { set in
-                    LiveActivitySetRowView(
-                        set: set,
-                        font: .system(size: 11, weight: .semibold, design: .monospaced)
-                    )
+                if visibleSets.isEmpty {
+                    Text("Sin series completadas")
+                        .font(.system(size: 13, weight: .medium, design: .monospaced))
+                        .foregroundStyle(LiveActivityTheme.muted)
+                        .lineLimit(1)
+                } else {
+                    ForEach(visibleSets) { set in
+                        LiveActivitySetRowView(
+                            set: set,
+                            font: .system(size: 13, weight: .medium, design: .monospaced),
+                            tint: LiveActivityTheme.body
+                        )
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .layoutPriority(1)
+
+            ExpandedRestDialView(state: state)
         }
-        .frame(alignment: .leading)
+        .padding(.horizontal, 6)
+        .padding(.bottom, 4)
     }
 }
 
@@ -215,24 +235,28 @@ struct ExpandedRestDialView: View {
 
     var body: some View {
         ZStack {
-            LiveActivityTimerRingView(window: window, diameter: 68, lineWidth: 5)
+            LiveActivityTimerRingView(window: window, diameter: 80, lineWidth: 5)
 
-            VStack(spacing: 1) {
+            VStack(spacing: 2) {
                 LiveActivityTimerTextView(
                     window: window,
-                    font: .system(size: 15, weight: .bold, design: .monospaced)
+                    font: .system(size: 17, weight: .bold, design: .rounded),
+                    tint: .white
                 )
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(width: 62)
 
-                Text("\(LiveActivityFormat.bpm(state.currentBPM)) BPM")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(LiveActivityTheme.heart)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.6)
+                    .minimumScaleFactor(0.8)
             }
-            .padding(.horizontal, 6)
+            .frame(width: 62)
         }
-        .frame(width: 68, height: 68)
+        .frame(width: 82, height: 82)
     }
 }
 
@@ -251,9 +275,10 @@ struct CompactRestTimerView: View {
 
             LiveActivityTimerTextView(
                 window: window,
-                font: .system(size: 12, weight: .semibold, design: .monospaced)
+                font: .system(size: 12, weight: .semibold, design: .monospaced),
+                tint: LiveActivityTheme.timer
             )
-            .frame(minWidth: 28, maxWidth: 38, alignment: .leading)
+            .frame(minWidth: 28, maxWidth: 40, alignment: .leading)
         }
         .padding(.leading, 1)
     }
@@ -293,16 +318,16 @@ struct MinimalBPMTimerView: View {
 
     var body: some View {
         ZStack {
-            LiveActivityTimerRingView(window: window, diameter: 24, lineWidth: 3)
+            LiveActivityTimerRingView(window: window, diameter: 22, lineWidth: 3)
 
             Text(LiveActivityFormat.bpm(state.currentBPM))
                 .font(.system(size: 10, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(LiveActivityTheme.heart)
                 .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                .minimumScaleFactor(0.7)
         }
-        .frame(width: 24, height: 24)
+        .frame(width: 22, height: 22)
     }
 }
 
@@ -331,19 +356,21 @@ struct LockScreenLiveActivityView: View {
                 Text(title)
                     .font(.system(size: 19, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
 
                 if visibleSets.isEmpty {
                     Text("Sin series completadas")
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.gray)
+                        .foregroundStyle(LiveActivityTheme.muted)
                         .lineLimit(1)
                 } else {
                     ForEach(visibleSets) { set in
                         LiveActivitySetRowView(
                             set: set,
-                            font: .system(size: 12, weight: .semibold, design: .monospaced)
+                            font: .system(size: 12, weight: .medium, design: .monospaced),
+                            tint: LiveActivityTheme.body
                         )
                     }
                 }
@@ -352,24 +379,26 @@ struct LockScreenLiveActivityView: View {
             Spacer(minLength: 6)
 
             ZStack {
-                LiveActivityTimerRingView(window: window, diameter: 68, lineWidth: 5)
+                LiveActivityTimerRingView(window: window, diameter: 80, lineWidth: 5)
 
-                VStack(spacing: 1) {
+                VStack(spacing: 2) {
                     LiveActivityTimerTextView(
                         window: window,
-                        font: .system(size: 15, weight: .bold, design: .monospaced)
+                        font: .system(size: 17, weight: .bold, design: .rounded),
+                        tint: .white
                     )
+                    .frame(width: 62)
 
-                    Text("\(LiveActivityFormat.bpm(state.currentBPM)) BPM")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                    Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(LiveActivityTheme.heart)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.6)
+                        .minimumScaleFactor(0.8)
                 }
-                .padding(.horizontal, 6)
+                .frame(width: 62)
             }
-            .frame(width: 68, height: 68)
+            .frame(width: 82, height: 82)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
