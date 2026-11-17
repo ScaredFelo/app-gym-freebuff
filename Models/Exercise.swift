@@ -41,11 +41,6 @@ public final class Exercise {
         return isCompound ? Exercise.compoundTargetReps : Exercise.isolationTargetReps
     }
 
-    /// Rango que impone la regla global según el tipo de movimiento.
-    public var ruleTargetReps: (min: Int, max: Int) {
-        return Exercise.defaultTargetReps(for: isCompound)
-    }
-
     /// `true` si el rango guardado coincide con alguno de los valores por
     /// defecto (el actual o el antiguo `8-12`).
     public var hasDefaultTargetReps: Bool {
@@ -59,13 +54,6 @@ public final class Exercise {
             return true
         }
         return false
-    }
-
-    /// Aplica el rango de la regla global sin tocar el tipo de movimiento.
-    public func applyDefaultTargetReps() {
-        let range: (min: Int, max: Int) = ruleTargetReps
-        targetRepsMin = range.min
-        targetRepsMax = range.max
     }
 
     // MARK: - Propiedades derivadas
