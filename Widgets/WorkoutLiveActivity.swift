@@ -219,14 +219,16 @@ struct ExpandedWorkoutView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .layoutPriority(1)
 
-            ExpandedRestDialView(state: state)
+            RestDialView(state: state)
         }
         .padding(.horizontal, 6)
         .padding(.bottom, 4)
     }
 }
 
-struct ExpandedRestDialView: View {
+/// Dial circular compartido de 82×82 (anillo de 80 con tiempo y BPM dentro).
+/// Lo usan la isla maximizada y la pantalla de bloqueo.
+struct RestDialView: View {
     let state: WorkoutActivityAttributes.ContentState
 
     private var window: LiveActivityRestWindow {
@@ -337,10 +339,6 @@ struct LockScreenLiveActivityView: View {
     let state: WorkoutActivityAttributes.ContentState
     let workoutName: String
 
-    private var window: LiveActivityRestWindow {
-        LiveActivityRestWindow(state: state)
-    }
-
     private var title: String {
         let name: String = state.exerciseName.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? workoutName : name
@@ -378,27 +376,7 @@ struct LockScreenLiveActivityView: View {
 
             Spacer(minLength: 6)
 
-            ZStack {
-                LiveActivityTimerRingView(window: window, diameter: 80, lineWidth: 5)
-
-                VStack(spacing: 2) {
-                    LiveActivityTimerTextView(
-                        window: window,
-                        font: .system(size: 17, weight: .bold, design: .rounded),
-                        tint: .white
-                    )
-                    .frame(width: 62)
-
-                    Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(LiveActivityTheme.heart)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                }
-                .frame(width: 62)
-            }
-            .frame(width: 82, height: 82)
+            RestDialView(state: state)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
