@@ -38,6 +38,7 @@ targets:
     info:
       path: Info.plist
       properties:
+        CFBundleDisplayName: AppGym
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
@@ -90,6 +91,7 @@ targets:
     info:
       path: Widgets/Info.plist
       properties:
+        CFBundleDisplayName: AppGym
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         NSSupportsLiveActivities: true
