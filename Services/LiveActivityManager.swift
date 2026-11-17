@@ -7,27 +7,37 @@ final class LiveActivityManager: ObservableObject {
 
     struct Snapshot {
         var exerciseName: String
-        var currentSet: Int
-        var totalSets: Int
-        var timerStartDate: Date?
-        var timerEndDate: Date?
-        var isRestTimerActive: Bool
+        var completedSets: [LiveActivityCompletedSet]
+        var restStartDate: Date?
+        var restEndDate: Date?
+        var isResting: Bool
+
+        static var empty: Snapshot {
+            Snapshot(
+                exerciseName: "",
+                completedSets: [],
+                restStartDate: nil,
+                restEndDate: nil,
+                isResting: false
+            )
+        }
     }
 
     @Published private(set) var debugMessage = "Live Activity pendiente"
 
     private var currentActivity: Activity<WorkoutActivityAttributes>?
     private var lastState: WorkoutActivityAttributes.ContentState?
-    private var snapshot = Snapshot(
-        exerciseName: "",
-        currentSet: 0,
-        totalSets: 0,
-        timerStartDate: nil,
-        timerEndDate: nil,
-        isRestTimerActive: false
-    )
+    private var snapshot: Snapshot = .empty
     private var bpm = 0
     private var isAppInBackground = false
+
+    /// Instante de la última actualización enviada a ActivityKit. Limita las
+    /// actualizaciones provocadas por el pulso (que llega a 4 Hz desde el
+    /// reloj) a una cada `bpmUpdateInterval` segundos.
+    private var lastActivityUpdateDate: Date = .distantPast
+    private let bpmUpdateInterval: TimeInterval = 2.0
+    private var pendingBPMUpdateTask: Task<Void, Never>?
+
     private let staleMargin: TimeInterval = 14_400
 
     // Arranque diferido de la Live Activity: `Activity.request` se ejecuta en
@@ -43,7 +53,7 @@ final class LiveActivityManager: ObservableObject {
     // MARK: - Ciclo de vida de la app
 
     /// La app pasa a segundo plano: conservamos intacto el estado actual de la
-    /// Live Activity (incluido `timerEndDate`) para que Dynamic Island y la
+    /// Live Activity (incluido `restEndDate`) para que Dynamic Island y la
     /// pantalla bloqueada no pierdan el temporizador.
     func handleScenePhaseBackground() {
         isAppInBackground = true
@@ -54,11 +64,14 @@ final class LiveActivityManager: ObservableObject {
         beginPendingStartIfNeeded()
     }
 
+    // MARK: - Inicio
+
     func startActivity(workoutName: String, snapshot: Snapshot, bpm: Int) {
         self.snapshot = snapshot
         self.bpm = max(0, bpm)
-        pendingWorkoutName = workoutName
-        startAttempts = 0
+        self.pendingWorkoutName = workoutName
+        self.startAttempts = 0
+        self.lastActivityUpdateDate = .distantPast
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             currentActivity = nil
@@ -75,11 +88,27 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
-        if let existingActivity = Activity<WorkoutActivityAttributes>.activities.first(where: { isUsable($0) }) {
+        let existingActivities: [Activity<WorkoutActivityAttributes>] = Activity<WorkoutActivityAttributes>.activities
+        if let existingActivity = existingActivities.first(where: { isUsable($0) }) {
             currentActivity = existingActivity
             lastState = nil
             pendingWorkoutName = nil
             debugMessage = "Live Activity existente reutilizada"
+
+            // Al reutilizar una actividad cerramos las demás del mismo tipo:
+            // si quedó alguna huérfana de una sesión anterior, no debe seguir
+            // ocupando la Dynamic Island en paralelo.
+            let duplicates: [Activity<WorkoutActivityAttributes>] = existingActivities.filter { (activity: Activity<WorkoutActivityAttributes>) -> Bool in
+                return activity.id != existingActivity.id
+            }
+            if !duplicates.isEmpty {
+                Task {
+                    for activity in duplicates {
+                        await activity.end(nil, dismissalPolicy: .immediate)
+                    }
+                }
+            }
+
             updateActivity(state: makeState())
             return
         }
@@ -116,7 +145,9 @@ final class LiveActivityManager: ObservableObject {
             guard !Task.isCancelled, self.currentActivity == nil else { return }
 
             do {
-                self.endOrphanedActivities()
+                // Evitar duplicados: cualquier actividad previa del mismo tipo
+                // se cierra antes de solicitar la nueva.
+                await self.endAllActivities()
 
                 let attributes = WorkoutActivityAttributes(workoutName: workoutName)
                 let state = self.makeState()
@@ -127,12 +158,13 @@ final class LiveActivityManager: ObservableObject {
                 )
 
                 guard !Task.isCancelled else {
-                    Task { await activity.end(nil, dismissalPolicy: .immediate) }
+                    await activity.end(nil, dismissalPolicy: .immediate)
                     return
                 }
 
                 self.currentActivity = activity
                 self.lastState = state
+                self.lastActivityUpdateDate = Date()
                 self.pendingWorkoutName = nil
                 self.startAttempts = 0
                 self.debugMessage = "Live Activity iniciada correctamente"
@@ -155,20 +187,24 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
+    // MARK: - Actualizaciones
+
+    /// Sincronización inmediata de eventos (series, ejercicio, descanso).
+    /// Se envía siempre: `updateActivity` descarta estados idénticos y así no
+    /// se consume presupuesto de ActivityKit sin motivo.
     func updateSnapshot(_ snapshot: Snapshot, bpm: Int? = nil) {
         var resolvedSnapshot = snapshot
 
-        // Nunca borramos un temporizador que sigue vigente por una actualización
-        // que llega mientras la app está en segundo plano. Si el descanso ya ha
-        // vencido, sí dejamos que la Live Activity se limpie con normalidad.
+        // Nunca borramos un descanso que sigue vigente por una actualización
+        // que llega mientras la app está en segundo plano.
         if isAppInBackground,
-           !resolvedSnapshot.isRestTimerActive,
-           self.snapshot.isRestTimerActive,
-           let endDate = self.snapshot.timerEndDate,
+           !resolvedSnapshot.isResting,
+           self.snapshot.isResting,
+           let endDate = self.snapshot.restEndDate,
            endDate > Date() {
-            resolvedSnapshot.timerStartDate = self.snapshot.timerStartDate
-            resolvedSnapshot.timerEndDate = endDate
-            resolvedSnapshot.isRestTimerActive = true
+            resolvedSnapshot.isResting = true
+            resolvedSnapshot.restStartDate = self.snapshot.restStartDate
+            resolvedSnapshot.restEndDate = endDate
         }
 
         self.snapshot = resolvedSnapshot
@@ -178,17 +214,39 @@ final class LiveActivityManager: ObservableObject {
         updateActivity(state: makeState())
     }
 
+    /// Actualización de pulso con throttling: como máximo una mutación del
+    /// `ContentState` cada 2 segundos. El temporizador nativo del widget sigue
+    /// avanzando por su cuenta entre actualizaciones.
     func setBPM(_ bpm: Int) {
         let value = max(0, bpm)
         guard value != self.bpm else { return }
         self.bpm = value
-        updateActivity(state: makeState())
+
+        guard let activity = currentActivity, isUsable(activity) else { return }
+
+        let elapsed: TimeInterval = Date().timeIntervalSince(lastActivityUpdateDate)
+        if elapsed >= bpmUpdateInterval {
+            updateActivity(state: makeState())
+        } else {
+            schedulePendingBPMUpdate(after: bpmUpdateInterval - elapsed)
+        }
+    }
+
+    private func schedulePendingBPMUpdate(after delay: TimeInterval) {
+        guard pendingBPMUpdateTask == nil else { return }
+
+        pendingBPMUpdateTask = Task { @MainActor [weak self] in
+            let nanoseconds: UInt64 = UInt64(max(0.1, delay) * 1_000_000_000.0)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+
+            guard let self, !Task.isCancelled else { return }
+            self.pendingBPMUpdateTask = nil
+            self.updateActivity(state: self.makeState())
+        }
     }
 
     func updateActivity(state: WorkoutActivityAttributes.ContentState) {
-        guard let activity = currentActivity else {
-            return
-        }
+        guard let activity = currentActivity else { return }
 
         guard isUsable(activity) else {
             currentActivity = nil
@@ -197,13 +255,9 @@ final class LiveActivityManager: ObservableObject {
             return
         }
 
-        if state.isRestTimerActive, state.timerEndDate == nil {
-            debugMessage = "Actualización ignorada: temporizador activo sin fecha de fin"
-            return
-        }
-
         guard lastState != state else { return }
         lastState = state
+        lastActivityUpdateDate = Date()
 
         let content = makeContent(for: state)
         Task {
@@ -211,26 +265,38 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
+    // MARK: - Cierre
+
+    /// Limpieza total: finaliza TODAS las actividades activas del tipo, no solo
+    /// la registrada en memoria, para que la Dynamic Island nunca se quede
+    /// bloqueada tras terminar o cancelar la rutina.
     func endActivity() {
         pendingStartTask?.cancel()
         pendingStartTask = nil
+        pendingBPMUpdateTask?.cancel()
+        pendingBPMUpdateTask = nil
         pendingWorkoutName = nil
         startAttempts = 0
 
-        guard let activity = currentActivity else {
-            lastState = nil
-            return
-        }
-
         currentActivity = nil
         lastState = nil
+        lastActivityUpdateDate = .distantPast
         debugMessage = "Live Activity finalizada"
-        Task { await activity.end(nil, dismissalPolicy: .immediate) }
+
+        // Capturamos la lista ahora mismo: si el usuario inicia otra rutina
+        // justo después, este cierre no debe alcanzar la actividad nueva.
+        let activities: [Activity<WorkoutActivityAttributes>] = Activity<WorkoutActivityAttributes>.activities
+        Task {
+            for activity in activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
     }
 
-    private func endOrphanedActivities() {
-        for activity in Activity<WorkoutActivityAttributes>.activities {
-            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+    private func endAllActivities() async {
+        let activities: [Activity<WorkoutActivityAttributes>] = Activity<WorkoutActivityAttributes>.activities
+        for activity in activities {
+            await activity.end(nil, dismissalPolicy: .immediate)
         }
     }
 
@@ -245,15 +311,20 @@ final class LiveActivityManager: ObservableObject {
         }
     }
 
+    // MARK: - Estado
+
     private func makeState() -> WorkoutActivityAttributes.ContentState {
-        WorkoutActivityAttributes.ContentState(
+        let restEndDate: Date = snapshot.restEndDate ?? .distantPast
+        let restStartDate: Date = snapshot.restStartDate ?? restEndDate
+        let isResting: Bool = snapshot.isResting && snapshot.restEndDate != nil
+
+        return WorkoutActivityAttributes.ContentState(
             exerciseName: snapshot.exerciseName,
-            currentSet: snapshot.currentSet,
-            totalSets: snapshot.totalSets,
-            timerStartDate: snapshot.timerStartDate,
-            timerEndDate: snapshot.timerEndDate,
-            isRestTimerActive: snapshot.isRestTimerActive,
-            currentBPM: max(0, bpm)
+            completedSets: snapshot.completedSets,
+            currentBPM: max(0, bpm),
+            isResting: isResting,
+            restStartDate: restStartDate,
+            restEndDate: restEndDate
         )
     }
 

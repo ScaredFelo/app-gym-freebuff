@@ -10,247 +10,368 @@ struct AppGymWidgetBundle: WidgetBundle {
     }
 }
 
+// MARK: - Configuración
+
 struct WorkoutLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: WorkoutActivityAttributes.self) { context in
-            lockScreenView(context)
-                .activityBackgroundTint(Color(red: 0.04, green: 0.04, blue: 0.05))
-                .activitySystemActionForegroundColor(.white)
+            LockScreenLiveActivityView(
+                state: context.state,
+                workoutName: context.attributes.workoutName
+            )
+            .activityBackgroundTint(Color(red: 0.04, green: 0.04, blue: 0.05))
+            .activitySystemActionForegroundColor(.white)
         } dynamicIsland: { context in
             DynamicIsland {
+                // Estado 1 · Maximizada: ejercicio + series realizadas.
                 DynamicIslandExpandedRegion(.leading) {
-                    expandedSummary(context)
+                    ExpandedExerciseSummaryView(
+                        state: context.state,
+                        workoutName: context.attributes.workoutName
+                    )
                 }
 
+                // Estado 1 · Maximizada: temporizador circular grande con BPM.
                 DynamicIslandExpandedRegion(.trailing) {
-                    bpmGauge(context)
+                    ExpandedRestDialView(state: context.state)
                 }
             } compactLeading: {
-                compactTimer(context)
+                // Estado 2 · Compacta: anillo pequeño + tiempo digital.
+                CompactRestTimerView(state: context.state)
             } compactTrailing: {
-                compactBPM(context)
+                // Estado 2 · Compacta: ♥ BPM 103.
+                CompactBPMView(bpm: context.state.currentBPM)
             } minimal: {
-                minimalTimer(context)
+                // Estado 3 · Minimizada: anillo con los BPM dentro.
+                MinimalBPMTimerView(state: context.state)
             }
             .keylineTint(.red)
         }
     }
+}
 
-    private func lockScreenView(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> some View {
-        HStack(alignment: .center, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(exerciseName(context))
-                    .font(.system(size: 28, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.65)
+// MARK: - Ventana de descanso
 
-                Text(seriesText(context))
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.green)
+/// Normaliza las fechas del `ContentState` para que los temporizadores nativos
+/// (`ProgressView(timerInterval:)` y `Text(timerInterval:)`) siempre reciban un
+/// rango válido y no decreciente.
+struct LiveActivityRestWindow {
+    let range: ClosedRange<Date>
+    let isRunning: Bool
 
-                HStack(spacing: 4) {
-                    Image(systemName: "stopwatch.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
+    init(state: WorkoutActivityAttributes.ContentState, now: Date = Date()) {
+        let startDate: Date = state.restStartDate
+        let endDate: Date = state.restEndDate > state.restStartDate ? state.restEndDate : state.restStartDate
+        self.range = startDate...endDate
+        self.isRunning = state.isResting && endDate > now
+    }
+}
 
-                    timerText(context, font: .caption.bold())
-                }
-            }
+// MARK: - Formato
 
-            Spacer(minLength: 4)
-
-            VStack(spacing: 4) {
-                BPMDial(bpm: context.state.currentBPM)
-                    .frame(width: 72, height: 72)
-
-                Text("BPM")
-                    .font(.caption2.bold())
-                    .tracking(1.2)
-                    .foregroundStyle(.red)
-            }
+enum LiveActivityFormat {
+    static func weightText(_ weight: Double) -> String {
+        let rounded: Double = weight.rounded()
+        if abs(weight - rounded) < 0.001 {
+            return String(format: "%.0f", rounded)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        return String(format: "%.1f", weight)
     }
 
-    private func expandedSummary(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(exerciseName(context))
-                .font(.system(size: 19, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-
-            Text(seriesText(context))
-                .font(.caption.bold())
-                .foregroundStyle(.green)
-
-            HStack(spacing: 4) {
-                Image(systemName: "stopwatch.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-
-                timerText(context, font: .caption2.bold())
-            }
-        }
+    static func bpm(_ bpm: Int) -> String {
+        return bpm > 0 ? "\(bpm)" : "--"
     }
 
-    private func bpmGauge(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> some View {
-        VStack(spacing: 3) {
-            BPMDial(bpm: context.state.currentBPM)
-                .frame(width: 58, height: 58)
-
-            Text("BPM")
-                .font(.caption2.bold())
-                .tracking(1.2)
-                .foregroundStyle(.red)
-        }
+    static func setLabel(_ set: LiveActivityCompletedSet) -> String {
+        return "Serie \(set.id): \(weightText(set.weight)) kg × \(set.reps)"
     }
+}
 
-    private func compactTimer(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> some View {
-        HStack(spacing: 4) {
-            Image(systemName: "stopwatch.fill")
-                .foregroundStyle(.orange)
+private enum LiveActivityTheme {
+    static let timer: Color = .green
+    static let heart: Color = .red
+}
 
-            timerText(context, font: .caption2.bold())
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-        }
-    }
+// MARK: - Componentes compartidos
 
-    private func compactBPM(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: "heart.fill")
-                .foregroundStyle(.red)
+/// Anillo de progreso nativo. Se vacía segundo a segundo sin refrescos de app.
+struct LiveActivityTimerRingView: View {
+    let window: LiveActivityRestWindow
+    let diameter: CGFloat
+    let lineWidth: CGFloat
 
-            Text(context.state.currentBPM > 0 ? "\(context.state.currentBPM) BPM" : "-- BPM")
-                .font(.caption2.bold())
-                .monospacedDigit()
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-        }
-    }
-
-    @ViewBuilder
-    private func minimalTimer(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> some View {
-        if context.state.isRestTimerActive,
-           let startDate = context.state.timerStartDate,
-           let endDate = context.state.timerEndDate,
-           endDate > startDate {
-            ZStack {
-                // Anillo de progreso que consume su perímetro con el tiempo.
-                ProgressView(timerInterval: startDate...endDate, countsDown: true)
+    var body: some View {
+        ZStack {
+            if window.isRunning {
+                ProgressView(timerInterval: window.range, countsDown: true)
                     .progressViewStyle(.circular)
-                    .tint(.green)
+                    .tint(LiveActivityTheme.timer)
                     .labelsHidden()
+            } else {
+                ZStack {
+                    Circle()
+                        .stroke(LiveActivityTheme.timer.opacity(0.25), lineWidth: lineWidth)
 
-                // Cifra ultra-compacta dentro del anillo.
-                Text(endDate, style: .timer)
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(.green)
-                    .minimumScaleFactor(0.45)
-                    .lineLimit(1)
-                    .padding(.horizontal, 3)
+                    Circle()
+                        .stroke(
+                            LiveActivityTheme.timer,
+                            style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
+                        )
+                }
+                .padding(lineWidth / 2)
             }
-            .frame(width: 28, height: 28)
-        } else {
-            ZStack {
-                Circle()
-                    .stroke(Color.green.opacity(0.35), lineWidth: 3)
-
-                Circle()
-                    .trim(from: 0, to: 1)
-                    .stroke(
-                        Color.green,
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(-90))
-            }
-            .frame(width: 28, height: 28)
         }
+        .frame(width: diameter, height: diameter)
     }
+}
 
-    @ViewBuilder
-    private func timerText(
-        _ context: ActivityViewContext<WorkoutActivityAttributes>,
-        font: Font
-    ) -> some View {
-        if let endDate = context.state.timerEndDate, context.state.isRestTimerActive {
-            Text(endDate, style: .timer)
+/// Cuenta atrás digital nativa; "00:00" cuando no hay descanso corriendo.
+struct LiveActivityTimerTextView: View {
+    let window: LiveActivityRestWindow
+    let font: Font
+
+    var body: some View {
+        if window.isRunning {
+            Text(timerInterval: window.range, countsDown: true, showsHours: false)
                 .font(font)
                 .monospacedDigit()
-                .foregroundColor(.orange)
+                .foregroundStyle(LiveActivityTheme.timer)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
         } else {
             Text("00:00")
                 .font(font)
                 .monospacedDigit()
-                .foregroundColor(.orange)
+                .foregroundStyle(LiveActivityTheme.timer)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
         }
     }
+}
 
-    private func exerciseName(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> String {
-        let name = context.state.exerciseName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? context.attributes.workoutName : name
-    }
+/// Fila "Serie 1: 80 kg × 10".
+struct LiveActivitySetRowView: View {
+    let set: LiveActivityCompletedSet
+    let font: Font
 
-    private func seriesText(_ context: ActivityViewContext<WorkoutActivityAttributes>) -> String {
-        guard context.state.totalSets > 0 else { return "Sin series" }
-        return "Serie \(context.state.currentSet) de \(context.state.totalSets)"
+    var body: some View {
+        Text(LiveActivityFormat.setLabel(set))
+            .font(font)
+            .monospacedDigit()
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
     }
 }
 
-private struct BPMDial: View {
-    let bpm: Int
+// MARK: - Estado 1 · Maximizada
 
-    private var fraction: CGFloat {
-        let clamped = min(max(Double(bpm), 50), 210)
-        return CGFloat((clamped - 50) / 160)
+struct ExpandedExerciseSummaryView: View {
+    let state: WorkoutActivityAttributes.ContentState
+    let workoutName: String
+
+    private var title: String {
+        let name: String = state.exerciseName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? workoutName : name
     }
 
-    private var gaugeColor: Color {
-        switch bpm {
-        case ..<90:
-            return .green
-        case ..<150:
-            return .orange
-        default:
-            return .red
+    /// Nunca más de 4 filas para que la isla expandida no desborde.
+    private var visibleSets: [LiveActivityCompletedSet] {
+        Array(state.completedSets.suffix(4))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 15, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            if visibleSets.isEmpty {
+                Text("Sin series completadas")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(Color.gray)
+                    .lineLimit(1)
+            } else {
+                ForEach(visibleSets) { set in
+                    LiveActivitySetRowView(
+                        set: set,
+                        font: .system(size: 11, weight: .semibold, design: .monospaced)
+                    )
+                }
+            }
         }
+        .frame(alignment: .leading)
+    }
+}
+
+struct ExpandedRestDialView: View {
+    let state: WorkoutActivityAttributes.ContentState
+
+    private var window: LiveActivityRestWindow {
+        LiveActivityRestWindow(state: state)
     }
 
     var body: some View {
         ZStack {
-            Circle()
-                .stroke(Color.white.opacity(0.12), lineWidth: 5)
-
-            Circle()
-                .trim(from: 0, to: bpm > 0 ? fraction : 0)
-                .stroke(
-                    gaugeColor,
-                    style: StrokeStyle(lineWidth: 5, lineCap: .round)
-                )
-                .rotationEffect(.degrees(-90))
+            LiveActivityTimerRingView(window: window, diameter: 68, lineWidth: 5)
 
             VStack(spacing: 1) {
-                Image(systemName: "heart.fill")
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.red)
+                LiveActivityTimerTextView(
+                    window: window,
+                    font: .system(size: 15, weight: .bold, design: .monospaced)
+                )
 
-                Text(bpm > 0 ? "\(bpm)" : "--")
-                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                Text("\(LiveActivityFormat.bpm(state.currentBPM)) BPM")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(.white)
+                    .foregroundStyle(LiveActivityTheme.heart)
                     .lineLimit(1)
                     .minimumScaleFactor(0.6)
             }
+            .padding(.horizontal, 6)
         }
-        .padding(3)
+        .frame(width: 68, height: 68)
+    }
+}
+
+// MARK: - Estado 2 · Normal / Compacta
+
+struct CompactRestTimerView: View {
+    let state: WorkoutActivityAttributes.ContentState
+
+    private var window: LiveActivityRestWindow {
+        LiveActivityRestWindow(state: state)
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            LiveActivityTimerRingView(window: window, diameter: 18, lineWidth: 2.5)
+
+            LiveActivityTimerTextView(
+                window: window,
+                font: .system(size: 12, weight: .semibold, design: .monospaced)
+            )
+            .frame(minWidth: 28, maxWidth: 38, alignment: .leading)
+        }
+        .padding(.leading, 1)
+    }
+}
+
+struct CompactBPMView: View {
+    let bpm: Int
+
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "heart.fill")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(LiveActivityTheme.heart)
+
+            Text("BPM")
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundStyle(LiveActivityTheme.heart)
+
+            Text(LiveActivityFormat.bpm(bpm))
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+    }
+}
+
+// MARK: - Estado 3 · Minimizada
+
+struct MinimalBPMTimerView: View {
+    let state: WorkoutActivityAttributes.ContentState
+
+    private var window: LiveActivityRestWindow {
+        LiveActivityRestWindow(state: state)
+    }
+
+    var body: some View {
+        ZStack {
+            LiveActivityTimerRingView(window: window, diameter: 24, lineWidth: 3)
+
+            Text(LiveActivityFormat.bpm(state.currentBPM))
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(LiveActivityTheme.heart)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .frame(width: 24, height: 24)
+    }
+}
+
+// MARK: - Pantalla de bloqueo
+
+struct LockScreenLiveActivityView: View {
+    let state: WorkoutActivityAttributes.ContentState
+    let workoutName: String
+
+    private var window: LiveActivityRestWindow {
+        LiveActivityRestWindow(state: state)
+    }
+
+    private var title: String {
+        let name: String = state.exerciseName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? workoutName : name
+    }
+
+    private var visibleSets: [LiveActivityCompletedSet] {
+        Array(state.completedSets.suffix(4))
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                if visibleSets.isEmpty {
+                    Text("Sin series completadas")
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color.gray)
+                        .lineLimit(1)
+                } else {
+                    ForEach(visibleSets) { set in
+                        LiveActivitySetRowView(
+                            set: set,
+                            font: .system(size: 12, weight: .semibold, design: .monospaced)
+                        )
+                    }
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            ZStack {
+                LiveActivityTimerRingView(window: window, diameter: 68, lineWidth: 5)
+
+                VStack(spacing: 1) {
+                    LiveActivityTimerTextView(
+                        window: window,
+                        font: .system(size: 15, weight: .bold, design: .monospaced)
+                    )
+
+                    Text("\(LiveActivityFormat.bpm(state.currentBPM)) BPM")
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(LiveActivityTheme.heart)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
+                .padding(.horizontal, 6)
+            }
+            .frame(width: 68, height: 68)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
     }
 }

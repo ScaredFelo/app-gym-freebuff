@@ -72,6 +72,11 @@ public struct ActiveWorkoutView: View {
         .onChange(of: healthKitManager.currentBPM) { _, newBPM in
             viewModel.addBPMPoint(newBPM)
         }
+        // Cambio de ejercicio (modo normal y Big Picture): la Live Activity se
+        // sincroniza al instante sin esperar al siguiente refresco.
+        .onChange(of: viewModel.liveActivityExerciseName) { _, _ in
+            viewModel.notifyLiveActivityExerciseChanged()
+        }
         .onDisappear {
             pendingNewRoutinePromptID = nil
             try? modelContext.save()

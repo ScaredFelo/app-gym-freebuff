@@ -80,6 +80,10 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     private var didStartWorkoutActivity = false
     private var restingSetNumber = 0
     private var restingTotalSets = 0
+    /// Ejercicio al que pertenece el descanso en curso, para poder enviar a la
+    /// Live Activity sus series completadas aunque el descanso sea en modo Big
+    /// Picture o tras restaurar la sesión.
+    private var restingRoutineExerciseID: UUID?
     private var currentRestCondition: RestCondition?
 
     private var originalRoutineExercises: [RoutineExercise] = []
@@ -233,6 +237,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         structureVersion += 1
         try? modelContext.save()
         persistState()
+        refreshLiveActivity()
 
         return routineExercise
     }
@@ -254,6 +259,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         structureVersion += 1
         try? modelContext.save()
         persistState()
+        refreshLiveActivity()
     }
 
     private func normalizeSortOrder() {
@@ -395,7 +401,11 @@ public final class ActiveWorkoutViewModel: ObservableObject {
                 currentExerciseName = exercise.name
                 restingSetNumber = setIndex + 1
                 restingTotalSets = sets.count
-                startRest(with: condition, exerciseName: exercise.name)
+                startRest(
+                    with: condition,
+                    exerciseName: exercise.name,
+                    routineExerciseID: routineExercise.id
+                )
             }
         } else {
             let targetSet = sets[setIndex]
@@ -452,6 +462,12 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
         activeSets[routineExerciseID] = sets
         persistState()
+
+        // Si la serie ya estaba completada, el cambio de kg/reps también debe
+        // reflejarse al instante en la Live Activity.
+        if sets[setIndex].isCompleted {
+            refreshLiveActivity()
+        }
     }
 
     // MARK: - Scene Phase
@@ -500,13 +516,18 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
     // MARK: - Rest Timer & BPM Drop Logic
 
-    private func startRest(with condition: RestCondition, exerciseName: String) {
+    private func startRest(
+        with condition: RestCondition,
+        exerciseName: String,
+        routineExerciseID: UUID?
+    ) {
         stopRest()
         isResting = true
         isRestPaused = false
         isTimerMinimized = false
         currentRestCondition = condition
         currentExerciseName = exerciseName
+        restingRoutineExerciseID = routineExerciseID
 
         switch condition {
         case .timer(let seconds):
@@ -772,6 +793,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         restTimerEndDate = nil
         isRestTimerActive = false
         currentRestCondition = nil
+        restingRoutineExerciseID = nil
         persistState()
     }
 
@@ -849,6 +871,9 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         isTimerMinimized = state.isTimerMinimized
         restTargetBpm = state.restTargetBpm
         currentRestCondition = state.restCondition
+        restingRoutineExerciseID = routine.exercises.first { (re: RoutineExercise) -> Bool in
+            return re.exercise?.name == state.currentExerciseName
+        }?.id
 
         if currentRestCondition == nil {
             currentRestCondition = .timer(seconds: max(1, state.totalRestSeconds))
@@ -1093,19 +1118,55 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
     // MARK: - Live Activity
 
+    /// Ejercicio que la Live Activity muestra en este instante. Las vistas lo
+    /// observan para empujar un refresco inmediato al cambiar de ejercicio,
+    /// tanto en modo normal como en Big Picture.
+    public var liveActivityExerciseName: String {
+        currentExerciseIdentity().name
+    }
+
+    /// Refresco inmediato de la Live Activity tras un cambio de ejercicio.
+    /// Es idempotente: el manager descarta estados idénticos.
+    public func notifyLiveActivityExerciseChanged() {
+        refreshLiveActivity()
+    }
+
     private func makeLiveActivitySnapshot() -> LiveActivityManager.Snapshot {
-        let info = currentExerciseInfo()
-        let endDate = isRestTimerActive ? restTimerEndDate : nil
-        let isActive = isRestTimerActive && endDate != nil
+        let identity = currentExerciseIdentity()
+        let endDate: Date? = isRestTimerActive ? restTimerEndDate : nil
+        let isActive: Bool = isRestTimerActive && endDate != nil
 
         return LiveActivityManager.Snapshot(
-            exerciseName: info.name,
-            currentSet: info.currentSet,
-            totalSets: info.totalSets,
-            timerStartDate: isActive ? timerStartDate : nil,
-            timerEndDate: endDate,
-            isRestTimerActive: isActive
+            exerciseName: identity.name,
+            completedSets: completedSetsForLiveActivity(routineExerciseID: identity.routineExerciseID),
+            restStartDate: isActive ? (timerStartDate ?? endDate) : nil,
+            restEndDate: endDate,
+            isResting: isActive
         )
+    }
+
+    /// Series ya completadas del ejercicio indicado, numeradas tal y como se
+    /// muestran en la Live Activity ("Serie 1", "Serie 2"...).
+    private func completedSetsForLiveActivity(
+        routineExerciseID: UUID?
+    ) -> [LiveActivityCompletedSet] {
+        guard let routineExerciseID,
+              let sets = activeSets[routineExerciseID] else { return [] }
+
+        return sets
+            .filter { (set: SetInputState) -> Bool in
+                return set.isCompleted
+            }
+            .sorted { (lhs: SetInputState, rhs: SetInputState) -> Bool in
+                return lhs.setNumber < rhs.setNumber
+            }
+            .map { (set: SetInputState) -> LiveActivityCompletedSet in
+                return LiveActivityCompletedSet(
+                    id: set.setNumber,
+                    weight: set.weight,
+                    reps: set.reps
+                )
+            }
     }
 
     public func startWorkoutActivityIfNeeded() {
@@ -1135,9 +1196,19 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         ActiveWorkoutStateStore.clear()
     }
 
-    private func currentExerciseInfo() -> (name: String, currentSet: Int, totalSets: Int) {
-        if isResting, !currentExerciseName.isEmpty, restingTotalSets > 0 {
-            return (currentExerciseName, restingSetNumber, restingTotalSets)
+    /// Ejercicio activo y su identificador. Durante un descanso manda el
+    /// ejercicio que lo inició; después, el primer ejercicio con series
+    /// pendientes. Ese criterio es común a los modos normal y Big Picture.
+    private func currentExerciseIdentity() -> (routineExerciseID: UUID?, name: String) {
+        if isResting, !currentExerciseName.isEmpty {
+            let restingID: UUID? = restingRoutineExerciseID
+                ?? routine.exercises.first(where: { (re: RoutineExercise) -> Bool in
+                    return re.exercise?.name == currentExerciseName
+                })?.id
+
+            if restingID != nil {
+                return (restingID, currentExerciseName)
+            }
         }
 
         let exercises = routine.exercises.sorted { (lhs: RoutineExercise, rhs: RoutineExercise) -> Bool in
@@ -1147,28 +1218,20 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         for routineExercise in exercises {
             guard let sets = activeSets[routineExercise.id], !sets.isEmpty else { continue }
 
-            if let nextSetIndex: Int = sets.firstIndex(where: { (set: SetInputState) -> Bool in
+            if sets.contains(where: { (set: SetInputState) -> Bool in
                 return !set.isCompleted
             }) {
-                return (
-                    routineExercise.exercise?.name ?? "Ejercicio",
-                    nextSetIndex + 1,
-                    sets.count
-                )
+                return (routineExercise.id, routineExercise.exercise?.name ?? "Ejercicio")
             }
         }
 
         if let lastExercise = exercises.last,
            let sets = activeSets[lastExercise.id],
            !sets.isEmpty {
-            return (
-                lastExercise.exercise?.name ?? "Ejercicio",
-                sets.count,
-                sets.count
-            )
+            return (lastExercise.id, lastExercise.exercise?.name ?? "Ejercicio")
         }
 
-        return (routine.name, 0, 0)
+        return (nil, routine.name)
     }
 
     // MARK: - Big Picture Mode
