@@ -51,6 +51,7 @@
 		AA1000000000000000000021 /* ExerciseKnowledgeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000021 /* ExerciseKnowledgeService.swift */; };
 		AA1000000000000000000022 /* AnatomicalMuscleMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000022 /* AnatomicalMuscleMapView.swift */; };
 		AA1000000000000000000023 /* ExerciseDetailSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000023 /* ExerciseDetailSheetView.swift */; };
+		AA1000000000000000000024 /* ExerciseDuplicateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000024 /* ExerciseDuplicateService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -125,6 +126,7 @@
 		AA2000000000000000000021 /* ExerciseKnowledgeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseKnowledgeService.swift; sourceTree = "<group>"; };
 		AA2000000000000000000022 /* AnatomicalMuscleMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnatomicalMuscleMapView.swift; sourceTree = "<group>"; };
 		AA2000000000000000000023 /* ExerciseDetailSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseDetailSheetView.swift; sourceTree = "<group>"; };
+		AA2000000000000000000024 /* ExerciseDuplicateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseDuplicateService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -187,6 +189,7 @@
 				AA2000000000000000000004 /* UserSettingsManager.swift */,
 				AA2000000000000000000001 /* WorkoutMetricsCalculator.swift */,
 				AA2000000000000000000021 /* ExerciseKnowledgeService.swift */,
+				AA2000000000000000000024 /* ExerciseDuplicateService.swift */,
 			);
 			name = Services;
 			path = Services;
@@ -435,6 +438,7 @@
 				AA1000000000000000000012 /* MonthlyCalendarPagerView.swift in Sources */,
 				AA1000000000000000000020 /* MuscleGroup.swift in Sources */,
 				AA1000000000000000000021 /* ExerciseKnowledgeService.swift in Sources */,
+				AA1000000000000000000024 /* ExerciseDuplicateService.swift in Sources */,
 				AA1000000000000000000022 /* AnatomicalMuscleMapView.swift in Sources */,
 				AA1000000000000000000023 /* ExerciseDetailSheetView.swift in Sources */,
 				AA1000000000000000000030 /* HypertrophyQualityHelpSheet.swift in Sources */,

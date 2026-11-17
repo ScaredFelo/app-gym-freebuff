@@ -92,6 +92,11 @@ public final class MockDataGenerator {
             var names: Set<String> = Set(existing.map { (exercise: Exercise) -> String in
                 return normalize(exercise.name)
             })
+            // Evita crear un duplicado cuando ya existe el mismo ejercicio con
+            // otro nombre (por ejemplo, en inglés).
+            var canonicalKeys: Set<String> = Set(existing.map { (exercise: Exercise) -> String in
+                return ExerciseDuplicateService.canonicalKey(for: exercise.name)
+            })
 
             let legacyKey: String = normalize("Curl bayesiano")
             let renamedKey: String = normalize("Curl en mancuerna")
@@ -106,9 +111,13 @@ public final class MockDataGenerator {
             }
 
             for definition in catalog where !names.contains(normalize(definition.name)) {
+                let definitionKey: String = ExerciseDuplicateService.canonicalKey(for: definition.name)
+                guard !canonicalKeys.contains(definitionKey) else { continue }
+
                 let exercise: Exercise = makeExercise(from: definition)
                 context.insert(exercise)
                 names.insert(normalize(definition.name))
+                canonicalKeys.insert(definitionKey)
             }
 
             try context.save()
@@ -161,8 +170,8 @@ public final class MockDataGenerator {
         CatalogExerciseDefinition(name: "Press declinado", equipmentType: .smithMachine, restSeconds: 135),
         CatalogExerciseDefinition(name: "Fondos en paralelas", equipmentType: .fixedBar, restSeconds: 135),
         CatalogExerciseDefinition(name: "Aperturas con mancuernas", equipmentType: .dumbbell, restSeconds: 120),
-        CatalogExerciseDefinition(name: "Pec deck", equipmentType: .plateLoadedMachine, restSeconds: 120),
-        CatalogExerciseDefinition(name: "Seated cable fly", equipmentType: .cable, restSeconds: 135),
+        CatalogExerciseDefinition(name: "Aperturas en máquina", equipmentType: .plateLoadedMachine, restSeconds: 120),
+        CatalogExerciseDefinition(name: "Cruces de polea sentado", equipmentType: .cable, restSeconds: 135),
 
         // Dorsal ancho
         CatalogExerciseDefinition(name: "Dominadas", equipmentType: .fixedBar, restSeconds: 135),
@@ -190,21 +199,20 @@ public final class MockDataGenerator {
         CatalogExerciseDefinition(name: "Elevaciones frontales", equipmentType: .dumbbell, restSeconds: 110),
 
         // Deltoides posterior
-        CatalogExerciseDefinition(name: "Face pull", equipmentType: .cable, restSeconds: 90),
+        CatalogExerciseDefinition(name: "Jalón a la cara", equipmentType: .cable, restSeconds: 90),
         CatalogExerciseDefinition(name: "Pajaros con mancuernas", equipmentType: .dumbbell, restSeconds: 100),
         CatalogExerciseDefinition(name: "Aperturas inversas en maquina", equipmentType: .plateLoadedMachine, restSeconds: 100),
-        CatalogExerciseDefinition(name: "Isololateral reverse fly", equipmentType: .cable, restSeconds: 135),
+        CatalogExerciseDefinition(name: "Aperturas inversas en polea", equipmentType: .cable, restSeconds: 135),
 
         // Bíceps
         CatalogExerciseDefinition(name: "Curl en mancuerna", equipmentType: .dumbbell, restSeconds: 110),
         CatalogExerciseDefinition(name: "Curl con barra EZ", equipmentType: .ezBar, restSeconds: 110),
         CatalogExerciseDefinition(name: "Curl predicador", equipmentType: .ezBar, restSeconds: 110),
         CatalogExerciseDefinition(name: "Curl en polea", equipmentType: .cable, restSeconds: 100),
-        CatalogExerciseDefinition(name: "Spider curl", equipmentType: .dumbbell, restSeconds: 135),
+        CatalogExerciseDefinition(name: "Curl araña", equipmentType: .dumbbell, restSeconds: 135),
 
         // Tríceps
-        CatalogExerciseDefinition(name: "Triceps pushdowns", equipmentType: .cable, restSeconds: 135),
-        CatalogExerciseDefinition(name: "Extension de triceps", equipmentType: .cable, restSeconds: 135),
+        CatalogExerciseDefinition(name: "Extensión de tríceps en polea", equipmentType: .cable, restSeconds: 135),
         CatalogExerciseDefinition(name: "Press cerrado", equipmentType: .olympicBar, restSeconds: 135),
         CatalogExerciseDefinition(name: "Press frances", equipmentType: .ezBar, restSeconds: 110),
         CatalogExerciseDefinition(name: "Extension tras nuca", equipmentType: .dumbbell, restSeconds: 110),
@@ -221,12 +229,12 @@ public final class MockDataGenerator {
         CatalogExerciseDefinition(name: "Sentadilla libre", equipmentType: .olympicBar, restSeconds: 180),
         CatalogExerciseDefinition(name: "Bulgaras", equipmentType: .dumbbell, restSeconds: 180),
         CatalogExerciseDefinition(name: "Prensa de piernas", equipmentType: .plateLoadedMachine, restSeconds: 180),
-        CatalogExerciseDefinition(name: "Hack squat", equipmentType: .plateLoadedMachine, restSeconds: 180),
+        CatalogExerciseDefinition(name: "Sentadilla hack", equipmentType: .plateLoadedMachine, restSeconds: 180),
         CatalogExerciseDefinition(name: "Zancadas", equipmentType: .dumbbell, restSeconds: 180),
         CatalogExerciseDefinition(name: "Extension de quadriceps", equipmentType: .cable, restSeconds: 180),
 
         // Isquiotibiales
-        CatalogExerciseDefinition(name: "Romanian deadlift (RDL)", equipmentType: .olympicBar, restSeconds: 180),
+        CatalogExerciseDefinition(name: "Peso muerto rumano (RDL)", equipmentType: .olympicBar, restSeconds: 180),
         CatalogExerciseDefinition(name: "Flexion de pierna estirado", equipmentType: .cable, restSeconds: 180),
         CatalogExerciseDefinition(name: "Flexion de pierna sentado", equipmentType: .cable, restSeconds: 180),
 
@@ -249,43 +257,42 @@ public final class MockDataGenerator {
         CatalogRoutineDefinition(name: "PUSH", entries: [
             CatalogRoutineEntry(exerciseName: "Press banca inclinado", sets: 3, targetRepsMin: 6, targetRepsMax: 8),
             CatalogRoutineEntry(exerciseName: "Elevaciones laterales mancuerna", sets: 3, targetRepsMin: 8, targetRepsMax: 10),
-            CatalogRoutineEntry(exerciseName: "Triceps pushdowns", sets: 3, targetRepsMin: 8, targetRepsMax: 10),
-            CatalogRoutineEntry(exerciseName: "Seated cable fly", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
-            CatalogRoutineEntry(exerciseName: "Press militar", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
-            CatalogRoutineEntry(exerciseName: "Extension de triceps", sets: 2, targetRepsMin: 8, targetRepsMax: 10)
+            CatalogRoutineEntry(exerciseName: "Extensión de tríceps en polea", sets: 3, targetRepsMin: 8, targetRepsMax: 10),
+            CatalogRoutineEntry(exerciseName: "Cruces de polea sentado", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
+            CatalogRoutineEntry(exerciseName: "Press militar", sets: 2, targetRepsMin: 6, targetRepsMax: 8)
         ]),
         CatalogRoutineDefinition(name: "PULL", entries: [
             CatalogRoutineEntry(exerciseName: "Jalon al pecho", sets: 3, targetRepsMin: 6, targetRepsMax: 8),
             CatalogRoutineEntry(exerciseName: "Curl en mancuerna", sets: 3, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Remo en maquina", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
-            CatalogRoutineEntry(exerciseName: "Spider curl", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
+            CatalogRoutineEntry(exerciseName: "Curl araña", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Remo libre", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
-            CatalogRoutineEntry(exerciseName: "Isololateral reverse fly", sets: 3, targetRepsMin: 8, targetRepsMax: 10)
+            CatalogRoutineEntry(exerciseName: "Aperturas inversas en polea", sets: 3, targetRepsMin: 8, targetRepsMax: 10)
         ]),
         CatalogRoutineDefinition(name: "LEGS", entries: [
             CatalogRoutineEntry(exerciseName: "Hiperextensiones", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Flexion de pierna estirado", sets: 3, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Bulgaras", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
             CatalogRoutineEntry(exerciseName: "Elevacion talones sentado", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
-            CatalogRoutineEntry(exerciseName: "Romanian deadlift (RDL)", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
+            CatalogRoutineEntry(exerciseName: "Peso muerto rumano (RDL)", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
             CatalogRoutineEntry(exerciseName: "Extension de quadriceps", sets: 2, targetRepsMin: 8, targetRepsMax: 10)
         ]),
         CatalogRoutineDefinition(name: "UPPER", entries: [
             CatalogRoutineEntry(exerciseName: "Press banca inclinado", sets: 3, targetRepsMin: 6, targetRepsMax: 8),
-            CatalogRoutineEntry(exerciseName: "Seated cable fly", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
+            CatalogRoutineEntry(exerciseName: "Cruces de polea sentado", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Jalon al pecho", sets: 3, targetRepsMin: 6, targetRepsMax: 8),
             CatalogRoutineEntry(exerciseName: "Elevaciones laterales mancuerna", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Remo libre", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
-            CatalogRoutineEntry(exerciseName: "Extension de triceps", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
+            CatalogRoutineEntry(exerciseName: "Extensión de tríceps en polea", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Curl en mancuerna", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
-            CatalogRoutineEntry(exerciseName: "Isololateral reverse fly", sets: 2, targetRepsMin: 8, targetRepsMax: 10)
+            CatalogRoutineEntry(exerciseName: "Aperturas inversas en polea", sets: 2, targetRepsMin: 8, targetRepsMax: 10)
         ]),
         CatalogRoutineDefinition(name: "LOWER", entries: [
             CatalogRoutineEntry(exerciseName: "Hiperextensiones", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Flexion de pierna sentado", sets: 3, targetRepsMin: 8, targetRepsMax: 10),
             CatalogRoutineEntry(exerciseName: "Bulgaras", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
             CatalogRoutineEntry(exerciseName: "Elevacion talones sentado", sets: 2, targetRepsMin: 8, targetRepsMax: 10),
-            CatalogRoutineEntry(exerciseName: "Romanian deadlift (RDL)", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
+            CatalogRoutineEntry(exerciseName: "Peso muerto rumano (RDL)", sets: 2, targetRepsMin: 6, targetRepsMax: 8),
             CatalogRoutineEntry(exerciseName: "Extension de quadriceps", sets: 2, targetRepsMin: 8, targetRepsMax: 10)
         ])
     ]

@@ -159,6 +159,15 @@ public enum ExerciseKnowledgeService {
         apply(inferred, to: exercise, overwriteTexts: true)
     }
 
+    /// Rellena los textos biomecánicos vacíos y realinea músculos y rango con el
+    /// perfil, sin sobrescribir los textos que el usuario ya tenga escritos. Lo
+    /// usa la unificación de ejercicios al renombrar un duplicado.
+    @MainActor
+    public static func fillMissingKnowledge(for exercise: Exercise) {
+        let inferred: ResolvedExerciseInfo = inferredInfo(for: exercise)
+        apply(inferred, to: exercise, overwriteTexts: false)
+    }
+
     private static func apply(
         _ info: ResolvedExerciseInfo,
         to exercise: Exercise,
@@ -507,7 +516,7 @@ public enum ExerciseKnowledgeService {
             whenNot: "Si acumulas mucho press en la semana o hay molestia en la inserción anterior del hombro."
         ),
         make(
-            keywords: ["face pull"],
+            keywords: ["face pull", "jalon a la cara", "tiron a la cara"],
             primary: [.rearShoulders],
             secondary: [.upperBack, .forearms],
             compound: false,
