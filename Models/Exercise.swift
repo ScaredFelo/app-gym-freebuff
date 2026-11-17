@@ -12,12 +12,27 @@ public final class Exercise {
     public var targetRepsMax: Int = 12
     public var defaultRestConditionData: Data
 
+    // MARK: - Conocimiento biomecánico (retrocompatible con datos antiguos)
+
+    /// `true` = Complejo / Compuesto, `false` = Aislamiento.
+    public var isCompound: Bool = true
+    /// Músculos principales serializados para mantener la migración ligera.
+    public var primaryMusclesRaw: String = ""
+    /// Músculos secundarios serializados para mantener la migración ligera.
+    public var secondaryMusclesRaw: String = ""
+    public var whyGoodExercise: String = ""
+    public var whyBadExercise: String = ""
+    public var whenRecommended: String = ""
+    public var whenNotRecommended: String = ""
+    /// Notas libres del usuario sobre el ejercicio.
+    public var notes: String = ""
+
     @Relationship(deleteRule: .cascade, inverse: \WorkoutSetLog.exercise)
     public var logs: [WorkoutSetLog] = []
 
     @Transient
     public var muscleGroup: MuscleGroup {
-        get { MuscleGroup(rawValue: muscleGroupRaw) ?? .pecho }
+        get { MuscleGroup.fromStoredRawValue(muscleGroupRaw) }
         set { muscleGroupRaw = newValue.rawValue }
     }
 
@@ -39,7 +54,19 @@ public final class Exercise {
 
     @Transient
     public var targetRepsText: String {
-        "\(targetRepsMin) - \(targetRepsMax)"
+        "\(targetRepsMin)-\(targetRepsMax)"
+    }
+
+    @Transient
+    public var primaryMuscles: [MuscleGroup] {
+        get { MuscleGroup.decodeList(primaryMusclesRaw) }
+        set { primaryMusclesRaw = MuscleGroup.encodeList(newValue) }
+    }
+
+    @Transient
+    public var secondaryMuscles: [MuscleGroup] {
+        get { MuscleGroup.decodeList(secondaryMusclesRaw) }
+        set { secondaryMusclesRaw = MuscleGroup.encodeList(newValue) }
     }
 
     public init(
@@ -50,7 +77,15 @@ public final class Exercise {
         requiresStraps: Bool = false,
         targetRepsMin: Int = 8,
         targetRepsMax: Int = 12,
-        defaultRestCondition: RestCondition = .timer(seconds: 90)
+        defaultRestCondition: RestCondition = .timer(seconds: 90),
+        isCompound: Bool = true,
+        primaryMuscles: [MuscleGroup] = [],
+        secondaryMuscles: [MuscleGroup] = [],
+        whyGoodExercise: String = "",
+        whyBadExercise: String = "",
+        whenRecommended: String = "",
+        whenNotRecommended: String = "",
+        notes: String = ""
     ) {
         self.id = id
         self.name = name
@@ -61,5 +96,13 @@ public final class Exercise {
         self.targetRepsMin = lower
         self.targetRepsMax = max(lower, targetRepsMax)
         self.defaultRestConditionData = (try? JSONEncoder().encode(defaultRestCondition)) ?? Data()
+        self.isCompound = isCompound
+        self.primaryMusclesRaw = MuscleGroup.encodeList(primaryMuscles)
+        self.secondaryMusclesRaw = MuscleGroup.encodeList(secondaryMuscles)
+        self.whyGoodExercise = whyGoodExercise
+        self.whyBadExercise = whyBadExercise
+        self.whenRecommended = whenRecommended
+        self.whenNotRecommended = whenNotRecommended
+        self.notes = notes
     }
 }

@@ -516,7 +516,7 @@ enum BackupManager {
 
         let exercise: Exercise = Exercise(
             name: snapshot.name,
-            muscleGroup: MuscleGroup(rawValue: snapshot.muscleGroupRaw) ?? .pecho,
+            muscleGroup: MuscleGroup.fromStoredRawValue(snapshot.muscleGroupRaw),
             equipmentType: EquipmentType.fromStoredRawValue(snapshot.equipmentTypeRaw),
             requiresStraps: snapshot.requiresStraps,
             targetRepsMin: snapshot.targetRepsMin,

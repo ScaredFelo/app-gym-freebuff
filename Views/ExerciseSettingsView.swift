@@ -1,11 +1,25 @@
 import SwiftUI
 import SwiftData
 
+/// Edición completa del ejercicio (mantener pulsado en la lista).
+/// Permite ajustar los datos básicos, el tipo de movimiento, los straps, los
+/// músculos implicados y los textos biomecánicos.
 struct ExerciseSettingsView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
     @Bindable var exercise: Exercise
+
+    @State private var isCompound: Bool = true
+    @State private var requiresStraps: Bool = false
+    @State private var primaryMuscles: [MuscleGroup] = []
+    @State private var secondaryMuscles: [MuscleGroup] = []
+    @State private var whyGoodExercise: String = ""
+    @State private var whyBadExercise: String = ""
+    @State private var whenRecommended: String = ""
+    @State private var whenNotRecommended: String = ""
+    @State private var notes: String = ""
+    @State private var didLoadValues: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -43,11 +57,57 @@ struct ExerciseSettingsView: View {
                                 }
                             }
                     }
-
-                    Toggle("Requiere Straps", isOn: $exercise.requiresStraps)
                 }
 
-                if exercise.requiresStraps {
+                Section("Ejecución") {
+                    Picker("Tipo de movimiento", selection: $isCompound) {
+                        Text("Complejo").tag(true)
+                        Text("Aislamiento").tag(false)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Toggle("Requiere Straps", isOn: $requiresStraps)
+                }
+
+                Section("Músculos implicados") {
+                    MuscleSelectionGrid(
+                        title: "Principales",
+                        selection: $primaryMuscles,
+                        tint: .green
+                    )
+
+                    MuscleSelectionGrid(
+                        title: "Secundarios",
+                        selection: $secondaryMuscles,
+                        tint: .orange
+                    )
+                }
+
+                Section("Análisis biomecánico") {
+                    BiomechanicalTextEditor(
+                        title: "Por qué es un buen ejercicio",
+                        text: $whyGoodExercise
+                    )
+                    BiomechanicalTextEditor(
+                        title: "Por qué no es un buen ejercicio",
+                        text: $whyBadExercise
+                    )
+                    BiomechanicalTextEditor(
+                        title: "Cuándo se recomienda",
+                        text: $whenRecommended
+                    )
+                    BiomechanicalTextEditor(
+                        title: "Cuándo NO se recomienda",
+                        text: $whenNotRecommended
+                    )
+                }
+
+                Section("Notas") {
+                    TextField("Notas apuntadas del ejercicio", text: $notes, axis: .vertical)
+                        .lineLimit(2...6)
+                }
+
+                if requiresStraps {
                     Section {
                         Label("Recoger Straps", systemImage: "exclamationmark.triangle.fill")
                             .font(.subheadline.bold())
@@ -61,17 +121,25 @@ struct ExerciseSettingsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .withKeyboardDismiss()
             .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancelar") {
+                        dismiss()
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Listo") {
-                        try? modelContext.save()
+                        saveChanges()
                         dismiss()
                     }
                     .fontWeight(.bold)
                 }
             }
+            .onAppear(perform: loadResolvedValues)
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
     }
+
+    // MARK: - Bindings
 
     private var muscleGroupBinding: Binding<MuscleGroup> {
         Binding(
@@ -85,5 +153,125 @@ struct ExerciseSettingsView: View {
             get: { exercise.equipmentType },
             set: { exercise.equipmentType = $0 }
         )
+    }
+
+    // MARK: - Datos derivados
+
+    /// Precarga los valores del análisis automático cuando el ejercicio no
+    /// tenía información biomecánica guardada.
+    private func loadResolvedValues() {
+        guard !didLoadValues else { return }
+        didLoadValues = true
+
+        let resolved: ResolvedExerciseInfo = ExerciseKnowledgeService.resolvedInfo(for: exercise)
+
+        isCompound = resolved.isCompound
+        requiresStraps = resolved.requiresStraps
+        primaryMuscles = resolved.primaryMuscles
+        secondaryMuscles = resolved.secondaryMuscles
+        whyGoodExercise = resolved.whyGoodExercise
+        whyBadExercise = resolved.whyBadExercise
+        whenRecommended = resolved.whenRecommended
+        whenNotRecommended = resolved.whenNotRecommended
+        notes = exercise.notes
+    }
+
+    private func saveChanges() {
+        exercise.isCompound = isCompound
+        exercise.requiresStraps = requiresStraps
+        exercise.primaryMuscles = primaryMuscles
+        exercise.secondaryMuscles = secondaryMuscles
+        exercise.whyGoodExercise = whyGoodExercise
+        exercise.whyBadExercise = whyBadExercise
+        exercise.whenRecommended = whenRecommended
+        exercise.whenNotRecommended = whenNotRecommended
+        exercise.notes = notes
+        try? modelContext.save()
+    }
+}
+
+// MARK: - Selección de músculos
+
+/// Rejilla de chips para marcar músculos implicados.
+struct MuscleSelectionGrid: View {
+    let title: String
+    @Binding var selection: [MuscleGroup]
+    let tint: Color
+
+    private let columns: [GridItem] = [
+        GridItem(.adaptive(minimum: 128.0), spacing: 6.0)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8.0) {
+            Text(title)
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 6.0) {
+                ForEach(MuscleGroup.allCases) { (group: MuscleGroup) in
+                    muscleChip(for: group)
+                }
+            }
+        }
+        .padding(.vertical, 4.0)
+    }
+
+    private func muscleChip(for group: MuscleGroup) -> some View {
+        let isSelected: Bool = selection.contains(group)
+
+        return Button {
+            toggle(group)
+        } label: {
+            HStack(spacing: 4.0) {
+                Text(group.shortName)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9.0, weight: .black))
+                }
+            }
+            .foregroundStyle(isSelected ? Color.black : Color.white.opacity(0.85))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 6.0)
+            .padding(.horizontal, 6.0)
+            .background(
+                isSelected ? tint : Color.white.opacity(0.08),
+                in: Capsule()
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toggle(_ group: MuscleGroup) {
+        if let index: Int = selection.firstIndex(of: group) {
+            selection.remove(at: index)
+        } else {
+            selection.append(group)
+        }
+    }
+}
+
+// MARK: - Editor de texto biomecánico
+
+/// Campo multilínea con título para los textos del análisis.
+struct BiomechanicalTextEditor: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4.0) {
+            Text(title)
+                .font(.caption.bold())
+                .foregroundStyle(.secondary)
+
+            TextField(title, text: $text, axis: .vertical)
+                .font(.footnote)
+                .lineLimit(2...5)
+        }
+        .padding(.vertical, 2.0)
     }
 }

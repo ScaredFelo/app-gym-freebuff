@@ -1,20 +1,5 @@
 import Foundation
 
-public enum MuscleGroup: String, Codable, CaseIterable, Sendable, Identifiable {
-    case pecho = "Pecho"
-    case espalda = "Espalda"
-    case hombros = "Hombros"
-    case biceps = "Biceps"
-    case triceps = "Triceps"
-    case cuadriceps = "Cuadriceps"
-    case isquios = "Isquios"
-    case gemelos = "Gemelos"
-    case abdominales = "Abdominales"
-    case gluteos = "Gluteos"
-
-    public var id: String { rawValue }
-}
-
 public enum EquipmentType: String, Codable, CaseIterable, Sendable, Identifiable {
     case cable = "Poleas"
     case dumbbell = "Mancuernas"

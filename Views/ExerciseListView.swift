@@ -1,5 +1,8 @@
 import SwiftUI
 import SwiftData
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public struct ExerciseListView: View {
     @Environment(\.modelContext) private var modelContext
@@ -9,7 +12,8 @@ public struct ExerciseListView: View {
     @State private var selectedEquipment: EquipmentType? = nil
     @State private var searchText = ""
     @State private var showingAddModal = false
-    @State private var exerciseToConfigure: Exercise?
+    @State private var selectedExerciseForDetail: Exercise?
+    @State private var selectedExerciseToEdit: Exercise?
 
     public var body: some View {
         NavigationStack {
@@ -24,11 +28,16 @@ public struct ExerciseListView: View {
                     List {
                         ForEach(filteredExercises) { exercise in
                             ExerciseRowView(exercise: exercise)
-                                .contentShape(RoundedRectangle(cornerRadius: 16))
-                                .onLongPressGesture(minimumDuration: 0.5) {
-                                    exerciseToConfigure = exercise
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    guard selectedExerciseToEdit == nil else { return }
+                                    selectedExerciseForDetail = exercise
                                 }
-                                .accessibilityHint("Mantén pulsado para ajustar el ejercicio")
+                                .onLongPressGesture(minimumDuration: 0.45) {
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    selectedExerciseToEdit = exercise
+                                }
+                                .accessibilityHint("Toca para ver el detalle y mantén pulsado para editar")
                                 .listRowBackground(Color.clear)
                                 .listRowSeparator(.hidden)
                         }
@@ -50,7 +59,10 @@ public struct ExerciseListView: View {
             .sheet(isPresented: $showingAddModal) {
                 AddExerciseView()
             }
-            .sheet(item: $exerciseToConfigure) { exercise in
+            .sheet(item: $selectedExerciseForDetail) { exercise in
+                ExerciseDetailSheetView(exercise: exercise)
+            }
+            .sheet(item: $selectedExerciseToEdit) { exercise in
                 ExerciseSettingsView(exercise: exercise)
             }
             .searchable(text: $searchText, prompt: "Buscar ejercicio...")
@@ -68,7 +80,7 @@ public struct ExerciseListView: View {
 
                 // Muscle Groups
                 ForEach(MuscleGroup.allCases) { group in
-                    FilterChip(title: group.rawValue, isSelected: selectedMuscleGroup == group) {
+                    FilterChip(title: group.shortName, isSelected: selectedMuscleGroup == group) {
                         selectedMuscleGroup = (selectedMuscleGroup == group) ? nil : group
                     }
                 }
@@ -125,7 +137,7 @@ struct ExerciseRowView: View {
                     .font(.headline)
                     .foregroundStyle(.white)
                 HStack(spacing: 8) {
-                    Label(exercise.muscleGroup.rawValue, systemImage: "figure.strengthtraining.traditional")
+                    Label(exercise.muscleGroup.shortName, systemImage: "figure.strengthtraining.traditional")
                     Text("•")
                     Label(exercise.equipmentType.rawValue, systemImage: "dumbbell.fill")
                     if exercise.requiresStraps {
@@ -150,7 +162,7 @@ public struct AddExerciseView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var name = ""
-    @State private var muscleGroup: MuscleGroup = .pecho
+    @State private var muscleGroup: MuscleGroup = .chest
     @State private var equipmentType: EquipmentType = .dumbbell
     @State private var requiresStraps = false
     @State private var targetRepsMin = 8

@@ -12,16 +12,17 @@ public final class MockDataGenerator {
             // Helper to map muscle groups securely
             func muscle(for name: String) -> MuscleGroup {
                 let lower = name.lowercased()
-                if lower.contains("pecho") { return .pecho }
-                if lower.contains("espalda") { return .espalda }
-                if lower.contains("hombro") { return .hombros }
-                if lower.contains("biceps") { return .biceps }
-                if lower.contains("triceps") { return .triceps }
-                if lower.contains("cuadriceps") || lower.contains("cuádriceps") { return .cuadriceps }
-                if lower.contains("isquio") { return .isquios }
-                if lower.contains("gemelo") { return .gemelos }
-                if lower.contains("gluteo") { return .gluteos }
-                return .pecho
+                if lower.contains("pecho") { return .chest }
+                if lower.contains("espalda") { return .upperBack }
+                if lower.contains("posterior") { return .rearShoulders }
+                if lower.contains("hombro") { return .frontShoulders }
+                if lower.contains("biceps") || lower.contains("bíceps") { return .biceps }
+                if lower.contains("triceps") || lower.contains("tríceps") { return .triceps }
+                if lower.contains("cuadriceps") || lower.contains("cuádriceps") { return .quads }
+                if lower.contains("isquio") { return .hamstrings }
+                if lower.contains("gemelo") { return .calves }
+                if lower.contains("gluteo") { return .glutes }
+                return .chest
             }
 
             // Helper to map equipment securely
