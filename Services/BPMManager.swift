@@ -9,6 +9,16 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
     @Published var isConnected: Bool = false
     @Published var statusText: String = "Sin pulso"
 
+    /// Identificador de restauración del `CBCentralManager`. Gracias a él iOS
+    /// mantiene la conexión BLE viva en segundo plano y con la pantalla
+    /// apagada, e incluso puede relanzar la app para entregar las lecturas.
+    private static let restoreIdentifier: String = "AppGymHeartRateCentral"
+
+    /// Callback con cada lectura válida, provenga del pulsómetro BLE o de
+    /// HealthKit. Es el único punto de entrada para registrar la sesión y
+    /// refrescar la Live Activity, esté la app en primer plano o no.
+    var onBPMReceived: ((Int) -> Void)?
+
     private var centralManager: CBCentralManager?
     private var heartRatePeripheral: CBPeripheral?
 
@@ -25,9 +35,7 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
                 guard let self, bpm > 0 else { return }
                 // Priorizamos el pulsómetro BLE mientras esté conectado
                 if self.heartRatePeripheral == nil {
-                    self.currentBPM = bpm
-                    self.isConnected = true
-                    self.statusText = "\(bpm) BPM"
+                    self.publishBPM(bpm)
                 }
             }
             .store(in: &cancellables)
@@ -37,7 +45,11 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         // Inicialización tardía para asegurar permisos
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.centralManager = CBCentralManager(delegate: self, queue: nil)
+            self.centralManager = CBCentralManager(
+                delegate: self,
+                queue: nil,
+                options: [CBCentralManagerOptionRestoreIdentifierKey: Self.restoreIdentifier]
+            )
         }
     }
 
@@ -100,6 +112,32 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
                 self.statusText = "Bluetooth no listo"
             }
         }
+    }
+
+    /// iOS nos devuelve la conexión BLE que seguía activa en segundo plano:
+    /// reenganchamos el pulsómetro y reactivamos las notificaciones.
+    func centralManager(_ central: CBCentralManager, willRestoreState dict: [String : Any]) {
+        let restoredPeripherals: [CBPeripheral] = dict[CBCentralManagerRestoredStatePeripheralsKey] as? [CBPeripheral] ?? []
+        guard let peripheral = restoredPeripherals.first else { return }
+
+        heartRatePeripheral = peripheral
+        peripheral.delegate = self
+
+        if peripheral.state == .connected {
+            peripheral.discoverServices([CBUUID(string: "180D")])
+        } else {
+            central.connect(peripheral, options: nil)
+        }
+    }
+
+    /// Publica una lectura válida de BPM: actualiza el estado observable y
+    /// avisa al callback único de recepción.
+    private func publishBPM(_ bpm: Int) {
+        guard bpm > 0 else { return }
+        currentBPM = bpm
+        isConnected = true
+        statusText = "\(bpm) BPM"
+        onBPMReceived?(bpm)
     }
 
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
@@ -165,10 +203,7 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         if bpm > 0 {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.currentBPM = bpm
-                self.isConnected = true
-                self.statusText = "\(bpm) BPM"
-                LiveActivityManager.shared.setBPM(bpm)
+                self.publishBPM(bpm)
             }
         }
     }

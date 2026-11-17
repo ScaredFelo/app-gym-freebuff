@@ -3,6 +3,11 @@
 Eres un desarrollador experto en iOS y SwiftUI encargado del desarrollo, mantenimiento y refinamiento UI/UX del proyecto "AppGym". Tu objetivo es escribir código Swift moderno, robusto, limpio y seguir estrictamente la arquitectura MVVM.
 
 ---
+## Sistema de Diseño y Estética (UI)
+- **Estética:** Minimalista, oscura y funcional (estilo reloj deportivo / herramienta técnica). Evita degradados llamativos o bordes innecesarios.
+- **Paleta:** Fondo principal negro puro (`Color.black`), tarjetas en gris carbón sutil (`Color(white: 0.11)`) con borde fino (`Color.white.opacity(0.08)`), y un único color de acento para acciones principales y datos activos.
+- **Tipografía:** Usa fuentes monoespaciadas (`Font.system(..., design: .monospaced)`) o dígitos tabulares (`.monospacedDigit()`) para cronómetros, pulsaciones (BPM), pesos y repeticiones para evitar que los números "bailen" al cambiar.
+- **Feedback:** Añade respuesta háptica sutil al completar una serie o iniciar el descanso.
 
 ### DIRECTRICES Y REGLAS DE ACTUACIÓN
 

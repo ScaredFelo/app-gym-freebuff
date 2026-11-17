@@ -142,12 +142,17 @@ struct LiveActivityTimerTextView: View {
 
     var body: some View {
         if window.isRunning {
+            // `Text(timerInterval:)` se expande al ancho propuesto por defecto:
+            // centramos explícitamente para que no quede pegado al borde
+            // izquierdo del anillo.
             Text(timerInterval: window.range, countsDown: true, showsHours: false)
                 .font(font)
                 .monospacedDigit()
                 .foregroundStyle(tint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, alignment: .center)
         } else {
             Text("00:00")
                 .font(font)
@@ -155,6 +160,8 @@ struct LiveActivityTimerTextView: View {
                 .foregroundStyle(tint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 }
@@ -236,18 +243,18 @@ struct RestDialView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .center) {
             LiveActivityTimerRingView(window: window, diameter: 80, lineWidth: 5)
 
-            VStack(spacing: 2) {
+            // Columna interior de ancho fijo y centrado exacto: así el reloj
+            // digital y los BPM quedan alineados respecto al anillo verde.
+            VStack(alignment: .center, spacing: 2) {
                 LiveActivityTimerTextView(
                     window: window,
                     font: .system(size: 17, weight: .bold, design: .rounded),
                     tint: .white
                 )
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .frame(width: 62)
+                .frame(maxWidth: .infinity, alignment: .center)
 
                 Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
                     .font(.system(size: 11, weight: .bold, design: .rounded))
@@ -255,8 +262,10 @@ struct RestDialView: View {
                     .foregroundStyle(LiveActivityTheme.heart)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
             }
-            .frame(width: 62)
+            .frame(width: 64, alignment: .center)
         }
         .frame(width: 82, height: 82)
     }

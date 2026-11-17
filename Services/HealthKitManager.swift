@@ -279,7 +279,8 @@ final class HealthKitManager: NSObject, ObservableObject, HKWorkoutSessionDelega
             self.currentBPM = bpm
             self.dataSourceName = sourceName
             self.debugMessage = "Leyendo pulsaciones de \(sourceName)"
-            LiveActivityManager.shared.setBPM(bpm)
+            // La Live Activity y el registro de muestras se actualizan desde el
+            // callback único de `BPMManager.onBPMReceived`.
         }
     }
 }

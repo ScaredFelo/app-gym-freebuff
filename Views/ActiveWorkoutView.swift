@@ -64,13 +64,8 @@ public struct ActiveWorkoutView: View {
             }
         }
         .onAppear {
-            BPMManager.shared.startScanning()
             viewModel.startWorkoutActivityIfNeeded()
             viewModel.persistState()
-            viewModel.addBPMPoint(healthKitManager.currentBPM)
-        }
-        .onChange(of: healthKitManager.currentBPM) { _, newBPM in
-            viewModel.addBPMPoint(newBPM)
         }
         // Cambio de ejercicio (modo normal y Big Picture): la Live Activity se
         // sincroniza al instante sin esperar al siguiente refresco.
@@ -78,11 +73,11 @@ public struct ActiveWorkoutView: View {
             viewModel.notifyLiveActivityExerciseChanged()
         }
         .onDisappear {
+            // No se detiene el sensor cardíaco ni la grabación de muestras:
+            // el entrenamiento sigue vivo en segundo plano hasta que el
+            // usuario pulse "Terminar sesión" o cancele.
             pendingNewRoutinePromptID = nil
             try? modelContext.save()
-            BPMManager.shared.stopScanning()
-            HealthKitManager.shared.stopWorkoutSession()
-            HealthKitManager.shared.stopHeartRateQuery()
         }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {

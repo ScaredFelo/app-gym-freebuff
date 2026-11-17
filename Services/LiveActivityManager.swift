@@ -31,12 +31,14 @@ final class LiveActivityManager: ObservableObject {
     private var bpm = 0
     private var isAppInBackground = false
 
-    /// Instante de la última actualización enviada a ActivityKit. Limita las
-    /// actualizaciones provocadas por el pulso (que llega a 4 Hz desde el
-    /// reloj) a una cada `bpmUpdateInterval` segundos.
+    /// Instante de la última actualización enviada a ActivityKit.
     private var lastActivityUpdateDate: Date = .distantPast
-    private let bpmUpdateInterval: TimeInterval = 2.0
-    private var pendingBPMUpdateTask: Task<Void, Never>?
+    /// Instante de la última actualización provocada por el pulso. Limita las
+    /// escrituras en ActivityKit (el sensor puede llegar a 4 Hz) a una cada
+    /// `bpmUpdateInterval` segundos, sin depender de temporizadores que iOS
+    /// congela con la pantalla apagada.
+    private var lastBPMUpdateDate: Date = .distantPast
+    private let bpmUpdateInterval: TimeInterval = 1.5
 
     private let staleMargin: TimeInterval = 14_400
 
@@ -72,6 +74,7 @@ final class LiveActivityManager: ObservableObject {
         self.pendingWorkoutName = workoutName
         self.startAttempts = 0
         self.lastActivityUpdateDate = .distantPast
+        self.lastBPMUpdateDate = .distantPast
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             currentActivity = nil
@@ -214,34 +217,31 @@ final class LiveActivityManager: ObservableObject {
         updateActivity(state: makeState())
     }
 
-    /// Actualización de pulso con throttling: como máximo una mutación del
-    /// `ContentState` cada 2 segundos. El temporizador nativo del widget sigue
-    /// avanzando por su cuenta entre actualizaciones.
-    func setBPM(_ bpm: Int) {
-        let value = max(0, bpm)
+    /// Actualización de pulso en tiempo real, independiente del temporizador
+    /// de descanso. Se invoca directamente desde el callback de recepción de
+    /// BPM, así funciona tanto dentro como fuera de la app y con la pantalla
+    /// bloqueada. El throttling es por marca de tiempo (una escritura cada
+    /// 1,5 s) para no agotar el presupuesto de ActivityKit.
+    func updateBPM(_ bpm: Int) {
+        let value: Int = max(0, bpm)
         guard value != self.bpm else { return }
         self.bpm = value
 
         guard let activity = currentActivity, isUsable(activity) else { return }
 
-        let elapsed: TimeInterval = Date().timeIntervalSince(lastActivityUpdateDate)
-        if elapsed >= bpmUpdateInterval {
-            updateActivity(state: makeState())
-        } else {
-            schedulePendingBPMUpdate(after: bpmUpdateInterval - elapsed)
-        }
-    }
+        let elapsed: TimeInterval = Date().timeIntervalSince(lastBPMUpdateDate)
+        guard elapsed >= bpmUpdateInterval else { return }
 
-    private func schedulePendingBPMUpdate(after delay: TimeInterval) {
-        guard pendingBPMUpdateTask == nil else { return }
+        let newState: WorkoutActivityAttributes.ContentState = makeState()
+        guard lastState != newState else { return }
 
-        pendingBPMUpdateTask = Task { @MainActor [weak self] in
-            let nanoseconds: UInt64 = UInt64(max(0.1, delay) * 1_000_000_000.0)
-            try? await Task.sleep(nanoseconds: nanoseconds)
+        let now: Date = Date()
+        lastBPMUpdateDate = now
+        lastActivityUpdateDate = now
+        lastState = newState
 
-            guard let self, !Task.isCancelled else { return }
-            self.pendingBPMUpdateTask = nil
-            self.updateActivity(state: self.makeState())
+        Task {
+            await activity.update(ActivityContent(state: newState, staleDate: nil))
         }
     }
 
@@ -273,14 +273,13 @@ final class LiveActivityManager: ObservableObject {
     func endActivity() {
         pendingStartTask?.cancel()
         pendingStartTask = nil
-        pendingBPMUpdateTask?.cancel()
-        pendingBPMUpdateTask = nil
         pendingWorkoutName = nil
         startAttempts = 0
 
         currentActivity = nil
         lastState = nil
         lastActivityUpdateDate = .distantPast
+        lastBPMUpdateDate = .distantPast
         debugMessage = "Live Activity finalizada"
 
         // Capturamos la lista ahora mismo: si el usuario inicia otra rutina

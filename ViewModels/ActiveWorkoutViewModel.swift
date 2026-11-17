@@ -1041,8 +1041,8 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     public func finishWorkout(modelContext: ModelContext) -> WorkoutSession {
         stopRest()
         endWorkoutActivity()
+        stopBPMTracking()
         HealthKitManager.shared.stopWorkoutSession()
-        HealthKitManager.shared.stopHeartRateQuery()
         // Conserva la fecha de fin fijada al abrir el resumen: repetir la
         // confirmación ("Terminar sesión") no debe alargar la duración.
         if session.endDate == nil {
@@ -1108,8 +1108,8 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     public func cancelWorkout(modelContext: ModelContext) {
         stopRest()
         endWorkoutActivity()
+        stopBPMTracking()
         HealthKitManager.shared.stopWorkoutSession()
-        HealthKitManager.shared.stopHeartRateQuery()
         restoreOriginalStructure(modelContext: modelContext)
         modelContext.delete(session)
         ActiveWorkoutStateStore.clear()
@@ -1175,6 +1175,10 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         NotificationManager.shared.requestAuthorization()
         HealthKitManager.shared.startWorkoutSession()
         AudioAlertService.shared.startBackgroundAudio()
+
+        // La recepción de BPM vive ligada al entrenamiento, no a la vista: se
+        // inicia aquí y solo se detiene al terminar o cancelar la sesión.
+        startBPMTracking()
 
         LiveActivityManager.shared.startActivity(
             workoutName: routine.name,
@@ -1469,6 +1473,38 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         }
     }
 
+    /// Inicia la escucha continua de pulsaciones (BLE + HealthKit). Se enlaza
+    /// con el ciclo de vida del entrenamiento, no con la vista.
+    private func startBPMTracking() {
+        BPMManager.shared.onBPMReceived = { [weak self] bpm in
+            guard let self else { return }
+            Task { @MainActor in
+                self.onReceiveBPM(Double(bpm))
+            }
+        }
+        BPMManager.shared.startScanning()
+        HealthKitManager.shared.startHeartRateQuery()
+    }
+
+    /// Detiene la escucha y la grabación de pulsaciones. Solo se invoca al
+    /// terminar o cancelar el entrenamiento.
+    private func stopBPMTracking() {
+        BPMManager.shared.onBPMReceived = nil
+        BPMManager.shared.stopScanning()
+        HealthKitManager.shared.stopHeartRateQuery()
+    }
+
+    /// Callback único de recepción de BPM. Cada lectura, esté la app en primer
+    /// plano, en otra app o con la pantalla bloqueada, se registra siempre en
+    /// `bpmSamples` (haya o no descanso activo) y se envía a la Live Activity
+    /// sin depender de temporizadores.
+    public func onReceiveBPM(_ bpm: Double) {
+        guard bpm > 0 else { return }
+        let value: Int = Int(bpm.rounded())
+        addBPMPoint(value)
+        LiveActivityManager.shared.updateBPM(value)
+    }
+
     public func addBPMPoint(_ bpm: Int) {
         guard bpm > 0 else { return }
 
@@ -1504,8 +1540,12 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
     private func persistBPMHistoryIfNeeded(now: Date) {
         guard session.endDate == nil else { return }
-        guard now.timeIntervalSince(lastBPMPersistDate) >= 10 else { return }
+        guard now.timeIntervalSince(lastBPMPersistDate) >= 15 else { return }
         lastBPMPersistDate = now
+        // Volcamos las muestras en la sesión antes de persistir: así el
+        // histórico completo sobrevive a un cierre inesperado o a que el
+        // sistema libere memoria en segundo plano.
+        session.bpmSamples = sessionBPMSamples
         persistState()
     }
 

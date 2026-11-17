@@ -32,6 +32,8 @@
     <array>
         <string>processing</string>
         <string>audio</string>
+        <string>bluetooth-central</string>
+        <string>workout-processing</string>
     </array>
     <key>UILaunchScreen</key>
     <dict/>
