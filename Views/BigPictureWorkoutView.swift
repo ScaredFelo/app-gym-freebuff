@@ -7,7 +7,6 @@ import Charts
 /// separación de responsabilidades y el cuerpo de esa vista enfocado al modo normal.
 public struct BigPictureWorkoutView: View {
     @ObservedObject private var viewModel: ActiveWorkoutViewModel
-    @ObservedObject private var healthKitManager = HealthKitManager.shared
     @Environment(\.dismiss) private var dismiss
 
     let modelContext: ModelContext
@@ -57,7 +56,7 @@ public struct BigPictureWorkoutView: View {
                     restTimerProgressView
 
                     // MARK: - Gráfica BPM (visible durante todo el entrenamiento)
-                    BPMChartView(samples: viewModel.bpmHistoryLast3Minutes)
+                    BPMChartView(feed: viewModel.bpmFeed)
 
                     // MARK: - Parrilla de series (historial vs nueva marca)
                     BigPictureSetsGridView(
@@ -507,12 +506,15 @@ struct BigPictureControlsView: View {
 // MARK: - BPM Chart View (ventana de 3 minutos)
 
 struct BPMChartView: View {
-    let samples: [ActiveWorkoutViewModel.BPMDataPoint]
+    @ObservedObject var feed: ActiveWorkoutViewModel.BPMFeed
 
     var body: some View {
         TacticalPanel(code: "HUD.BPM", title: "ÚLTIMOS 3 MIN", contentPadding: 12.0) {
             VStack(alignment: .leading, spacing: 6.0) {
                 TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                    let samples: [ActiveWorkoutViewModel.BPMDataPoint] =
+                        feed.points(within: 180.0, relativeTo: timeline.date)
+
                     if samples.isEmpty {
                         Text("ESPERANDO TELEMETRÍA CARDÍACA...")
                             .font(EndfieldFont.mono(10.0))

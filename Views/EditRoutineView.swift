@@ -1,6 +1,9 @@
 import SwiftUI
 import SwiftData
 
+/// Editor de rutinas con la identidad "Endfield": paneles angulares, telemetría
+/// monoespaciada y controles `−  valor  +` en lugar de los `Form`/`Stepper`
+/// nativos. Toda la lógica de persistencia se mantiene intacta.
 struct EditRoutineView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -19,71 +22,40 @@ struct EditRoutineView: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                HStack(spacing: 12) {
-                    Image(systemName: "pencil.and.list.clipboard")
-                        .font(.title3)
-                        .foregroundStyle(.green)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("MODO EDICIÓN")
-                            .font(.caption.bold())
-                            .foregroundStyle(.green)
-                        Text("Los cambios se guardan en esta rutina, no en el entrenamiento activo.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
+        ZStack {
+            TechnicalGridBackground()
 
-            Section("Nombre de la rutina") {
-                TextField("Nombre", text: $routine.name)
-            }
+            ScrollView {
+                LazyVStack(spacing: 14.0) {
+                    modePanel
+                    namePanel
 
-            if sortedExercises.isEmpty {
-                Section {
-                    Text("Todavía no hay ejercicios. Añade el primero para empezar.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                ForEach(Array(sortedExercises.enumerated()), id: \.element.id) { index, routineExercise in
-                    Section {
-                        RoutineExerciseEditorRow(
-                            routineExercise: routineExercise,
-                            exercises: exercises
-                        )
-                    } header: {
-                        HStack {
-                            Text("Ejercicio \(index + 1)")
-                            Spacer()
-                            Button(role: .destructive) {
-                                exercisePendingRemoval = routineExercise
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.caption.bold())
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Eliminar ejercicio")
+                    if sortedExercises.isEmpty {
+                        emptyStatePanel
+                    } else {
+                        ForEach(Array(sortedExercises.enumerated()), id: \.element.id) { index, routineExercise in
+                            RoutineExerciseEditorRow(
+                                routineExercise: routineExercise,
+                                exercises: exercises,
+                                index: index,
+                                onRemove: { exercisePendingRemoval = routineExercise }
+                            )
                         }
                     }
-                }
-            }
 
-            Section {
-                Button {
-                    showingExercisePicker = true
-                } label: {
-                    Label("Añadir ejercicio", systemImage: "plus.circle.fill")
-                        .font(.headline)
+                    addExerciseButton
+
+                    Color.clear
+                        .frame(height: 8.0)
                 }
+                .padding(.horizontal, 16.0)
+                .padding(.vertical, 16.0)
             }
+            .scrollIndicators(.hidden)
         }
-        .scrollContentBackground(.hidden)
-        .background(Color.black)
         .preferredColorScheme(.dark)
-        .tint(.green)
-        .navigationTitle("Editar rutina")
+        .tint(EndfieldPalette.accentYellow)
+        .navigationTitle("EDITAR RUTINA")
         .navigationBarTitleDisplayMode(.inline)
         .withKeyboardDismiss()
         .toolbar {
@@ -111,7 +83,7 @@ struct EditRoutineView: View {
                 .disabled(sortedExercises.isEmpty)
                 .accessibilityLabel("Ajustar ejercicio")
 
-                Button("Guardar") {
+                Button("GUARDAR") {
                     for routineExercise in routine.exercises where routineExercise.modelContext == nil {
                         modelContext.insert(routineExercise)
                     }
@@ -173,6 +145,68 @@ struct EditRoutineView: View {
         }
     }
 
+    // MARK: - Paneles
+
+    private var modePanel: some View {
+        TacticalPanel(code: "RUT.EDIT", title: isNewRoutine ? "NUEVA RUTINA" : "MODO EDICIÓN", contentPadding: 12.0) {
+            HStack(alignment: .top, spacing: 9.0) {
+                Image(systemName: "pencil.and.list.clipboard")
+                    .font(EndfieldFont.mono(13.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .fixedSize()
+
+                Text("Los cambios se guardan en esta rutina, no en el entrenamiento activo.")
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+            }
+        }
+    }
+
+    private var namePanel: some View {
+        TacticalPanel(code: "RUT.01", title: "NOMBRE", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 6.0) {
+                Text("IDENTIFICADOR")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+
+                TextField("Nombre de la rutina", text: $routine.name)
+                    .tacticalField()
+                    .accessibilityLabel("Nombre de la rutina")
+            }
+        }
+    }
+
+    private var emptyStatePanel: some View {
+        TacticalPanel(code: "RUT.ERR", title: "SIN EJERCICIOS", contentPadding: 12.0) {
+            Text("Todavía no hay ejercicios. Añade el primero para empezar.")
+                .font(EndfieldFont.mono(10.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var addExerciseButton: some View {
+        Button {
+            showingExercisePicker = true
+        } label: {
+            HStack(spacing: 8.0) {
+                Image(systemName: "plus")
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+
+                Text("AÑADIR EJERCICIO")
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+                    .tracking(1.2)
+            }
+        }
+        .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
+        .accessibilityLabel("Añadir ejercicio a la rutina")
+    }
+
+    // MARK: - Lógica
+
     private func normalizeSortOrder() {
         for (index, routineExercise) in routine.exercises.sorted(by: { $0.sortOrder < $1.sortOrder }).enumerated() {
             routineExercise.sortOrder = index
@@ -186,9 +220,13 @@ struct EditRoutineView: View {
     }
 }
 
+// MARK: - Fila de ejercicio
+
 private struct RoutineExerciseEditorRow: View {
     @Bindable var routineExercise: RoutineExercise
     let exercises: [Exercise]
+    let index: Int
+    let onRemove: () -> Void
 
     @State private var notesExpanded = false
 
@@ -211,107 +249,299 @@ private struct RoutineExerciseEditorRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                TextField("Nombre del ejercicio", text: exerciseNameBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(routineExercise.exercise == nil)
+        TacticalPanel(contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 10.0) {
+                headerStrip
+                tacticalRule
+                nameRow
 
-                Menu {
-                    ForEach(exercises) { exercise in
-                        Button {
-                            routineExercise.exercise = exercise
-                        } label: {
-                            if routineExercise.exercise?.id == exercise.id {
-                                Label(exercise.name, systemImage: "checkmark")
-                            } else {
-                                Text(exercise.name)
-                            }
-                        }
-                    }
-                } label: {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.green)
-                        .frame(width: 32, height: 32)
-                        .background(Color.green.opacity(0.15))
-                        .clipShape(Circle())
+                if let exercise = routineExercise.exercise {
+                    tagRow(for: exercise)
+                    equipmentRow(for: exercise)
                 }
-                .buttonStyle(.borderless)
-                .accessibilityLabel("Cambiar ejercicio")
-            }
 
-            if let exercise = routineExercise.exercise {
-                HStack(spacing: 10) {
-                    Label(exercise.muscleGroup.rawValue, systemImage: "figure.strengthtraining.traditional")
-                    Label(exercise.equipmentType.rawValue, systemImage: "dumbbell.fill")
-                    if exercise.requiresStraps {
-                        Label("Straps", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                tacticalRule
 
-                Picker("Equipamiento", selection: equipmentBinding(for: exercise)) {
-                    ForEach(EquipmentType.allCases) { equipment in
-                        Text(equipment.rawValue).tag(equipment)
-                    }
-                }
-            }
+                TacticalStepperRow(
+                    code: "SET",
+                    title: "Series",
+                    value: $routineExercise.defaultSets,
+                    range: 1...12
+                )
 
-            Stepper("Series: \(routineExercise.defaultSets)", value: $routineExercise.defaultSets, in: 1...12)
+                repsBlock
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Reps objetivo: \(routineExercise.targetRepsText) reps")
-                    .font(.subheadline.bold())
-                Stepper("Mínimo: \(routineExercise.targetRepsMin)", value: $routineExercise.targetRepsMin, in: 1...50)
-                    .onChange(of: routineExercise.targetRepsMin) { _, newValue in
-                        if newValue > routineExercise.targetRepsMax {
-                            routineExercise.targetRepsMax = newValue
-                        }
-                    }
-                Stepper("Máximo: \(routineExercise.targetRepsMax)", value: $routineExercise.targetRepsMax, in: 1...50)
-                    .onChange(of: routineExercise.targetRepsMax) { _, newValue in
-                        if newValue < routineExercise.targetRepsMin {
-                            routineExercise.targetRepsMin = newValue
-                        }
-                    }
-            }
+                weightRow
 
-            HStack {
-                Text("Peso por defecto")
-                Spacer()
-                TextField("0", value: $routineExercise.defaultWeight, format: .number)
-                    .keyboardType(.decimalPad)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 80)
-                Text("kg")
-                    .foregroundStyle(.secondary)
-            }
-
-            Stepper("Descanso: \(routineExercise.restSeconds)s", value: $routineExercise.restSeconds, in: 0...600, step: 15)
+                TacticalStepperRow(
+                    code: "REST",
+                    title: "Descanso",
+                    value: $routineExercise.restSeconds,
+                    range: 0...600,
+                    step: 15,
+                    unit: "s"
+                )
                 .onChange(of: routineExercise.restSeconds) { _, _ in
                     routineExercise.hasCustomRest = true
                 }
 
-            if routineExercise.exercise?.requiresStraps == true {
-                Label("Recoger Straps", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption.bold())
-                    .foregroundStyle(.orange)
+                if routineExercise.exercise?.requiresStraps == true {
+                    strapsWarning
+                }
+
+                EndfieldDisclosure(code: "NOTE", title: "Notas", isExpanded: $notesExpanded) {
+                    TextField(
+                        "Consejos, altura de poleas, agarre...",
+                        text: $routineExercise.notes,
+                        axis: .vertical
+                    )
+                    .lineLimit(2...6)
+                    .tacticalField()
+                }
+            }
+        }
+    }
+
+    // MARK: Cabecera y datos
+
+    private var headerStrip: some View {
+        HStack(spacing: 7.0) {
+            Text("EX-\(String(format: "%02d", index + 1))")
+                .font(EndfieldFont.mono(10.0, weight: .heavy))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.accentYellow)
+                .padding(.horizontal, 5.0)
+                .padding(.vertical, 2.0)
+                .overlay {
+                    ChamferedRectangle(cut: 3.0)
+                        .stroke(EndfieldPalette.accentYellow.opacity(0.55), lineWidth: 1.0)
+                }
+                .fixedSize()
+
+            Text((routineExercise.exercise?.name ?? "SIN EJERCICIO").uppercased())
+                .font(EndfieldFont.mono(12.0, weight: .heavy))
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Rectangle()
+                .fill(EndfieldPalette.borderSubtle)
+                .frame(height: 1.0)
+
+            Button(action: onRemove) {
+                Image(systemName: "trash")
+                    .font(EndfieldFont.mono(10.0, weight: .bold))
+            }
+            .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentRed, size: 26.0))
+            .accessibilityLabel("Eliminar ejercicio de la rutina")
+        }
+    }
+
+    private var nameRow: some View {
+        HStack(spacing: 8.0) {
+            TextField("Nombre del ejercicio", text: exerciseNameBinding)
+                .tacticalField()
+                .disabled(routineExercise.exercise == nil)
+                .accessibilityLabel("Nombre del ejercicio")
+
+            Menu {
+                ForEach(exercises) { exercise in
+                    Button {
+                        routineExercise.exercise = exercise
+                    } label: {
+                        if routineExercise.exercise?.id == exercise.id {
+                            Label(exercise.name, systemImage: "checkmark")
+                        } else {
+                            Text(exercise.name)
+                        }
+                    }
+                }
+            } label: {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+            }
+            .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentCyan, size: 34.0))
+            .accessibilityLabel("Cambiar ejercicio")
+        }
+    }
+
+    @ViewBuilder
+    private func tagRow(for exercise: Exercise) -> some View {
+        HStack(spacing: 5.0) {
+            TacticalTagBadge(text: exercise.muscleGroup.shortName, tint: EndfieldPalette.accentCyan)
+
+            TacticalTagBadge(text: exercise.equipmentType.rawValue, tint: EndfieldPalette.textSecondary)
+
+            if exercise.requiresStraps {
+                TacticalTagBadge(text: "STRAPS", tint: EndfieldPalette.accentRed)
             }
 
-            DisclosureGroup("Notas", isExpanded: $notesExpanded) {
-                TextField(
-                    "Consejos, altura de poleas, agarre...",
-                    text: $routineExercise.notes,
-                    axis: .vertical
-                )
-                .lineLimit(2...6)
-                .textFieldStyle(.roundedBorder)
-            }
-            .font(.subheadline.bold())
+            Spacer(minLength: 0.0)
         }
-        .padding(.vertical, 4)
+        .lineLimit(1)
+    }
+
+    private func equipmentRow(for exercise: Exercise) -> some View {
+        HStack(spacing: 8.0) {
+            VStack(alignment: .leading, spacing: 2.0) {
+                Text("EQP")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+
+                Text("Equipamiento")
+                    .font(EndfieldFont.mono(11.0, weight: .semibold))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+
+            Spacer(minLength: 6.0)
+
+            Menu {
+                ForEach(EquipmentType.allCases) { equipment in
+                    Button {
+                        equipmentBinding(for: exercise).wrappedValue = equipment
+                    } label: {
+                        if exercise.equipmentType == equipment {
+                            Label(equipment.rawValue, systemImage: "checkmark")
+                        } else {
+                            Text(equipment.rawValue)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 5.0) {
+                    Text(exercise.equipmentType.rawValue.uppercased())
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(0.8)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+
+                    Image(systemName: "chevron.down")
+                        .font(EndfieldFont.label(7.0))
+                }
+                .foregroundStyle(EndfieldPalette.accentYellow)
+                .padding(.horizontal, 8.0)
+                .padding(.vertical, 6.0)
+                .overlay {
+                    ChamferedRectangle(cut: 4.0)
+                        .stroke(EndfieldPalette.accentYellow.opacity(0.5), lineWidth: 1.0)
+                }
+            }
+            .accessibilityLabel("Equipamiento del ejercicio")
+        }
+        .padding(.horizontal, 9.0)
+        .padding(.vertical, 7.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+    }
+
+    private var repsBlock: some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            HStack(spacing: 6.0) {
+                Text("REPS // OBJETIVO")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+
+                Text(routineExercise.targetRepsText)
+                    .font(EndfieldFont.mono(12.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+            }
+
+            TacticalStepperRow(
+                code: "MIN",
+                title: "Repeticiones mínimas",
+                value: $routineExercise.targetRepsMin,
+                range: 1...50
+            )
+            .onChange(of: routineExercise.targetRepsMin) { _, newValue in
+                if newValue > routineExercise.targetRepsMax {
+                    routineExercise.targetRepsMax = newValue
+                }
+            }
+
+            TacticalStepperRow(
+                code: "MAX",
+                title: "Repeticiones máximas",
+                value: $routineExercise.targetRepsMax,
+                range: 1...50
+            )
+            .onChange(of: routineExercise.targetRepsMax) { _, newValue in
+                if newValue < routineExercise.targetRepsMin {
+                    routineExercise.targetRepsMin = newValue
+                }
+            }
+        }
+    }
+
+    private var weightRow: some View {
+        HStack(spacing: 8.0) {
+            VStack(alignment: .leading, spacing: 2.0) {
+                Text("LOAD")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+
+                Text("Peso por defecto")
+                    .font(EndfieldFont.mono(11.0, weight: .semibold))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+
+            Spacer(minLength: 6.0)
+
+            HStack(spacing: 5.0) {
+                TextField(
+                    "0",
+                    value: $routineExercise.defaultWeight,
+                    format: .number
+                )
+                .keyboardType(.decimalPad)
+                .tacticalField(alignment: .trailing)
+                .frame(width: 72.0)
+                .accessibilityLabel("Peso por defecto en kilogramos")
+
+                Text("KG")
+                    .font(EndfieldFont.label(8.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize()
+            }
+        }
+    }
+
+    private var strapsWarning: some View {
+        HStack(spacing: 6.0) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+
+            Text("RECOGER STRAPS")
+                .font(EndfieldFont.label(9.0))
+                .tracking(1.2)
+        }
+        .foregroundStyle(EndfieldPalette.accentRed)
+        .padding(.horizontal, 8.0)
+        .padding(.vertical, 5.0)
+        .overlay {
+            ChamferedRectangle(cut: 4.0)
+                .stroke(EndfieldPalette.accentRed.opacity(0.55), lineWidth: 1.0)
+        }
+    }
+
+    private var tacticalRule: some View {
+        Rectangle()
+            .fill(EndfieldPalette.borderSubtle)
+            .frame(height: 1.0)
     }
 }

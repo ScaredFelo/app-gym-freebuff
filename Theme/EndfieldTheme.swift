@@ -7,18 +7,20 @@ import UIKit
 
 /// Paleta estática de la identidad visual "Endfield":
 /// negro mate profundo, gris carbón industrial, amarillo táctico, rojo alerta
-/// y cian de telemetría. Todos los valores son `Color` explícitos.
+/// y cian de telemetría. Se declara con componentes RGB literales para que el
+/// archivo sea autocontenido y lo puedan compartir la app y la extensión de
+/// widgets (la Live Activity dibuja el mismo lenguaje visual).
 public enum EndfieldPalette {
-    public static let bgPrimary: Color = Color(hex: "#090A0C")
-    public static let bgPanel: Color = Color(hex: "#111318")
-    public static let bgElevated: Color = Color(hex: "#181C24")
-    public static let accentYellow: Color = Color(hex: "#FFE600")
-    public static let accentRed: Color = Color(hex: "#FF3B30")
-    public static let accentCyan: Color = Color(hex: "#00E5FF")
-    public static let textPrimary: Color = Color(hex: "#F2F4F7")
-    public static let textSecondary: Color = Color(hex: "#8A93A2")
+    public static let bgPrimary: Color = Color(red: 9.0 / 255.0, green: 10.0 / 255.0, blue: 12.0 / 255.0)
+    public static let bgPanel: Color = Color(red: 17.0 / 255.0, green: 19.0 / 255.0, blue: 24.0 / 255.0)
+    public static let bgElevated: Color = Color(red: 24.0 / 255.0, green: 28.0 / 255.0, blue: 36.0 / 255.0)
+    public static let accentYellow: Color = Color(red: 255.0 / 255.0, green: 230.0 / 255.0, blue: 0.0 / 255.0)
+    public static let accentRed: Color = Color(red: 255.0 / 255.0, green: 59.0 / 255.0, blue: 48.0 / 255.0)
+    public static let accentCyan: Color = Color(red: 0.0 / 255.0, green: 229.0 / 255.0, blue: 255.0 / 255.0)
+    public static let textPrimary: Color = Color(red: 242.0 / 255.0, green: 244.0 / 255.0, blue: 247.0 / 255.0)
+    public static let textSecondary: Color = Color(red: 138.0 / 255.0, green: 147.0 / 255.0, blue: 162.0 / 255.0)
     public static let borderSubtle: Color = Color.white.opacity(0.14)
-    public static let borderActive: Color = Color(hex: "#FFE600").opacity(0.65)
+    public static let borderActive: Color = accentYellow.opacity(0.65)
 
     /// Retícula táctica: trazo muy sutil sobre `bgPrimary`.
     public static let gridLine: Color = Color.white.opacity(0.035)

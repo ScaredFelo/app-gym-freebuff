@@ -460,21 +460,47 @@ public struct SegmentedProgressBar: View {
     }
 
     public var body: some View {
-        HStack(spacing: spacing) {
-            ForEach(Array(0..<segments), id: \.self) { (index: Int) in
-                Rectangle()
-                    .fill(isFilled(index: index) ? tint : trackColor)
-                    .frame(height: height)
+        // Un único `Canvas` en lugar de N rectángulos apilados: la barra se
+        // redibuja con un solo trazo por fotograma y no crea N vistas ni N
+        // animaciones implícitas.
+        let segmentCount: Int = segments
+        let litCount: Int = litSegmentCount
+        let gap: CGFloat = spacing
+        let barHeight: CGFloat = height
+        let litColor: Color = tint
+        let emptyColor: Color = trackColor
+
+        Canvas { context, size in
+            let totalGap: CGFloat = gap * CGFloat(max(segmentCount - 1, 0))
+            let available: CGFloat = max(0.0, size.width - totalGap)
+            let segmentWidth: CGFloat = available / CGFloat(max(segmentCount, 1))
+            let drawnHeight: CGFloat = min(barHeight, size.height)
+
+            var index: Int = 0
+            while index < segmentCount {
+                let x: CGFloat = CGFloat(index) * (segmentWidth + gap)
+                let rect: CGRect = CGRect(x: x, y: 0.0, width: segmentWidth, height: drawnHeight)
+                context.fill(Path(rect), with: .color(index < litCount ? litColor : emptyColor))
+                index += 1
             }
         }
+        .frame(height: height)
         .frame(maxWidth: .infinity)
         .animation(.linear(duration: 0.2), value: progress)
         .accessibilityHidden(true)
     }
 
-    private func isFilled(index: Int) -> Bool {
-        let threshold: Double = Double(index + 1) / Double(segments)
-        return threshold <= progress + 0.0001
+    private var litSegmentCount: Int {
+        var count: Int = 0
+        var index: Int = 0
+        while index < segments {
+            let threshold: Double = Double(index + 1) / Double(segments)
+            if threshold <= progress + 0.0001 {
+                count += 1
+            }
+            index += 1
+        }
+        return count
     }
 }
 
@@ -612,5 +638,134 @@ public struct EndfieldSectionHeader: View {
                 .frame(height: 1.0)
         }
         .accessibilityAddTraits(.isHeader)
+    }
+}
+
+// MARK: - 12. Campo de texto técnico
+
+/// Caja de entrada angular: fondo elevado, borde fino y tipografía
+/// monoespaciada. Sustituye al `TextField` con borde redondeado del sistema.
+public struct TacticalFieldModifier: ViewModifier {
+    private let alignment: TextAlignment
+
+    public init(alignment: TextAlignment = .leading) {
+        self.alignment = alignment
+    }
+
+    public func body(content: Content) -> some View {
+        content
+            .font(EndfieldFont.mono(13.0, weight: .semibold))
+            .foregroundStyle(EndfieldPalette.textPrimary)
+            .tint(EndfieldPalette.accentYellow)
+            .multilineTextAlignment(alignment)
+            .textFieldStyle(.plain)
+            .padding(.horizontal, 10.0)
+            .padding(.vertical, 9.0)
+            .background(EndfieldPalette.bgElevated)
+            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8))
+            .overlay {
+                ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                    .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+            }
+    }
+}
+
+public extension View {
+    /// Aplica la caja de entrada angular de la identidad Endfield.
+    func tacticalField(alignment: TextAlignment = .leading) -> some View {
+        return modifier(TacticalFieldModifier(alignment: alignment))
+    }
+}
+
+// MARK: - 13. Fila de ajuste numérico
+
+/// Ajuste `−  valor  +` con estética de consola. Mantiene la semántica de
+/// `Stepper` (rango y paso) pero con botones angulares propios.
+public struct TacticalStepperRow: View {
+    private let code: String
+    private let title: String
+    @Binding private var value: Int
+    private let range: ClosedRange<Int>
+    private let step: Int
+    private let unit: String
+    private let tint: Color
+
+    public init(
+        code: String,
+        title: String,
+        value: Binding<Int>,
+        range: ClosedRange<Int>,
+        step: Int = 1,
+        unit: String = "",
+        tint: Color = EndfieldPalette.accentYellow
+    ) {
+        self.code = code
+        self.title = title
+        self._value = value
+        self.range = range
+        self.step = max(1, step)
+        self.unit = unit
+        self.tint = tint
+    }
+
+    public var body: some View {
+        HStack(spacing: 8.0) {
+            VStack(alignment: .leading, spacing: 2.0) {
+                Text(code)
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .lineLimit(1)
+
+                Text(title)
+                    .font(EndfieldFont.mono(11.0, weight: .semibold))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+
+            Spacer(minLength: 6.0)
+
+            stepButton(systemName: "minus", action: decrease)
+                .accessibilityLabel("Restar \(title)")
+
+            Text("\(value)\(unit)")
+                .font(EndfieldFont.mono(16.0, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(minWidth: 46.0)
+                .contentTransition(.numericText())
+
+            stepButton(systemName: "plus", action: increase)
+                .accessibilityLabel("Sumar \(title)")
+        }
+        .padding(.horizontal, 9.0)
+        .padding(.vertical, 7.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityValue("\(value)\(unit)")
+    }
+
+    private func stepButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(EndfieldFont.mono(12.0, weight: .heavy))
+        }
+        .buttonStyle(EndfieldSquareButtonStyle(tint: tint, size: 28.0))
+    }
+
+    private func decrease() {
+        value = max(range.lowerBound, value - step)
+    }
+
+    private func increase() {
+        value = min(range.upperBound, value + step)
     }
 }

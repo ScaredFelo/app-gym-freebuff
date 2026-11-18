@@ -8,8 +8,6 @@ public struct ActiveWorkoutView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
-    @ObservedObject private var healthKitManager = HealthKitManager.shared
-    @ObservedObject private var liveActivityManager = LiveActivityManager.shared
     @AppStorage("isBigPictureModeEnabled") private var isBigPictureModeEnabled = false
 
     @StateObject private var viewModel: ActiveWorkoutViewModel
@@ -185,7 +183,6 @@ public struct ActiveWorkoutView: View {
                             routineName: viewModel.routine.name,
                             sessionStart: viewModel.session.startDate,
                             volumeKg: viewModel.session.totalVolumeKg,
-                            bpm: healthKitManager.currentBPM,
                             isResting: viewModel.isResting,
                             isRestPaused: viewModel.isRestPaused,
                             totalRestSeconds: viewModel.totalRestSeconds,
@@ -194,9 +191,7 @@ public struct ActiveWorkoutView: View {
                             onCancel: { showingCancelConfirmation = true }
                         )
 
-                        if healthKitManager.currentBPM == 0 {
-                            healthKitDiagnosticBanner
-                        }
+                        HealthDiagnosticBanner()
 
                         let _ = viewModel.structureVersion
 
@@ -372,7 +367,6 @@ public struct ActiveWorkoutView: View {
         let routineName: String
         let sessionStart: Date
         let volumeKg: Double
-        let bpm: Int
         let isResting: Bool
         let isRestPaused: Bool
         let totalRestSeconds: Int
@@ -511,33 +505,7 @@ public struct ActiveWorkoutView: View {
         }
 
         private var pulseCell: some View {
-            VStack(alignment: .leading, spacing: 2.0) {
-                HStack(spacing: 4.0) {
-                    EndfieldLiveDot(size: 5.0)
-
-                    Text("LIVE // 4HZ")
-                        .font(EndfieldFont.label(8.0))
-                        .tracking(1.0)
-                        .foregroundStyle(EndfieldPalette.accentRed.opacity(0.9))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                }
-
-                HStack(alignment: .firstTextBaseline, spacing: 3.0) {
-                    Text(bpm > 0 ? "\(bpm)" : "--")
-                        .font(EndfieldFont.mono(19.0, weight: .bold))
-                        .monospacedDigit()
-                        .foregroundStyle(bpm > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
-                        .lineLimit(1)
-                        .contentTransition(.numericText())
-
-                    Text("BPM")
-                        .font(EndfieldFont.label(8.0))
-                        .foregroundStyle(EndfieldPalette.textSecondary)
-                        .fixedSize()
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            PulseMetricCell()
         }
 
         private var verticalSeparator: some View {
@@ -672,50 +640,97 @@ public struct ActiveWorkoutView: View {
         return max(0, Int(ceil(endDate.timeIntervalSince(date))))
     }
 
-    private var healthKitDiagnosticBanner: some View {
-        TacticalPanel(code: "SYS.ERR", title: "SENSOR CARDÍACO", accentBorder: false, contentPadding: 12.0) {
-            VStack(alignment: .leading, spacing: 9.0) {
-                HStack(spacing: 7.0) {
-                    Image(systemName: "heart.text.square")
-                        .font(EndfieldFont.mono(11.0, weight: .bold))
-                        .foregroundStyle(EndfieldPalette.accentRed)
+    /// Célula de pulso aislada: es la única vista del HUD que observa
+    /// `HealthKitManager`. Las lecturas del sensor (hasta 4 Hz) solo redibujan
+    /// este texto, no la lista completa de ejercicios.
+    private struct PulseMetricCell: View {
+        @ObservedObject private var healthKitManager = HealthKitManager.shared
 
-                    Text("DIAGNÓSTICO")
-                        .font(EndfieldFont.label(9.0))
-                        .tracking(1.2)
-                        .foregroundStyle(EndfieldPalette.accentRed)
+        var body: some View {
+            VStack(alignment: .leading, spacing: 2.0) {
+                HStack(spacing: 4.0) {
+                    EndfieldLiveDot(size: 5.0)
 
-                    Spacer(minLength: 0.0)
+                    Text("LIVE // 4HZ")
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.accentRed.opacity(0.9))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 }
 
-                Text("ESTADO: \(healthKitManager.debugMessage)")
-                    .font(EndfieldFont.mono(10.0))
-                    .foregroundStyle(EndfieldPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
+                HStack(alignment: .firstTextBaseline, spacing: 3.0) {
+                    Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM)" : "--")
+                        .font(EndfieldFont.mono(19.0, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(healthKitManager.currentBPM > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .contentTransition(.numericText())
 
-                Text("LIVE_ACTIVITY: \(liveActivityManager.debugMessage)")
-                    .font(EndfieldFont.mono(10.0))
-                    .foregroundStyle(EndfieldPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
+                    Text("BPM")
+                        .font(EndfieldFont.label(8.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
 
-                Button {
-                    HealthKitManager.shared.requestAuthorization()
-                } label: {
-                    HStack(spacing: 6.0) {
-                        Image(systemName: "heart")
-                            .font(EndfieldFont.mono(10.0, weight: .bold))
+    /// Diagnóstico del sensor. Se oculta solo cuando ya hay pulso, de modo que
+    /// la pantalla de entrenamiento no necesita observar `HealthKitManager` ni
+    /// `LiveActivityManager`.
+    private struct HealthDiagnosticBanner: View {
+        @ObservedObject private var healthKitManager = HealthKitManager.shared
+        @ObservedObject private var liveActivityManager = LiveActivityManager.shared
 
-                        Text("CONECTAR APPLE SALUD / AIRPODS")
-                            .font(EndfieldFont.mono(10.0, weight: .bold))
-                            .tracking(0.8)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
+        var body: some View {
+            if healthKitManager.currentBPM == 0 {
+                TacticalPanel(code: "SYS.ERR", title: "SENSOR CARDÍACO", accentBorder: false, contentPadding: 12.0) {
+                    VStack(alignment: .leading, spacing: 9.0) {
+                        HStack(spacing: 7.0) {
+                            Image(systemName: "heart.text.square")
+                                .font(EndfieldFont.mono(11.0, weight: .bold))
+                                .foregroundStyle(EndfieldPalette.accentRed)
+
+                            Text("DIAGNÓSTICO")
+                                .font(EndfieldFont.label(9.0))
+                                .tracking(1.2)
+                                .foregroundStyle(EndfieldPalette.accentRed)
+
+                            Spacer(minLength: 0.0)
+                        }
+
+                        Text("ESTADO: \(healthKitManager.debugMessage)")
+                            .font(EndfieldFont.mono(10.0))
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+
+                        Text("LIVE_ACTIVITY: \(liveActivityManager.debugMessage)")
+                            .font(EndfieldFont.mono(10.0))
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .multilineTextAlignment(.leading)
+
+                        Button {
+                            HealthKitManager.shared.requestAuthorization()
+                        } label: {
+                            HStack(spacing: 6.0) {
+                                Image(systemName: "heart")
+                                    .font(EndfieldFont.mono(10.0, weight: .bold))
+
+                                Text("CONECTAR APPLE SALUD / AIRPODS")
+                                    .font(EndfieldFont.mono(10.0, weight: .bold))
+                                    .tracking(0.8)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                        }
+                        .buttonStyle(EndfieldSecondaryButtonStyle(compact: true, tint: EndfieldPalette.accentRed))
+                        .accessibilityLabel("Conectar Apple Salud o AirPods")
                     }
                 }
-                .buttonStyle(EndfieldSecondaryButtonStyle(compact: true, tint: EndfieldPalette.accentRed))
-                .accessibilityLabel("Conectar Apple Salud o AirPods")
             }
         }
     }

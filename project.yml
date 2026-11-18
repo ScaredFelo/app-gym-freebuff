@@ -87,6 +87,7 @@ targets:
     sources:
       - path: Widgets
       - path: Attributes/WorkoutActivityAttributes.swift
+      - path: Theme
     frameworks:
       - sdk: WidgetKit.framework
       - sdk: ActivityKit.framework

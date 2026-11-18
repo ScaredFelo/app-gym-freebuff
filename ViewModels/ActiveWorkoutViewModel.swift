@@ -929,6 +929,8 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             return BPMDataPoint(timestamp: point.timestamp, bpm: point.bpm)
         }
 
+        bpmFeed.replaceAll(bpmHistory)
+
         let storedCount: Int = state.bpmCount ?? 0
         if storedCount > 0 {
             sessionBPMTotal = state.bpmTotal ?? 0
@@ -1459,7 +1461,66 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         public let bpm: Int
     }
 
-    @Published public var bpmHistory: [BPMDataPoint] = []
+    /// Buffer de telemetría cardíaca aislado del ViewModel.
+    ///
+    /// El sensor entrega muestras a hasta 4 Hz. Publicar cada una desde el
+    /// ViewModel invalidaba la vista completa del entrenamiento en cada latido.
+    /// Este objeto agrupa las lecturas y solo notifica a quien lo observa (el
+    /// chart de Big Picture) como máximo una vez por segundo.
+    public final class BPMFeed: ObservableObject {
+        @Published public private(set) var revision: Int = 0
+
+        public private(set) var points: [BPMDataPoint] = []
+        private let retentionWindow: TimeInterval = 185.0
+        private var lastPublishDate: Date = .distantPast
+        private let publishInterval: TimeInterval = 1.0
+
+        public init() {}
+
+        public func append(_ point: BPMDataPoint) {
+            points.append(point)
+            prune(relativeTo: point.timestamp)
+
+            if point.timestamp.timeIntervalSince(lastPublishDate) >= publishInterval {
+                lastPublishDate = point.timestamp
+                revision &+= 1
+            }
+        }
+
+        public func replaceAll(_ newPoints: [BPMDataPoint]) {
+            points = newPoints
+            revision &+= 1
+        }
+
+        public func clear() {
+            points.removeAll()
+            revision &+= 1
+        }
+
+        /// Lecturas dentro de la ventana indicada respecto a `date`.
+        public func points(within window: TimeInterval, relativeTo date: Date) -> [BPMDataPoint] {
+            let cutoff: Date = date.addingTimeInterval(-window)
+            return points.filter { (sample: BPMDataPoint) -> Bool in
+                return sample.timestamp >= cutoff && sample.timestamp <= date
+            }
+        }
+
+        private func prune(relativeTo date: Date) {
+            let cutoff: Date = date.addingTimeInterval(-retentionWindow)
+            guard let firstValid: Int = points.firstIndex(where: { (sample: BPMDataPoint) -> Bool in
+                return sample.timestamp >= cutoff
+            }), firstValid > 0 else { return }
+            points.removeFirst(firstValid)
+        }
+    }
+
+    /// Historial completo de la sesión. Deliberadamente **sin publicar**: el
+    /// sensor entrega lecturas de hasta 4 Hz y cada publicación invalidaba el
+    /// cuerpo entero de `ActiveWorkoutView` (lista de ejercicios incluida),
+    /// que era la causa principal de la sensación de lag al entrenar. La
+    /// telemetría que se dibuja se expone a través de `bpmFeed`.
+    public var bpmHistory: [BPMDataPoint] = []
+    public let bpmFeed: BPMFeed = BPMFeed()
     private let bpmHistoryWindow: TimeInterval = 180
     private var lastBPMPersistDate: Date = .distantPast
 
@@ -1512,7 +1573,9 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         sessionBPMTotal += bpm
         sessionBPMCount += 1
         sessionBPMSamples.append(BPMSample(timestamp: now, bpm: Double(bpm)))
-        bpmHistory.append(BPMDataPoint(timestamp: now, bpm: bpm))
+        let point: BPMDataPoint = BPMDataPoint(timestamp: now, bpm: bpm)
+        bpmHistory.append(point)
+        bpmFeed.append(point)
         pruneBPMHistory(relativeTo: now)
         persistBPMHistoryIfNeeded(now: now)
     }
@@ -1551,6 +1614,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
     public func clearBPMHistory() {
         bpmHistory.removeAll()
+        bpmFeed.clear()
         sessionBPMTotal = 0
         sessionBPMCount = 0
     }

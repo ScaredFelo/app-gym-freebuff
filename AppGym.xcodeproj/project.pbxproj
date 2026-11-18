@@ -52,7 +52,8 @@
 		AA1000000000000000000022 /* AnatomicalMuscleMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000022 /* AnatomicalMuscleMapView.swift */; };
 		AA1000000000000000000023 /* ExerciseDetailSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000023 /* ExerciseDetailSheetView.swift */; };
 		AA1000000000000000000024 /* ExerciseDuplicateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000024 /* ExerciseDuplicateService.swift */; };
-AA5000000000000000000001 /* EndfieldTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000001 /* EndfieldTheme.swift */; };
+		AA5000000000000000000001 /* EndfieldTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000001 /* EndfieldTheme.swift */; };
+		AA5000000000000000000003 /* EndfieldTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000001 /* EndfieldTheme.swift */; };
 		AA5000000000000000000002 /* EndfieldHUDComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000002 /* EndfieldHUDComponents.swift */; };
 /* End PBXBuildFile section */
 
@@ -469,6 +470,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 			files = (
 				13FB92666F64E8A157DF719A /* WorkoutLiveActivity.swift in Sources */,
 				42C7D55C8E91738690D11894 /* WorkoutActivityAttributes.swift in Sources */,
+				AA5000000000000000000003 /* EndfieldTheme.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
