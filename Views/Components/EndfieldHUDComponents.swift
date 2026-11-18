@@ -145,27 +145,9 @@ public struct HazardStripeBar: View {
 
 // MARK: - 4. Cruces de retícula
 
-private struct CornerCrossMark: View {
-    let size: CGFloat
-    let tint: Color
-
-    var body: some View {
-        ZStack {
-            Rectangle()
-                .fill(tint)
-                .frame(width: size, height: 1.0)
-
-            Rectangle()
-                .fill(tint)
-                .frame(width: 1.0, height: size)
-        }
-        .frame(width: size, height: size)
-    }
-}
-
 /// Cuatro cruces `+` de 6 pt en las esquinas de un panel.
 public struct TacticalCornerCrosses: View {
-    public var size: CGFloat
+    private var crossSize: CGFloat
     public var inset: CGFloat
     public var tint: Color
 
@@ -174,26 +156,51 @@ public struct TacticalCornerCrosses: View {
         inset: CGFloat = 4.0,
         tint: Color = EndfieldPalette.accentYellow.opacity(0.55)
     ) {
-        self.size = size
+        self.crossSize = size
         self.inset = inset
         self.tint = tint
     }
 
     public var body: some View {
-        Color.clear
-            .overlay(alignment: .topLeading) {
-                CornerCrossMark(size: size, tint: tint).padding(inset)
+        // Una sola capa (`Canvas`) en vez de cuatro overlays con dos
+        // rectángulos cada uno.
+        let arm: CGFloat = max(crossSize, 2.0)
+        let thickness: CGFloat = 1.0
+        let edgeInset: CGFloat = inset
+        let crossTint: Color = tint
+
+        Canvas { context, size in
+            let centers: [CGPoint] = [
+                CGPoint(x: edgeInset + arm / 2.0, y: edgeInset + arm / 2.0),
+                CGPoint(x: size.width - edgeInset - arm / 2.0, y: edgeInset + arm / 2.0),
+                CGPoint(x: edgeInset + arm / 2.0, y: size.height - edgeInset - arm / 2.0),
+                CGPoint(x: size.width - edgeInset - arm / 2.0, y: size.height - edgeInset - arm / 2.0)
+            ]
+
+            var path: Path = Path()
+            for center in centers {
+                path.addRect(
+                    CGRect(
+                        x: center.x - arm / 2.0,
+                        y: center.y - thickness / 2.0,
+                        width: arm,
+                        height: thickness
+                    )
+                )
+                path.addRect(
+                    CGRect(
+                        x: center.x - thickness / 2.0,
+                        y: center.y - arm / 2.0,
+                        width: thickness,
+                        height: arm
+                    )
+                )
             }
-            .overlay(alignment: .topTrailing) {
-                CornerCrossMark(size: size, tint: tint).padding(inset)
-            }
-            .overlay(alignment: .bottomLeading) {
-                CornerCrossMark(size: size, tint: tint).padding(inset)
-            }
-            .overlay(alignment: .bottomTrailing) {
-                CornerCrossMark(size: size, tint: tint).padding(inset)
-            }
-            .allowsHitTesting(false)
+
+            context.fill(path, with: .color(crossTint))
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -235,8 +242,10 @@ public struct TacticalPanel<Content: View>: View {
                 .padding(contentPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(EndfieldPalette.bgPanel)
-        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cornerCut))
+        // Relleno con la forma angular en lugar de `.clipShape`: el contenido
+        // siempre va dentro del padding, así que recortar solo añadía una
+        // máscara fuera de pantalla por tarjeta (caro al hacer scroll).
+        .background(ChamferedRectangle(cut: EndfieldMetrics.cornerCut).fill(EndfieldPalette.bgPanel))
         .overlay {
             ChamferedRectangle(cut: EndfieldMetrics.cornerCut)
                 .stroke(borderColor, lineWidth: EndfieldMetrics.borderWidth)
@@ -330,8 +339,10 @@ public struct TacticalTagBadge: View {
             .minimumScaleFactor(0.7)
             .padding(.horizontal, 6.0)
             .padding(.vertical, 3.0)
-            .background(filled ? tint : tint.opacity(0.10))
-            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.6))
+            .background(
+                ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.6)
+                    .fill(filled ? tint : tint.opacity(0.10))
+            )
             .overlay {
                 ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.6)
                     .stroke(tint.opacity(filled ? 1.0 : 0.45), lineWidth: 1.0)
@@ -359,8 +370,10 @@ public struct EndfieldPrimaryButtonStyle: ButtonStyle {
             .frame(maxWidth: fullWidth ? CGFloat.infinity : nil)
             .padding(.horizontal, compact ? 12.0 : 16.0)
             .padding(.vertical, compact ? 9.0 : 14.0)
-            .background(EndfieldPalette.accentYellow.opacity(configuration.isPressed ? 0.72 : 1.0))
-            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8))
+            .background(
+                ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                    .fill(EndfieldPalette.accentYellow.opacity(configuration.isPressed ? 0.72 : 1.0))
+            )
             .overlay {
                 ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
                     .stroke(EndfieldPalette.accentYellow, lineWidth: 1.0)
@@ -392,8 +405,10 @@ public struct EndfieldSecondaryButtonStyle: ButtonStyle {
             .frame(maxWidth: fullWidth ? CGFloat.infinity : nil)
             .padding(.horizontal, compact ? 12.0 : 16.0)
             .padding(.vertical, compact ? 9.0 : 13.0)
-            .background(tint.opacity(configuration.isPressed ? 0.16 : 0.05))
-            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8))
+            .background(
+                ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                    .fill(tint.opacity(configuration.isPressed ? 0.16 : 0.05))
+            )
             .overlay {
                 ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
                     .stroke(tint.opacity(0.5), lineWidth: 1.0)
@@ -422,8 +437,10 @@ public struct EndfieldSquareButtonStyle: ButtonStyle {
             .font(EndfieldFont.mono(12.0, weight: .bold))
             .foregroundStyle(filled ? EndfieldPalette.bgPrimary : tint)
             .frame(width: size, height: size)
-            .background(filled ? tint : EndfieldPalette.bgElevated)
-            .clipShape(ChamferedRectangle(cut: 3.0))
+            .background(
+                ChamferedRectangle(cut: 3.0)
+                    .fill(filled ? tint : EndfieldPalette.bgElevated)
+            )
             .overlay {
                 ChamferedRectangle(cut: 3.0)
                     .stroke(tint.opacity(filled ? 1.0 : 0.55), lineWidth: 1.0)
@@ -570,8 +587,7 @@ public struct EndfieldDisclosure<Content: View>: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(EndfieldPalette.bgPanel)
-        .clipShape(ChamferedRectangle(cut: 8.0))
+        .background(ChamferedRectangle(cut: 8.0).fill(EndfieldPalette.bgPanel))
         .overlay {
             ChamferedRectangle(cut: 8.0)
                 .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
@@ -661,8 +677,10 @@ public struct TacticalFieldModifier: ViewModifier {
             .textFieldStyle(.plain)
             .padding(.horizontal, 10.0)
             .padding(.vertical, 9.0)
-            .background(EndfieldPalette.bgElevated)
-            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8))
+            .background(
+                ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                    .fill(EndfieldPalette.bgElevated)
+            )
             .overlay {
                 ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
                     .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
@@ -743,8 +761,10 @@ public struct TacticalStepperRow: View {
         }
         .padding(.horizontal, 9.0)
         .padding(.vertical, 7.0)
-        .background(EndfieldPalette.bgElevated)
-        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8))
+        .background(
+            ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                .fill(EndfieldPalette.bgElevated)
+        )
         .overlay {
             ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
                 .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)

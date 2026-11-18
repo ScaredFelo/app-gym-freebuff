@@ -321,6 +321,8 @@ public struct ActiveWorkoutView: View {
                         }
                     }
                     .allowsHitTesting(!viewModel.isRestFinishing)
+                    .animation(.easeInOut(duration: 0.25), value: viewModel.isResting)
+                    .animation(.easeIn(duration: 0.22), value: viewModel.isRestFinishing)
                     .zIndex(2)
                 }
 
@@ -352,12 +354,13 @@ public struct ActiveWorkoutView: View {
                     .opacity(viewModel.isRestFinishing ? 0 : 1)
                     .allowsHitTesting(!viewModel.isRestFinishing)
                     .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.25), value: viewModel.isResting)
                     .zIndex(1)
                 }
             }
-            .animation(.easeInOut(duration: 0.25), value: viewModel.isResting)
-            .animation(.spring(response: 0.42, dampingFraction: 0.82), value: viewModel.isTimerMinimized)
-            .animation(.easeIn(duration: 0.22), value: viewModel.isRestFinishing)
+            // Sin animaciones implícitas en el `ZStack` exterior: animar aquí
+            // abarcaba también el `ScrollView` completo y hacía que activar o
+            // cerrar el temporizador animase toda la lista (tirones).
         }
     }
 
@@ -389,8 +392,7 @@ public struct ActiveWorkoutView: View {
             .padding(.horizontal, 12.0)
             .padding(.vertical, 11.0)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(EndfieldPalette.bgPanel)
-            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cornerCut))
+            .background(ChamferedRectangle(cut: EndfieldMetrics.cornerCut).fill(EndfieldPalette.bgPanel))
             .overlay {
                 ChamferedRectangle(cut: EndfieldMetrics.cornerCut)
                     .stroke(EndfieldPalette.borderActive, lineWidth: 1.0)
@@ -862,8 +864,7 @@ struct ExerciseCardView: View {
         } else {
             EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
                 .frame(width: 28.0, height: 28.0)
-                .background(EndfieldPalette.bgElevated)
-                .clipShape(ChamferedRectangle(cut: 3.0))
+                .background(ChamferedRectangle(cut: 3.0).fill(EndfieldPalette.bgElevated))
                 .overlay {
                     ChamferedRectangle(cut: 3.0)
                         .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
@@ -973,8 +974,7 @@ struct ExerciseCardView: View {
                     .foregroundStyle(EndfieldPalette.textPrimary)
                     .lineLimit(2...6)
                     .padding(9.0)
-                    .background(EndfieldPalette.bgElevated)
-                    .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                    .background(ChamferedRectangle(cut: EndfieldMetrics.cellCut).fill(EndfieldPalette.bgElevated))
                     .overlay {
                         ChamferedRectangle(cut: EndfieldMetrics.cellCut)
                             .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
@@ -1077,8 +1077,7 @@ struct SetRowView: View {
                 .monospacedDigit()
                 .foregroundStyle(EndfieldPalette.textPrimary)
                 .frame(width: 62.0, height: 36.0)
-                .background(EndfieldPalette.bgElevated)
-                .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                .background(ChamferedRectangle(cut: EndfieldMetrics.cellCut).fill(EndfieldPalette.bgElevated))
                 .overlay {
                     ChamferedRectangle(cut: EndfieldMetrics.cellCut)
                         .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
@@ -1098,8 +1097,7 @@ struct SetRowView: View {
                 .monospacedDigit()
                 .foregroundStyle(EndfieldPalette.textPrimary)
                 .frame(width: 50.0, height: 36.0)
-                .background(EndfieldPalette.bgElevated)
-                .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                .background(ChamferedRectangle(cut: EndfieldMetrics.cellCut).fill(EndfieldPalette.bgElevated))
                 .overlay {
                     ChamferedRectangle(cut: EndfieldMetrics.cellCut)
                         .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
@@ -1122,8 +1120,12 @@ struct SetRowView: View {
         }
         .padding(.horizontal, 6.0)
         .padding(.vertical, 5.0)
-        .background(set.isCompleted ? EndfieldPalette.accentYellow.opacity(0.06) : Color.clear)
-        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .background {
+            if set.isCompleted {
+                ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                    .fill(EndfieldPalette.accentYellow.opacity(0.06))
+            }
+        }
     }
 
     private var ghostText: String {
@@ -1140,8 +1142,12 @@ private struct SetCompletionButtonStyle: ButtonStyle {
         configuration.label
             .foregroundStyle(isCompleted ? EndfieldPalette.bgPrimary : EndfieldPalette.textSecondary)
             .frame(width: 28.0, height: 28.0)
-            .background(isCompleted ? EndfieldPalette.accentYellow : Color.clear)
-            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+            .background {
+                if isCompleted {
+                    ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                        .fill(EndfieldPalette.accentYellow)
+                }
+            }
             .overlay {
                 ChamferedRectangle(cut: EndfieldMetrics.cellCut)
                     .stroke(

@@ -11,38 +11,14 @@ public struct CircularTimerView: View {
     public let onSkip: () -> Void
     public let onMinimize: () -> Void
 
-    @ObservedObject private var healthKitManager = HealthKitManager.shared
-
     private let dialSize: CGFloat = 260
     private let outerLineWidth: CGFloat = 14
     private let arcStartAngle: Double = 135
     private let arcSpan: Double = 270
-    private let bpmRange: ClosedRange<Double> = 50...210
-    private let bpmValues = [50, 70, 90, 110, 130, 150, 170, 190, 210]
 
     private var progress: Double {
         guard totalSeconds > 0 else { return 0 }
         return min(max(Double(timeRemaining) / Double(totalSeconds), 0), 1)
-    }
-
-    private var effectiveBPM: Int {
-        healthKitManager.currentBPM > 0 ? min(max(healthKitManager.currentBPM, 50), 210) : 50
-    }
-
-    private var needleAngle: Double {
-        angleForBPM(effectiveBPM) - 270
-    }
-
-    private var zoneColor: Color {
-        guard healthKitManager.currentBPM > 0 else { return EndfieldPalette.accentYellow }
-        switch healthKitManager.currentBPM {
-        case ..<90:
-            return EndfieldPalette.accentCyan
-        case ..<150:
-            return EndfieldPalette.accentYellow
-        default:
-            return EndfieldPalette.accentRed
-        }
     }
 
     public init(
@@ -82,8 +58,7 @@ public struct CircularTimerView: View {
         }
         .padding(.horizontal, 18.0)
         .padding(.vertical, 16.0)
-        .background(EndfieldPalette.bgPanel)
-        .clipShape(ChamferedRectangle(cut: 14.0))
+        .background(ChamferedRectangle(cut: 14.0).fill(EndfieldPalette.bgPanel))
         .overlay {
             ChamferedRectangle(cut: 14.0)
                 .stroke(EndfieldPalette.borderActive, lineWidth: 1.0)
@@ -169,9 +144,8 @@ public struct CircularTimerView: View {
 
     private var dial: some View {
         ZStack {
-            Rectangle()
+            Circle()
                 .fill(EndfieldPalette.bgPrimary.opacity(0.55))
-                .clipShape(Circle())
 
             Circle()
                 .trim(from: 0, to: 0.75)
@@ -191,6 +165,100 @@ public struct CircularTimerView: View {
                 .shadow(color: EndfieldPalette.accentYellow.opacity(0.30), radius: 5.0)
                 .animation(.linear(duration: 1), value: progress)
 
+            // Capa de pulso aislada: es la única que se recompone con cada
+            // lectura del sensor (hasta 4 Hz).
+            BPMDialLayer(
+                dialSize: dialSize,
+                arcStartAngle: arcStartAngle,
+                arcSpan: arcSpan
+            )
+
+            readout
+        }
+        .frame(width: dialSize, height: dialSize)
+    }
+
+    private var readout: some View {
+        VStack(spacing: 2.0) {
+            Text(isPaused ? "PAUSADO" : "DESCANSO")
+                .font(EndfieldFont.label(8.0))
+                .tracking(2.0)
+                .foregroundStyle(isPaused ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
+
+            Text(timeFormatted(timeRemaining))
+                .font(EndfieldFont.mono(46.0, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+
+            BPMReadoutLabel()
+        }
+        .padding(.horizontal, 14.0)
+        .padding(.vertical, 9.0)
+        .background(ChamferedRectangle(cut: 6.0).fill(EndfieldPalette.bgPanel.opacity(0.92)))
+        .overlay {
+            ChamferedRectangle(cut: 6.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+    }
+
+    private func timeFormatted(_ seconds: Int) -> String {
+        let clamped = max(0, seconds)
+        return String(format: "%02d:%02d", clamped / 60, clamped % 60)
+    }
+}
+
+// MARK: - Capa de pulso del dial
+
+/// Rangos y colores de la zona cardíaca compartidos por las vistas del dial.
+private enum BPMZone {
+    static let bounds: ClosedRange<Double> = 50...210
+    static let ticks: [Int] = [50, 70, 90, 110, 130, 150, 170, 190, 210]
+
+    static func color(for bpm: Int) -> Color {
+        guard bpm > 0 else { return EndfieldPalette.accentYellow }
+        switch bpm {
+        case ..<90:
+            return EndfieldPalette.accentCyan
+        case ..<150:
+            return EndfieldPalette.accentYellow
+        default:
+            return EndfieldPalette.accentRed
+        }
+    }
+
+    static func angle(for bpm: Int, start: Double, span: Double) -> Double {
+        let clamped: Double = min(max(Double(bpm), bounds.lowerBound), bounds.upperBound)
+        let fraction: Double = (clamped - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)
+        return start + fraction * span
+    }
+}
+
+/// Aguja, arco de zona y marcas del dial. Aislada del resto del temporizador
+/// para que las lecturas del sensor no recompongan los círculos del anillo ni
+/// el bloque de texto central.
+private struct BPMDialLayer: View {
+    let dialSize: CGFloat
+    let arcStartAngle: Double
+    let arcSpan: Double
+
+    @ObservedObject private var healthKitManager = HealthKitManager.shared
+
+    private var effectiveBPM: Int {
+        healthKitManager.currentBPM > 0 ? min(max(healthKitManager.currentBPM, 50), 210) : 50
+    }
+
+    private var zoneColor: Color {
+        BPMZone.color(for: healthKitManager.currentBPM)
+    }
+
+    private var needleAngle: Double {
+        BPMZone.angle(for: effectiveBPM, start: arcStartAngle, span: arcSpan) - 270.0
+    }
+
+    var body: some View {
+        ZStack {
             Circle()
                 .inset(by: 28)
                 .trim(from: 0, to: 0.75)
@@ -201,15 +269,14 @@ public struct CircularTimerView: View {
                 .rotationEffect(.degrees(arcStartAngle))
                 .animation(.easeInOut(duration: 0.4), value: zoneColor)
 
-            ForEach(bpmValues, id: \.self) { bpm in
+            ForEach(BPMZone.ticks, id: \.self) { (bpm: Int) in
                 tickMark(for: bpm)
             }
 
             needle
-
-            readout
         }
         .frame(width: dialSize, height: dialSize)
+        .allowsHitTesting(false)
     }
 
     private var needle: some View {
@@ -231,43 +298,14 @@ public struct CircularTimerView: View {
         .frame(width: dialSize, height: dialSize)
         .rotationEffect(.degrees(needleAngle))
         .opacity(0.9)
-        .animation(.spring(response: 0.5, dampingFraction: 0.7), value: healthKitManager.currentBPM)
-    }
-
-    private var readout: some View {
-        VStack(spacing: 2.0) {
-            Text(isPaused ? "PAUSADO" : "DESCANSO")
-                .font(EndfieldFont.label(8.0))
-                .tracking(2.0)
-                .foregroundStyle(isPaused ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
-
-            Text(timeFormatted(timeRemaining))
-                .font(EndfieldFont.mono(46.0, weight: .heavy))
-                .monospacedDigit()
-                .foregroundStyle(EndfieldPalette.textPrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-
-            Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM) BPM" : "-- BPM")
-                .font(EndfieldFont.mono(11.0, weight: .bold))
-                .monospacedDigit()
-                .foregroundStyle(zoneColor)
-        }
-        .padding(.horizontal, 14.0)
-        .padding(.vertical, 9.0)
-        .background(EndfieldPalette.bgPanel.opacity(0.92))
-        .clipShape(ChamferedRectangle(cut: 6.0))
-        .overlay {
-            ChamferedRectangle(cut: 6.0)
-                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
-        }
+        .animation(.easeOut(duration: 0.28), value: healthKitManager.currentBPM)
     }
 
     private func tickMark(for bpm: Int) -> some View {
-        let angle: Double = angleForBPM(bpm)
+        let angle: Double = BPMZone.angle(for: bpm, start: arcStartAngle, span: arcSpan)
         let radians: Double = angle * Double.pi / 180.0
         let center: CGFloat = dialSize / 2.0
-        let isBoundary: Bool = bpm == 50 || bpm == 210
+        let isBoundary: Bool = bpm == BPMZone.ticks.first || bpm == BPMZone.ticks.last
 
         return ZStack {
             Rectangle()
@@ -290,15 +328,16 @@ public struct CircularTimerView: View {
                 )
         }
     }
+}
 
-    private func angleForBPM(_ bpm: Int) -> Double {
-        let clamped: Double = min(max(Double(bpm), bpmRange.lowerBound), bpmRange.upperBound)
-        let fraction: Double = (clamped - bpmRange.lowerBound) / (bpmRange.upperBound - bpmRange.lowerBound)
-        return arcStartAngle + fraction * arcSpan
-    }
+/// Lectura de BPM del bloque central, aislada del resto del temporizador.
+private struct BPMReadoutLabel: View {
+    @ObservedObject private var healthKitManager = HealthKitManager.shared
 
-    private func timeFormatted(_ seconds: Int) -> String {
-        let clamped = max(0, seconds)
-        return String(format: "%02d:%02d", clamped / 60, clamped % 60)
+    var body: some View {
+        Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM) BPM" : "-- BPM")
+            .font(EndfieldFont.mono(11.0, weight: .bold))
+            .monospacedDigit()
+            .foregroundStyle(BPMZone.color(for: healthKitManager.currentBPM))
     }
 }
