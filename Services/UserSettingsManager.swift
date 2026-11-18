@@ -10,6 +10,9 @@ enum UserSettingsManager {
     static let hrMaxBPMKey = "hrMaxBPM"
     static let hrRestBPMKey = "hrRestBPM"
 
+    // Objetivo semanal de entrenamiento (días por semana)
+    static let weeklyWorkoutGoalKey = "weeklyWorkoutGoal"
+
     // Medición de pulsaciones
     static let isHeartRateTrackingEnabledKey = "isHeartRateTrackingEnabled"
     static let heartRateDeviceTypeKey = "heartRateDeviceType"
@@ -110,6 +113,23 @@ enum UserSettingsManager {
     static var hrRest: Double {
         let stored: Double = UserDefaults.standard.double(forKey: hrRestBPMKey)
         return stored > 0 ? stored : defaultHRRest
+    }
+
+    // MARK: - Weekly goal
+
+    /// Días de entrenamiento por semana que se persiguen por defecto.
+    static let defaultWeeklyWorkoutGoal: Int = 4
+
+    /// Rango configurable del objetivo semanal.
+    static let weeklyWorkoutGoalRange: ClosedRange<Int> = 1...7
+
+    /// Objetivo de días de entrenamiento por semana, acotado a `1...7`.
+    static var weeklyWorkoutGoal: Int {
+        guard UserDefaults.standard.object(forKey: weeklyWorkoutGoalKey) != nil else {
+            return defaultWeeklyWorkoutGoal
+        }
+        let stored: Int = UserDefaults.standard.integer(forKey: weeklyWorkoutGoalKey)
+        return min(max(stored, weeklyWorkoutGoalRange.lowerBound), weeklyWorkoutGoalRange.upperBound)
     }
 
     // MARK: - Plate persistence helpers

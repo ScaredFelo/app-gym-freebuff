@@ -1068,6 +1068,8 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         persistSessionDetails()
         ActiveWorkoutStateStore.clear()
         try? modelContext.save()
+        // La sesión acaba de cerrarse: recalcula racha y objetivo del widget.
+        WidgetStreakStore.refresh(modelContext: modelContext)
         isShowingSummary = true
         return session
     }
@@ -1131,6 +1133,8 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         modelContext.delete(session)
         ActiveWorkoutStateStore.clear()
         try? modelContext.save()
+        // La sesión cancelada desaparece: recalcula racha y objetivo.
+        WidgetStreakStore.refresh(modelContext: modelContext)
     }
 
     // MARK: - Live Activity

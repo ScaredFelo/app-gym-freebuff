@@ -34,6 +34,7 @@ struct AppGymApp: App {
                     MockDataGenerator.seedMissingCatalogExercisesIfNeeded(context: context)
                     ExerciseDuplicateService.mergeIfNeeded(context: context)
                     MockDataGenerator.applyRoutineTableUpdateIfNeeded(context: context)
+                    WidgetStreakStore.refresh(modelContext: context)
                 }
         }
         .modelContainer(container)

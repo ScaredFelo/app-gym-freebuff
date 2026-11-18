@@ -14,6 +14,9 @@ struct SettingsView: View {
     @AppStorage(UserSettingsManager.availablePlatesKey)
     private var availablePlatesRaw: String = UserSettingsManager.defaultAvailablePlates
 
+    @AppStorage(UserSettingsManager.weeklyWorkoutGoalKey)
+    private var weeklyWorkoutGoal: Int = UserSettingsManager.defaultWeeklyWorkoutGoal
+
     @AppStorage(UserSettingsManager.isBigPictureModeEnabledKey)
     private var isBigPictureModeEnabled: Bool = false
 
@@ -56,6 +59,7 @@ struct SettingsView: View {
                 VStack(spacing: 12.0) {
                     equipmentPanel
                     platesPanel
+                    weeklyGoalPanel
                     visualModePanel
                     heartRatePanel
                     backupPanel
@@ -70,6 +74,20 @@ struct SettingsView: View {
         }
         .onAppear {
             reloadSafetyCopies()
+        }
+        .onChange(of: weeklyWorkoutGoal) { (_, newValue: Int) in
+            let clamped: Int = min(
+                max(newValue, UserSettingsManager.weeklyWorkoutGoalRange.lowerBound),
+                UserSettingsManager.weeklyWorkoutGoalRange.upperBound
+            )
+
+            if clamped != newValue {
+                weeklyWorkoutGoal = clamped
+                return
+            }
+
+            // Recalcula el snapshot con el nuevo objetivo y refresca los widgets.
+            WidgetStreakStore.refresh(modelContext: modelContext)
         }
         .preferredColorScheme(.dark)
         .tint(EndfieldPalette.accentYellow)
@@ -189,6 +207,46 @@ struct SettingsView: View {
                     .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 2.0)
+            }
+        }
+    }
+
+    // MARK: - Objetivo semanal
+
+    private var weeklyGoalPanel: some View {
+        TacticalPanel(code: "WKG.02", title: "Objetivo semanal", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 8.0) {
+                HStack(spacing: 8.0) {
+                    Text("Objetivo semanal (días/semana)")
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(0.8)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+
+                    Spacer(minLength: 4.0)
+
+                    Text("\(weeklyWorkoutGoal) DÍAS / SEM")
+                        .font(EndfieldFont.mono(12.0, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(EndfieldPalette.accentYellow)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+
+                Stepper(value: $weeklyWorkoutGoal, in: UserSettingsManager.weeklyWorkoutGoalRange) {
+                    Text("Ajustar objetivo: \(weeklyWorkoutGoal) días por semana")
+                        .font(EndfieldFont.mono(9.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .tint(EndfieldPalette.accentYellow)
+
+                Text("La racha cuenta semanas consecutivas alcanzando el objetivo. La semana en curso no la rompe hasta que termina.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

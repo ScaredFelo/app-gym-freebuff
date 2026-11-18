@@ -1,6 +1,5 @@
 import SwiftUI
 import SwiftData
-import Charts
 
 public struct AnalyticsView: View {
     @Environment(\.modelContext) private var modelContext
@@ -19,15 +18,6 @@ public struct AnalyticsView: View {
     @State private var showingDaySessions = false
     @State private var sessionToReviewAfterSheet: WorkoutSession?
     @State private var reviewSession: WorkoutSession?
-
-    private static let chartPalette: [Color] = [
-        EndfieldPalette.accentYellow,
-        EndfieldPalette.accentCyan,
-        EndfieldPalette.accentRed,
-        Color(hex: "#7CFF6B"),
-        Color(hex: "#B388FF"),
-        Color(hex: "#FF9F45")
-    ]
 
     public var body: some View {
         NavigationStack {
@@ -103,110 +93,12 @@ public struct AnalyticsView: View {
 
     // MARK: - Weekly Volume Chart
 
+    /// Barras horizontales de series completadas por grupo muscular en los
+    /// últimos 7 días, dentro del panel táctico de telemetría.
     private var weeklyVolumeChartSection: some View {
-        let weeklyData: [MuscleVolumeItem] = computeWeeklyMuscleVolume()
-
-        return TacticalPanel(code: "TEL.07", title: "Volumen de series", contentPadding: 12.0) {
-            VStack(alignment: .leading, spacing: 8.0) {
-                Text("ÚLTIMOS 7 DÍAS // SERIES POR GRUPO")
-                    .font(EndfieldFont.label(8.0))
-                    .tracking(1.0)
-                    .foregroundStyle(EndfieldPalette.textSecondary)
-
-                if weeklyData.isEmpty {
-                    Text("SIN DATOS SUFICIENTES ESTA SEMANA")
-                        .font(EndfieldFont.mono(10.0))
-                        .foregroundStyle(EndfieldPalette.textSecondary)
-                        .frame(height: 150.0)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                } else {
-                    Chart(weeklyData) { (item: MuscleVolumeItem) in
-                        BarMark(
-                            x: .value("Grupo", item.muscleGroup),
-                            y: .value("Series", item.setsCount)
-                        )
-                        .foregroundStyle(item.tint)
-                        .cornerRadius(0.0)
-                    }
-                    .chartXAxis(.hidden)
-                    .chartLegend(.hidden)
-                    .chartYAxis {
-                        AxisMarks(values: .stride(by: 5)) { value in
-                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2.0, 2.0]))
-                                .foregroundStyle(Color.white.opacity(0.10))
-                            AxisValueLabel()
-                                .font(EndfieldFont.label(8.0))
-                                .foregroundStyle(EndfieldPalette.textSecondary)
-                        }
-                    }
-                    .frame(height: 190.0)
-
-                    chartLegend(data: weeklyData)
-                }
-            }
+        TacticalPanel(code: "TEL.07", title: "Volumen de series", contentPadding: 12.0) {
+            WeeklyMuscleVolumeBarChart(sessions: sessions)
         }
-    }
-
-    private func chartLegend(data: [MuscleVolumeItem]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8.0) {
-                ForEach(data) { (item: MuscleVolumeItem) in
-                    HStack(spacing: 4.0) {
-                        Rectangle()
-                            .fill(item.tint)
-                            .frame(width: 6.0, height: 6.0)
-
-                        Text("\(item.muscleGroup.uppercased()) \(item.setsCount)")
-                            .font(EndfieldFont.label(8.0))
-                            .foregroundStyle(EndfieldPalette.textSecondary)
-                            .fixedSize()
-                    }
-                }
-            }
-        }
-        .frame(height: 12.0)
-    }
-
-    struct MuscleVolumeItem: Identifiable {
-        let id = UUID()
-        let muscleGroup: String
-        let setsCount: Int
-        let tint: Color
-    }
-
-    private func computeWeeklyMuscleVolume() -> [MuscleVolumeItem] {
-        let calendar = Calendar.current
-        let oneWeekAgo = calendar.date(byAdding: .day, value: -7, to: Date()) ?? Date()
-
-        // La serie computa en la fecha en la que empezó la rutina, no en la
-        // fecha/hora exacta en la que se marcó (puede ser pasada la medianoche).
-        let recentSets = sets.filter { setLog in
-            guard setLog.isCompleted else { return false }
-            let logDate = setLog.workoutStartDate ?? setLog.session?.startDate ?? setLog.date
-            return logDate >= oneWeekAgo
-        }
-        var counts: [String: Int] = [:]
-
-        for setLog in recentSets {
-            if let muscle = setLog.exercise?.muscleGroup.rawValue {
-                counts[muscle, default: 0] += 1
-            }
-        }
-
-        var pairs: [(name: String, count: Int)] = []
-        for (key, value) in counts {
-            pairs.append((name: key, count: value))
-        }
-        pairs.sort { (lhs: (name: String, count: Int), rhs: (name: String, count: Int)) -> Bool in
-            return lhs.count > rhs.count
-        }
-
-        var items: [MuscleVolumeItem] = []
-        for (index, pair) in pairs.enumerated() {
-            let tint: Color = Self.chartPalette[index % Self.chartPalette.count]
-            items.append(MuscleVolumeItem(muscleGroup: pair.name, setsCount: pair.count, tint: tint))
-        }
-        return items
     }
 
     // MARK: - Monthly Workout Calendar
@@ -399,6 +291,8 @@ public struct AnalyticsView: View {
         }
         modelContext.delete(session)
         try? modelContext.save()
+        // La sesión borrada deja de contar para la racha semanal.
+        WidgetStreakStore.refresh(modelContext: modelContext)
     }
 }
 

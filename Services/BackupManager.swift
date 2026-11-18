@@ -428,6 +428,13 @@ enum BackupManager {
         // Los ajustes se escriben solo cuando la importación ya está guardada,
         // para no dejar `UserDefaults` a medias si algo falla antes.
         applySettings(backup.settings)
+
+        // Las sesiones restauradas alimentan la racha y el widget semanal.
+        let restoredSessions: [WorkoutSession] = (try? context.fetch(FetchDescriptor<WorkoutSession>())) ?? []
+        WidgetStreakStore.recalculateAndSave(
+            sessions: restoredSessions,
+            weeklyGoal: UserSettingsManager.weeklyWorkoutGoal
+        )
     }
 
     private static func replaceExistingData(with backup: AppBackupData, context: ModelContext) throws {
