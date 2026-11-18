@@ -4,10 +4,10 @@ import SwiftUI
 
 private enum EquipmentVisualizerMetrics {
     static let totalHeight: CGFloat = 150.0
-    static let drawingHeight: CGFloat = 100.0
-    static let maxPlateDiameter: CGFloat = 84.0
-    static let minPlateDiameter: CGFloat = 24.0
-    static let maxPlateThickness: CGFloat = 14.0
+    static let drawingHeight: CGFloat = 82.0
+    static let maxPlateDiameter: CGFloat = 66.0
+    static let minPlateDiameter: CGFloat = 20.0
+    static let maxPlateThickness: CGFloat = 12.0
     static let minPlateThickness: CGFloat = 4.0
     static let plateSpacing: CGFloat = 1.5
 }
@@ -15,7 +15,8 @@ private enum EquipmentVisualizerMetrics {
 // MARK: - Main visualizer
 
 /// Visualización vectorial proporcional del equipamiento y los discos
-/// necesarios para el peso indicado.
+/// necesarios para el peso indicado, dentro de un visor técnico con líneas
+/// de cota y etiquetas de telemetría.
 struct EquipmentVisualizerView: View {
     let equipmentType: EquipmentType
     let weight: Double
@@ -36,29 +37,78 @@ struct EquipmentVisualizerView: View {
     }
 
     var body: some View {
-        VStack(spacing: 5) {
-            drawing
-                .frame(maxWidth: .infinity)
-                .frame(height: EquipmentVisualizerMetrics.drawingHeight)
+        VStack(spacing: 4.0) {
+            telemetryHeader
+
+            drawingFrame
 
             legendView
 
-            Text(PlateCalculatorService.breakdownText(for: result))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(PlateCalculatorService.breakdownText(for: result).uppercased())
+                .font(EndfieldFont.label(8.0))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.textSecondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.6)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 8.0)
+        .padding(.vertical, 7.0)
         .frame(maxWidth: .infinity)
         .frame(height: EquipmentVisualizerMetrics.totalHeight)
-        .background(Color.white.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
+        .background(EndfieldPalette.bgPanel)
+        .clipShape(ChamferedRectangle(cut: 8.0))
+        .overlay {
+            ChamferedRectangle(cut: 8.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+    }
+
+    // MARK: Telemetry header
+
+    private var telemetryHeader: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6.0) {
+            Text(baseLoadText)
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.accentCyan.opacity(0.85))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Spacer(minLength: 2.0)
+
+            Text(sideLabelText)
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .fixedSize()
+        }
+    }
+
+    private var baseLoadText: String {
+        let base: Double = equipmentType.baseWeight
+        guard base > 0.0 else { return "BASE_LOAD // N/A" }
+        return "BASE_LOAD // \(String(format: "%.1f", base)) KG"
+    }
+
+    private var sideLabelText: String {
+        return equipmentType.usesPlates ? "PER_SIDE" : "TOTAL // \(Int(weight.rounded())) KG"
+    }
+
+    // MARK: Drawing frame
+
+    private var drawingFrame: some View {
+        ZStack {
+            TechnicalGridOverlay(step: 11.0, lineColor: Color.white.opacity(0.05))
+
+            drawing
+                .padding(.horizontal, 6.0)
+                .padding(.vertical, 4.0)
+
+            DimensionLinesView()
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: EquipmentVisualizerMetrics.drawingHeight)
+        .clipped()
     }
 
     // MARK: Drawing selector
@@ -78,21 +128,16 @@ struct EquipmentVisualizerView: View {
             LoadedBarDrawingView(
                 plates: result.platesPerSide,
                 barThickness: 7.0,
-                showsStops: true,
-                label: "Barra Multipower: \(UserSettingsManager.formatted(equipmentType.baseWeight)) kg"
+                showsStops: true
             )
         case .olympicBar:
             LoadedBarDrawingView(
                 plates: result.platesPerSide,
                 barThickness: 8.0,
-                showsStops: false,
-                label: "Barra Olímpica: \(UserSettingsManager.formatted(equipmentType.baseWeight)) kg"
+                showsStops: false
             )
         case .ezBar:
-            EZBarDrawingView(
-                plates: result.platesPerSide,
-                label: "Barra EZ: \(UserSettingsManager.formatted(equipmentType.baseWeight)) kg"
-            )
+            EZBarDrawingView(plates: result.platesPerSide)
         }
     }
 
@@ -102,22 +147,64 @@ struct EquipmentVisualizerView: View {
         let plates: [Double] = availablePlates
 
         return ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 5) {
+            HStack(spacing: 7.0) {
                 ForEach(plates.indices, id: \.self) { (index: Int) in
-                    if index > 0 {
-                        Text("·")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Text(UserSettingsManager.formatted(plates[index]))
-                        .font(.caption2.bold())
-                        .foregroundStyle(PlateCalculatorService.color(for: plates[index]))
+                    plateLegendItem(weight: plates[index])
                 }
             }
             .frame(maxWidth: .infinity, alignment: .center)
         }
-        .frame(height: 14)
+        .frame(height: 11.0)
+    }
+
+    private func plateLegendItem(weight plateWeight: Double) -> some View {
+        HStack(spacing: 3.0) {
+            Rectangle()
+                .fill(PlateCalculatorService.color(for: plateWeight))
+                .frame(width: 6.0, height: 6.0)
+                .overlay {
+                    Rectangle()
+                        .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+                }
+
+            Text(UserSettingsManager.formatted(plateWeight))
+                .font(EndfieldFont.label(8.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .fixedSize()
+        }
+    }
+}
+
+// MARK: - Dimension lines
+
+/// Líneas de cota sutiles con topes verticales en los extremos.
+private struct DimensionLinesView: View {
+    var body: some View {
+        Canvas { context, size in
+            let inset: CGFloat = 10.0
+            let topY: CGFloat = 5.0
+            let bottomY: CGFloat = max(6.0, size.height - 5.0)
+            let tick: CGFloat = 3.0
+
+            var path: Path = Path()
+            path.move(to: CGPoint(x: inset, y: topY))
+            path.addLine(to: CGPoint(x: size.width - inset, y: topY))
+            path.move(to: CGPoint(x: inset, y: bottomY))
+            path.addLine(to: CGPoint(x: size.width - inset, y: bottomY))
+
+            path.move(to: CGPoint(x: inset, y: topY - tick))
+            path.addLine(to: CGPoint(x: inset, y: topY + tick))
+            path.move(to: CGPoint(x: size.width - inset, y: topY - tick))
+            path.addLine(to: CGPoint(x: size.width - inset, y: topY + tick))
+            path.move(to: CGPoint(x: inset, y: bottomY - tick))
+            path.addLine(to: CGPoint(x: inset, y: bottomY + tick))
+            path.move(to: CGPoint(x: size.width - inset, y: bottomY - tick))
+            path.addLine(to: CGPoint(x: size.width - inset, y: bottomY + tick))
+
+            context.stroke(path, with: .color(Color.white.opacity(0.10)), lineWidth: 0.8)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -142,13 +229,13 @@ private struct PlateDiscView: View {
     }
 
     var body: some View {
-        RoundedRectangle(cornerRadius: 2.0)
+        Rectangle()
             .fill(PlateCalculatorService.color(for: weight))
             .frame(width: thickness, height: diameter)
-            .overlay(
-                RoundedRectangle(cornerRadius: 2.0)
-                    .stroke(Color.gray.opacity(0.55), lineWidth: 0.8)
-            )
+            .overlay {
+                Rectangle()
+                    .stroke(Color.white.opacity(0.35), lineWidth: 0.8)
+            }
             .accessibilityLabel("Disco de \(UserSettingsManager.formatted(weight)) kilos")
     }
 }
@@ -177,28 +264,28 @@ private struct PlateStackView: View {
 
 private struct CableEquipmentDrawingView: View {
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 0.0) {
             ZStack {
-                Circle()
-                    .fill(Color.gray.opacity(0.18))
-                    .frame(width: 30.0, height: 30.0)
+                Rectangle()
+                    .fill(Color.white.opacity(0.05))
+                    .frame(width: 24.0, height: 24.0)
 
-                Circle()
-                    .stroke(Color.gray.opacity(0.75), lineWidth: 2.0)
-                    .frame(width: 26.0, height: 26.0)
+                Rectangle()
+                    .stroke(Color.white.opacity(0.45), lineWidth: 1.2)
+                    .frame(width: 24.0, height: 24.0)
 
-                Circle()
-                    .fill(Color.gray.opacity(0.85))
-                    .frame(width: 7.0, height: 7.0)
+                Rectangle()
+                    .fill(EndfieldPalette.accentYellow.opacity(0.9))
+                    .frame(width: 5.0, height: 5.0)
             }
 
             Rectangle()
-                .fill(Color.gray.opacity(0.7))
-                .frame(width: 2.0, height: 30.0)
+                .fill(Color.white.opacity(0.45))
+                .frame(width: 1.5, height: 22.0)
 
-            Capsule()
-                .fill(Color.gray.opacity(0.9))
-                .frame(width: 58.0, height: 7.0)
+            Rectangle()
+                .fill(Color.white.opacity(0.7))
+                .frame(width: 50.0, height: 5.0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
@@ -209,27 +296,27 @@ private struct CableEquipmentDrawingView: View {
 private struct DumbbellEquipmentDrawingView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 3.0) {
-            dumbbellBlock(width: 5.0, height: 26.0)
-            dumbbellBlock(width: 7.0, height: 38.0)
+            dumbbellBlock(width: 5.0, height: 24.0)
+            dumbbellBlock(width: 7.0, height: 36.0)
 
-            Capsule()
-                .fill(Color.gray.opacity(0.75))
-                .frame(width: 62.0, height: 9.0)
+            Rectangle()
+                .fill(Color.white.opacity(0.6))
+                .frame(width: 50.0, height: 7.0)
 
-            dumbbellBlock(width: 7.0, height: 38.0)
-            dumbbellBlock(width: 5.0, height: 26.0)
+            dumbbellBlock(width: 7.0, height: 36.0)
+            dumbbellBlock(width: 5.0, height: 24.0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private func dumbbellBlock(width: CGFloat, height: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 2.0)
-            .fill(Color.gray.opacity(0.75))
+        Rectangle()
+            .fill(Color.white.opacity(0.55))
             .frame(width: width, height: height)
-            .overlay(
-                RoundedRectangle(cornerRadius: 2.0)
-                    .stroke(Color.gray.opacity(0.4), lineWidth: 0.8)
-            )
+            .overlay {
+                Rectangle()
+                    .stroke(Color.white.opacity(0.25), lineWidth: 0.8)
+            }
     }
 }
 
@@ -238,27 +325,27 @@ private struct DumbbellEquipmentDrawingView: View {
 private struct FixedBarEquipmentDrawingView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 4.0) {
-            fixedBlock(width: 15.0, height: 44.0)
+            fixedBlock(width: 13.0, height: 40.0)
 
-            Capsule()
-                .fill(Color.gray.opacity(0.75))
+            Rectangle()
+                .fill(Color.white.opacity(0.6))
                 .frame(maxWidth: .infinity)
-                .frame(height: 8.0)
+                .frame(height: 6.0)
 
-            fixedBlock(width: 15.0, height: 44.0)
+            fixedBlock(width: 13.0, height: 40.0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .padding(.horizontal, 12.0)
+        .padding(.horizontal, 10.0)
     }
 
     private func fixedBlock(width: CGFloat, height: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 3.0)
-            .fill(Color.gray.opacity(0.75))
+        Rectangle()
+            .fill(Color.white.opacity(0.55))
             .frame(width: width, height: height)
-            .overlay(
-                RoundedRectangle(cornerRadius: 3.0)
-                    .stroke(Color.gray.opacity(0.4), lineWidth: 0.8)
-            )
+            .overlay {
+                Rectangle()
+                    .stroke(Color.white.opacity(0.25), lineWidth: 0.8)
+            }
     }
 }
 
@@ -269,17 +356,17 @@ private struct PlateLoadedMachineDrawingView: View {
 
     var body: some View {
         ZStack {
-            HStack(spacing: 0) {
-                Capsule()
-                    .fill(Color.gray.opacity(0.65))
-                    .frame(height: 5.0)
+            HStack(spacing: 0.0) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.4))
+                    .frame(height: 3.0)
 
                 Spacer()
-                    .frame(width: 76.0)
+                    .frame(width: 64.0)
 
-                Capsule()
-                    .fill(Color.gray.opacity(0.65))
-                    .frame(height: 5.0)
+                Rectangle()
+                    .fill(Color.white.opacity(0.4))
+                    .frame(height: 3.0)
             }
             .padding(.horizontal, 8.0)
 
@@ -288,18 +375,20 @@ private struct PlateLoadedMachineDrawingView: View {
 
                 Spacer(minLength: 6.0)
 
-                RoundedRectangle(cornerRadius: 8.0)
-                    .fill(Color.gray.opacity(0.22))
-                    .frame(width: 76.0, height: 56.0)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8.0)
-                            .stroke(Color.gray.opacity(0.5), lineWidth: 1.0)
-                    )
-                    .overlay(
-                        Text("MÁQUINA")
-                            .font(.system(size: 8.0, weight: .bold))
-                            .foregroundStyle(.secondary)
-                    )
+                ZStack {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.06))
+                        .frame(width: 64.0, height: 46.0)
+
+                    Rectangle()
+                        .stroke(Color.white.opacity(0.35), lineWidth: 1.0)
+                        .frame(width: 64.0, height: 46.0)
+
+                    Text("MÁQUINA")
+                        .font(EndfieldFont.label(7.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                }
 
                 Spacer(minLength: 6.0)
 
@@ -317,48 +406,38 @@ private struct LoadedBarDrawingView: View {
     let plates: [Double]
     let barThickness: CGFloat
     let showsStops: Bool
-    let label: String
 
     var body: some View {
-        VStack(spacing: 4.0) {
-            ZStack(alignment: .center) {
-                Capsule()
-                    .fill(Color.gray.opacity(0.75))
-                    .frame(height: barThickness)
-                    .padding(.horizontal, 2.0)
+        ZStack(alignment: .center) {
+            Rectangle()
+                .fill(Color.white.opacity(0.55))
+                .frame(height: barThickness)
+                .padding(.horizontal, 2.0)
 
-                HStack(alignment: .center, spacing: 2.0) {
-                    PlateStackView(plates: plates, mirrored: true)
+            HStack(alignment: .center, spacing: 2.0) {
+                PlateStackView(plates: plates, mirrored: true)
 
-                    if showsStops {
-                        stopView
-                    }
-
-                    Spacer(minLength: 8.0)
-
-                    if showsStops {
-                        stopView
-                    }
-
-                    PlateStackView(plates: plates, mirrored: false)
+                if showsStops {
+                    stopView
                 }
-                .padding(.horizontal, 6.0)
-            }
-            .frame(height: 78.0)
 
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                Spacer(minLength: 8.0)
+
+                if showsStops {
+                    stopView
+                }
+
+                PlateStackView(plates: plates, mirrored: false)
+            }
+            .padding(.horizontal, 6.0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private var stopView: some View {
-        RoundedRectangle(cornerRadius: 1.0)
-            .fill(Color.gray.opacity(0.9))
-            .frame(width: 3.0, height: 34.0)
+        Rectangle()
+            .fill(Color.white.opacity(0.75))
+            .frame(width: 2.0, height: 28.0)
     }
 }
 
@@ -366,43 +445,35 @@ private struct LoadedBarDrawingView: View {
 
 private struct EZBarDrawingView: View {
     let plates: [Double]
-    let label: String
 
     var body: some View {
-        VStack(spacing: 4.0) {
-            HStack(alignment: .center, spacing: 2.0) {
-                PlateStackView(plates: plates, mirrored: true)
+        HStack(alignment: .center, spacing: 2.0) {
+            PlateStackView(plates: plates, mirrored: true)
 
-                ZStack {
-                    EZBarShape()
-                        .stroke(
-                            Color.gray.opacity(0.8),
-                            style: StrokeStyle(lineWidth: 5.0, lineCap: .round, lineJoin: .round)
-                        )
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 28.0)
+            ZStack {
+                EZBarShape()
+                    .stroke(
+                        Color.white.opacity(0.55),
+                        style: StrokeStyle(lineWidth: 4.0, lineCap: .square, lineJoin: .miter)
+                    )
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 24.0)
 
-                    HStack {
-                        Capsule()
-                            .fill(Color.gray.opacity(0.8))
-                            .frame(width: 14.0, height: 5.0)
-                        Spacer(minLength: 0.0)
-                        Capsule()
-                            .fill(Color.gray.opacity(0.8))
-                            .frame(width: 14.0, height: 5.0)
-                    }
+                HStack {
+                    Rectangle()
+                        .fill(Color.white.opacity(0.6))
+                        .frame(width: 12.0, height: 3.0)
+
+                    Spacer(minLength: 0.0)
+
+                    Rectangle()
+                        .fill(Color.white.opacity(0.6))
+                        .frame(width: 12.0, height: 3.0)
                 }
-                .frame(maxWidth: .infinity)
-
-                PlateStackView(plates: plates, mirrored: false)
             }
-            .frame(height: 78.0)
+            .frame(maxWidth: .infinity)
 
-            Text(label)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            PlateStackView(plates: plates, mirrored: false)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
@@ -413,8 +484,8 @@ private struct EZBarShape: Shape {
         var path = Path()
 
         let middleY: CGFloat = rect.midY
-        let amplitude: CGFloat = rect.height * 0.32
-        let inset: CGFloat = 4.0
+        let amplitude: CGFloat = rect.height * 0.30
+        let inset: CGFloat = 2.0
         let left: CGFloat = rect.minX + inset
         let right: CGFloat = rect.maxX - inset
         let step: CGFloat = (right - left) / 6.0
@@ -444,36 +515,25 @@ struct EquipmentSimplifiedIconView: View {
             let middleY: CGFloat = height / 2.0
             let type: EquipmentType = self.equipmentType
 
-            let barColor: Color = Color.gray.opacity(0.8)
-            let plateColor: Color = Color.green.opacity(0.85)
+            let barColor: Color = Color.white.opacity(0.75)
+            let plateColor: Color = EndfieldPalette.accentYellow.opacity(0.9)
 
             switch type {
             case .cable:
                 let pulleyRect = CGRect(x: width / 2.0 - 4.0, y: 2.0, width: 8.0, height: 8.0)
                 var pulley = Path()
-                pulley.addEllipse(in: pulleyRect)
-                context.stroke(pulley, with: .color(barColor), lineWidth: 1.4)
+                pulley.addRect(pulleyRect)
+                context.stroke(pulley, with: .color(barColor), lineWidth: 1.2)
 
                 var cable = Path()
                 cable.move(to: CGPoint(x: width / 2.0, y: 10.0))
                 cable.addLine(to: CGPoint(x: width / 2.0, y: 17.0))
                 context.stroke(cable, with: .color(barColor), lineWidth: 1.2)
 
-                var handle = Path()
-                handle.addRoundedRect(
-                    in: CGRect(x: width / 2.0 - 6.0, y: 17.0, width: 12.0, height: 3.0),
-                    cornerSize: CGSize(width: 1.5, height: 1.5)
-                )
-                context.fill(handle, with: .color(barColor))
+                self.fillRect(context: &context, x: width / 2.0 - 6.0, y: 17.0, width: 12.0, height: 3.0, color: barColor)
 
             case .dumbbell:
-                var handle = Path()
-                handle.addRoundedRect(
-                    in: CGRect(x: 8.0, y: middleY - 1.5, width: 12.0, height: 3.0),
-                    cornerSize: CGSize(width: 1.0, height: 1.0)
-                )
-                context.fill(handle, with: .color(barColor))
-
+                self.fillRect(context: &context, x: 8.0, y: middleY - 1.5, width: 12.0, height: 3.0, color: barColor)
                 self.fillRect(context: &context, x: 4.0, y: middleY - 6.0, width: 3.0, height: 12.0, color: barColor)
                 self.fillRect(context: &context, x: 1.0, y: middleY - 4.0, width: 2.0, height: 8.0, color: barColor)
                 self.fillRect(context: &context, x: 21.0, y: middleY - 6.0, width: 3.0, height: 12.0, color: barColor)
@@ -489,12 +549,10 @@ struct EquipmentSimplifiedIconView: View {
                 self.strokeLine(context: &context, x1: 19.0, y1: middleY, x2: 26.0, y2: middleY, color: barColor, lineWidth: 1.5)
                 self.fillRect(context: &context, x: 4.0, y: middleY - 4.0, width: 2.0, height: 8.0, color: plateColor)
                 self.fillRect(context: &context, x: 22.0, y: middleY - 4.0, width: 2.0, height: 8.0, color: plateColor)
+
                 var machine = Path()
-                machine.addRoundedRect(
-                    in: CGRect(x: 9.0, y: middleY - 6.0, width: 10.0, height: 12.0),
-                    cornerSize: CGSize(width: 2.0, height: 2.0)
-                )
-                context.fill(machine, with: .color(Color.gray.opacity(0.35)))
+                machine.addRect(CGRect(x: 9.0, y: middleY - 6.0, width: 10.0, height: 12.0))
+                context.fill(machine, with: .color(Color.white.opacity(0.10)))
                 context.stroke(machine, with: .color(barColor), lineWidth: 1.0)
 
             case .smithMachine:
@@ -525,7 +583,7 @@ struct EquipmentSimplifiedIconView: View {
                 context.stroke(
                     path,
                     with: .color(barColor),
-                    style: StrokeStyle(lineWidth: 1.8, lineCap: .round, lineJoin: .round)
+                    style: StrokeStyle(lineWidth: 1.6, lineCap: .square, lineJoin: .miter)
                 )
                 self.fillRect(context: &context, x: 4.0, y: middleY - 4.0, width: 2.0, height: 8.0, color: plateColor)
                 self.fillRect(context: &context, x: 22.0, y: middleY - 4.0, width: 2.0, height: 8.0, color: plateColor)

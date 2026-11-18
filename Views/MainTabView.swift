@@ -16,7 +16,9 @@ public struct MainTabView: View {
     @State private var restoredWorkout: RestoredWorkout?
     @State private var didAttemptRestore = false
 
-    public init() {}
+    public init() {
+        EndfieldAppearance.apply()
+    }
 
     public var body: some View {
         TabView {
@@ -48,7 +50,8 @@ public struct MainTabView: View {
                 Label("Configuración", systemImage: "gearshape.fill")
             }
         }
-        .tint(.accentColor)
+        .tint(EndfieldPalette.accentYellow)
+        .preferredColorScheme(.dark)
         .fullScreenCover(item: $restoredWorkout) { workout in
             NavigationStack {
                 ActiveWorkoutView(

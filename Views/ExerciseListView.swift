@@ -18,16 +18,16 @@ public struct ExerciseListView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                TechnicalGridBackground()
 
-                VStack(spacing: 16) {
+                VStack(spacing: 10.0) {
                     // Filter Chips
                     filterSection
 
                     // Exercises List
                     List {
-                        ForEach(filteredExercises) { exercise in
-                            ExerciseRowView(exercise: exercise)
+                        ForEach(Array(filteredExercises.enumerated()), id: \.element.id) { index, exercise in
+                            ExerciseRowView(exercise: exercise, index: index)
                                 .contentShape(Rectangle())
                                 .onTapGesture {
                                     guard selectedExerciseToEdit == nil else { return }
@@ -40,20 +40,24 @@ public struct ExerciseListView: View {
                                 .accessibilityHint("Toca para ver el detalle y mantén pulsado para editar")
                                 .listRowBackground(Color.clear)
                                 .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 3.0, leading: 16.0, bottom: 3.0, trailing: 16.0))
                         }
                         .onDelete(perform: deleteExercises)
                     }
                     .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                 }
             }
-            .navigationTitle("Ejercicios")
+            .navigationTitle("EJERCICIOS")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(action: { showingAddModal = true }) {
                         Image(systemName: "plus")
-                            .font(.headline)
-                            .foregroundStyle(.white)
+                            .font(EndfieldFont.mono(12.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.accentYellow)
                     }
+                    .accessibilityLabel("Nuevo ejercicio")
                 }
             }
             .sheet(isPresented: $showingAddModal) {
@@ -71,7 +75,7 @@ public struct ExerciseListView: View {
 
     private var filterSection: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 5.0) {
                 // All button
                 FilterChip(title: "Todos", isSelected: selectedMuscleGroup == nil && selectedEquipment == nil) {
                     selectedMuscleGroup = nil
@@ -85,7 +89,8 @@ public struct ExerciseListView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, 16.0)
+            .padding(.vertical, 2.0)
         }
     }
 
@@ -108,6 +113,8 @@ public struct ExerciseListView: View {
 }
 
 // MARK: - Filter Chip
+
+/// Pestaña angular horizontal: activa en amarillo táctico con texto negro.
 struct FilterChip: View {
     let title: String
     let isSelected: Bool
@@ -115,48 +122,87 @@ struct FilterChip: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.subheadline.bold())
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(isSelected ? Color.white : Color(.systemGray6).opacity(0.3))
-                .foregroundColor(isSelected ? Color.black : Color.white)
-                .cornerRadius(20)
+            Text(title.uppercased())
+                .font(EndfieldFont.mono(10.0, weight: .bold))
+                .tracking(1.0)
+                .foregroundStyle(isSelected ? EndfieldPalette.bgPrimary : EndfieldPalette.textSecondary)
+                .lineLimit(1)
+                .fixedSize()
+                .padding(.horizontal, 11.0)
+                .padding(.vertical, 8.0)
+                .background(isSelected ? EndfieldPalette.accentYellow : EndfieldPalette.bgPanel)
+                .clipShape(ChamferedRectangle(cut: 4.0))
+                .overlay {
+                    ChamferedRectangle(cut: 4.0)
+                        .stroke(
+                            isSelected ? EndfieldPalette.accentYellow : EndfieldPalette.borderSubtle,
+                            lineWidth: 1.0
+                        )
+                }
         }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 }
 
 // MARK: - Exercise Row
+
 struct ExerciseRowView: View {
     let exercise: Exercise
+    let index: Int
+
+    init(exercise: Exercise, index: Int = 0) {
+        self.exercise = exercise
+        self.index = index
+    }
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(exercise.name)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                HStack(spacing: 8) {
-                    Label(exercise.muscleGroup.shortName, systemImage: "figure.strengthtraining.traditional")
-                    Text("•")
-                    Label(exercise.equipmentType.rawValue, systemImage: "dumbbell.fill")
+        HStack(spacing: 9.0) {
+            Text(String(format: "%02d", index + 1))
+                .font(EndfieldFont.mono(10.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.accentYellow.opacity(0.85))
+                .frame(width: 24.0, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 5.0) {
+                Text(exercise.name.uppercased())
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+
+                HStack(spacing: 5.0) {
+                    TacticalTagBadge(text: exercise.muscleGroup.shortName, tint: EndfieldPalette.textSecondary)
+                    TacticalTagBadge(text: exercise.equipmentType.rawValue, tint: EndfieldPalette.accentCyan)
+                    TacticalTagBadge(text: "REPS: \(exercise.targetRepsText)", tint: EndfieldPalette.accentYellow)
+
                     if exercise.requiresStraps {
-                        Label("Recoger Straps", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
+                        TacticalTagBadge(text: "STRAPS", tint: EndfieldPalette.accentRed)
                     }
+
+                    Spacer(minLength: 0.0)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
-            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.textSecondary)
         }
-        .padding(16)
-        .background(Color(.systemGray6).opacity(0.15))
-        .cornerRadius(16)
+        .padding(.horizontal, 10.0)
+        .padding(.vertical, 10.0)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(EndfieldPalette.bgPanel)
+        .clipShape(ChamferedRectangle(cut: 8.0))
+        .overlay {
+            ChamferedRectangle(cut: 8.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
 // MARK: - Add Exercise View
+
 public struct AddExerciseView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -174,60 +220,65 @@ public struct AddExerciseView: View {
 
     public var body: some View {
         NavigationStack {
-            Form {
-                Section("Detalles del Ejercicio") {
-                    TextField("Nombre del ejercicio", text: $name)
-                    Picker("Grupo Muscular", selection: $muscleGroup) {
-                        ForEach(MuscleGroup.allCases) { group in
-                            Text(group.rawValue).tag(group)
-                        }
-                    }
-                    Picker("Equipamiento", selection: $equipmentType) {
-                        ForEach(EquipmentType.allCases) { eq in
-                            Text(eq.rawValue).tag(eq)
-                        }
-                    }
-                    Picker("Tipo de movimiento", selection: $isCompound) {
-                        Text("Complejo").tag(true)
-                        Text("Aislamiento").tag(false)
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: isCompound) { _, newValue in
-                        applyDefaultTargetReps(for: newValue)
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Reps objetivo: \(targetRepsMin) - \(targetRepsMax) reps")
-                            .font(.subheadline.bold())
-                        Stepper("Mínimo: \(targetRepsMin)", value: $targetRepsMin, in: 1...50)
-                            .onChange(of: targetRepsMin) { _, newValue in
-                                if newValue > targetRepsMax {
-                                    targetRepsMax = newValue
-                                }
-                            }
-                        Stepper("Máximo: \(targetRepsMax)", value: $targetRepsMax, in: 1...50)
-                            .onChange(of: targetRepsMax) { _, newValue in
-                                if newValue < targetRepsMin {
-                                    targetRepsMin = newValue
-                                }
-                            }
-                    }
-                    Toggle("Requiere Straps", isOn: $requiresStraps)
-                }
+            ZStack {
+                TechnicalGridBackground()
 
-                Section("Condición de Descanso") {
-                    Toggle("Descanso por Bajada de BPM", isOn: $useBpmDrop)
-                    if useBpmDrop {
-                        Stepper("BPM Objetivo: \(targetBpm)", value: $targetBpm, in: 80...160, step: 5)
-                    } else {
-                        Stepper("Tiempo: \(restSeconds)s", value: $restSeconds, in: 30...300, step: 15)
+                ScrollView {
+                    VStack(spacing: 12.0) {
+                        TacticalPanel(code: "EX.NEW", title: "Detalles del ejercicio", contentPadding: 12.0) {
+                            VStack(spacing: 12.0) {
+                                nameField
+
+                                Rectangle()
+                                    .fill(EndfieldPalette.borderSubtle)
+                                    .frame(height: 1.0)
+
+                                musclePicker
+                                equipmentPicker
+                                movementTypeSelector
+                                targetRepsBlock
+                                strapsToggle
+                            }
+                        }
+
+                        TacticalPanel(code: "RST.01", title: "Condición de descanso", contentPadding: 12.0) {
+                            VStack(spacing: 12.0) {
+                                Toggle(isOn: $useBpmDrop) {
+                                    Text("DESCANSO POR BAJADA DE BPM")
+                                        .font(EndfieldFont.label(9.0))
+                                        .tracking(0.8)
+                                        .foregroundStyle(EndfieldPalette.textPrimary)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.75)
+                                }
+                                .tint(EndfieldPalette.accentYellow)
+
+                                if useBpmDrop {
+                                    Stepper(value: $targetBpm, in: 80...160, step: 5) {
+                                        numericRow(label: "BPM OBJETIVO", value: "\(targetBpm)")
+                                    }
+                                    .tint(EndfieldPalette.accentYellow)
+                                } else {
+                                    Stepper(value: $restSeconds, in: 30...300, step: 15) {
+                                        numericRow(label: "TIEMPO", value: "\(restSeconds) s")
+                                    }
+                                    .tint(EndfieldPalette.accentYellow)
+                                }
+                            }
+                        }
                     }
+                    .padding(.horizontal, 16.0)
+                    .padding(.vertical, 12.0)
                 }
             }
-            .navigationTitle("Nuevo Ejercicio")
+            .navigationTitle("NUEVO EJERCICIO")
+            .navigationBarTitleDisplayMode(.inline)
             .withKeyboardDismiss()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancelar") { dismiss() }
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Guardar") {
@@ -257,9 +308,177 @@ public struct AddExerciseView: View {
                         try? modelContext.save()
                         dismiss()
                     }
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+        }
+    }
+
+    // MARK: Componentes
+
+    private var nameField: some View {
+        VStack(alignment: .leading, spacing: 5.0) {
+            fieldLabel("NOMBRE DEL EJERCICIO")
+
+            TextField("", text: $name, prompt: Text("Ej. Press banca").foregroundColor(EndfieldPalette.textSecondary.opacity(0.6)))
+                .textFieldStyle(.plain)
+                .font(EndfieldFont.mono(13.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .tint(EndfieldPalette.accentYellow)
+                .padding(.horizontal, 9.0)
+                .padding(.vertical, 9.0)
+                .background(EndfieldPalette.bgElevated)
+                .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                .overlay {
+                    ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                        .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                }
+        }
+    }
+
+    private var musclePicker: some View {
+        VStack(alignment: .leading, spacing: 5.0) {
+            fieldLabel("GRUPO MUSCULAR")
+
+            Picker(selection: $muscleGroup) {
+                ForEach(MuscleGroup.allCases) { group in
+                    Text(group.rawValue).tag(group)
+                }
+            } label: {
+                Text(muscleGroup.rawValue.uppercased())
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .tint(EndfieldPalette.accentYellow)
+        }
+    }
+
+    private var equipmentPicker: some View {
+        VStack(alignment: .leading, spacing: 5.0) {
+            fieldLabel("EQUIPAMIENTO")
+
+            Picker(selection: $equipmentType) {
+                ForEach(EquipmentType.allCases) { eq in
+                    Text(eq.rawValue).tag(eq)
+                }
+            } label: {
+                Text(equipmentType.rawValue.uppercased())
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .tint(EndfieldPalette.accentYellow)
+        }
+    }
+
+    private var movementTypeSelector: some View {
+        VStack(alignment: .leading, spacing: 5.0) {
+            fieldLabel("TIPO DE MOVIMIENTO")
+
+            HStack(spacing: 5.0) {
+                movementButton(title: "COMPLEJO", isActive: isCompound) {
+                    isCompound = true
+                }
+
+                movementButton(title: "AISLAMIENTO", isActive: !isCompound) {
+                    isCompound = false
+                }
+            }
+        }
+        .onChange(of: isCompound) { _, newValue in
+            applyDefaultTargetReps(for: newValue)
+        }
+    }
+
+    private func movementButton(title: String, isActive: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(EndfieldFont.mono(10.0, weight: .bold))
+                .tracking(1.0)
+                .foregroundStyle(isActive ? EndfieldPalette.bgPrimary : EndfieldPalette.textSecondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9.0)
+                .background(isActive ? EndfieldPalette.accentYellow : EndfieldPalette.bgElevated)
+                .clipShape(ChamferedRectangle(cut: 4.0))
+                .overlay {
+                    ChamferedRectangle(cut: 4.0)
+                        .stroke(
+                            isActive ? EndfieldPalette.accentYellow : EndfieldPalette.borderSubtle,
+                            lineWidth: 1.0
+                        )
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var targetRepsBlock: some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            HStack(spacing: 6.0) {
+                fieldLabel("REPS OBJETIVO")
+
+                Spacer(minLength: 0.0)
+
+                Text("\(targetRepsMin) - \(targetRepsMax)")
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+            }
+
+            Stepper(value: $targetRepsMin, in: 1...50) {
+                numericRow(label: "MÍNIMO", value: "\(targetRepsMin)")
+            }
+            .tint(EndfieldPalette.accentYellow)
+            .onChange(of: targetRepsMin) { _, newValue in
+                if newValue > targetRepsMax {
+                    targetRepsMax = newValue
+                }
+            }
+
+            Stepper(value: $targetRepsMax, in: 1...50) {
+                numericRow(label: "MÁXIMO", value: "\(targetRepsMax)")
+            }
+            .tint(EndfieldPalette.accentYellow)
+            .onChange(of: targetRepsMax) { _, newValue in
+                if newValue < targetRepsMin {
+                    targetRepsMin = newValue
+                }
+            }
+        }
+    }
+
+    private var strapsToggle: some View {
+        Toggle(isOn: $requiresStraps) {
+            Text("REQUIERE STRAPS")
+                .font(EndfieldFont.label(9.0))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.textPrimary)
+        }
+        .tint(EndfieldPalette.accentYellow)
+    }
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text)
+            .font(EndfieldFont.label(8.0))
+            .tracking(1.0)
+            .foregroundStyle(EndfieldPalette.textSecondary)
+    }
+
+    private func numericRow(label: String, value: String) -> some View {
+        HStack(spacing: 6.0) {
+            Text(label)
+                .font(EndfieldFont.label(8.0))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+
+            Spacer(minLength: 4.0)
+
+            Text(value)
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.textPrimary)
         }
     }
 

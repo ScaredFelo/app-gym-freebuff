@@ -20,13 +20,22 @@ public struct AnalyticsView: View {
     @State private var sessionToReviewAfterSheet: WorkoutSession?
     @State private var reviewSession: WorkoutSession?
 
+    private static let chartPalette: [Color] = [
+        EndfieldPalette.accentYellow,
+        EndfieldPalette.accentCyan,
+        EndfieldPalette.accentRed,
+        Color(hex: "#7CFF6B"),
+        Color(hex: "#B388FF"),
+        Color(hex: "#FF9F45")
+    ]
+
     public var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                TechnicalGridBackground()
 
                 ScrollView {
-                    VStack(spacing: 24) {
+                    VStack(spacing: 12.0) {
                         // Weekly Volume Chart
                         weeklyVolumeChartSection
 
@@ -34,20 +43,29 @@ public struct AnalyticsView: View {
                         monthlyCalendarSection
 
                         // Personal Records (PRs) - desplegable
-                        DisclosureGroup("Récords Personales (PRs)", isExpanded: $showingPersonalRecords) {
+                        EndfieldDisclosure(
+                            code: "PR.01",
+                            title: "Récords personales",
+                            isExpanded: $showingPersonalRecords
+                        ) {
                             personalRecordsSectionContent
                         }
 
                         // Workout History & Total Volume - desplegable
-                        DisclosureGroup("Historial de Sesiones", isExpanded: $showingWorkoutHistory) {
+                        EndfieldDisclosure(
+                            code: "LOG.02",
+                            title: "Historial de sesiones",
+                            isExpanded: $showingWorkoutHistory
+                        ) {
                             workoutHistorySectionContent
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 20)
+                    .padding(.horizontal, 16.0)
+                    .padding(.vertical, 16.0)
                 }
             }
-            .navigationTitle("Estadísticas")
+            .navigationTitle("PROGRESO")
+            .navigationBarTitleDisplayMode(.inline)
             .alert(
                 "¿Eliminar entrenamiento?",
                 isPresented: Binding(
@@ -75,7 +93,7 @@ public struct AnalyticsView: View {
                 )
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(Color.black)
+                .presentationBackground(EndfieldPalette.bgPrimary)
             }
             .fullScreenCover(item: $reviewSession) { (session: WorkoutSession) in
                 WorkoutReviewView(session: session, isPostWorkout: false)
@@ -84,52 +102,76 @@ public struct AnalyticsView: View {
     }
 
     // MARK: - Weekly Volume Chart
+
     private var weeklyVolumeChartSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Volumen de Series (Últimos 7 días)")
-                .font(.headline)
-                .foregroundStyle(.white)
+        let weeklyData: [MuscleVolumeItem] = computeWeeklyMuscleVolume()
 
-            let weeklyData = computeWeeklyMuscleVolume()
+        return TacticalPanel(code: "TEL.07", title: "Volumen de series", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 8.0) {
+                Text("ÚLTIMOS 7 DÍAS // SERIES POR GRUPO")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
 
-            if weeklyData.isEmpty {
-                Text("No hay suficientes datos esta semana.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .frame(height: 150)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            } else {
-                Chart(weeklyData) { item in
-                    BarMark(
-                        x: .value("Grupo", item.muscleGroup),
-                        y: .value("Series", item.setsCount)
-                    )
-                    .foregroundStyle(by: .value("Grupo", item.muscleGroup))
-                    .cornerRadius(8)
-                }
-                .chartXAxis(.hidden)
-                .chartLegend(position: .bottom, alignment: .leading, spacing: 8)
-                .chartYAxis {
-                    AxisMarks(values: .stride(by: 5)) { value in
-                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2]))
-                            .foregroundStyle(Color.gray.opacity(0.3))
-                        AxisValueLabel()
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                if weeklyData.isEmpty {
+                    Text("SIN DATOS SUFICIENTES ESTA SEMANA")
+                        .font(EndfieldFont.mono(10.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .frame(height: 150.0)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else {
+                    Chart(weeklyData) { (item: MuscleVolumeItem) in
+                        BarMark(
+                            x: .value("Grupo", item.muscleGroup),
+                            y: .value("Series", item.setsCount)
+                        )
+                        .foregroundStyle(item.tint)
+                        .cornerRadius(0.0)
                     }
+                    .chartXAxis(.hidden)
+                    .chartLegend(.hidden)
+                    .chartYAxis {
+                        AxisMarks(values: .stride(by: 5)) { value in
+                            AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2.0, 2.0]))
+                                .foregroundStyle(Color.white.opacity(0.10))
+                            AxisValueLabel()
+                                .font(EndfieldFont.label(8.0))
+                                .foregroundStyle(EndfieldPalette.textSecondary)
+                        }
+                    }
+                    .frame(height: 190.0)
+
+                    chartLegend(data: weeklyData)
                 }
-                .frame(height: 220)
             }
         }
-        .padding(16)
-        .background(Color(.systemGray6).opacity(0.1))
-        .cornerRadius(16)
+    }
+
+    private func chartLegend(data: [MuscleVolumeItem]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8.0) {
+                ForEach(data) { (item: MuscleVolumeItem) in
+                    HStack(spacing: 4.0) {
+                        Rectangle()
+                            .fill(item.tint)
+                            .frame(width: 6.0, height: 6.0)
+
+                        Text("\(item.muscleGroup.uppercased()) \(item.setsCount)")
+                            .font(EndfieldFont.label(8.0))
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+                            .fixedSize()
+                    }
+                }
+            }
+        }
+        .frame(height: 12.0)
     }
 
     struct MuscleVolumeItem: Identifiable {
         let id = UUID()
         let muscleGroup: String
         let setsCount: Int
+        let tint: Color
     }
 
     private func computeWeeklyMuscleVolume() -> [MuscleVolumeItem] {
@@ -151,8 +193,20 @@ public struct AnalyticsView: View {
             }
         }
 
-        return counts.map { MuscleVolumeItem(muscleGroup: $0.key, setsCount: $0.value) }
-            .sorted { $0.setsCount > $1.setsCount }
+        var pairs: [(name: String, count: Int)] = []
+        for (key, value) in counts {
+            pairs.append((name: key, count: value))
+        }
+        pairs.sort { (lhs: (name: String, count: Int), rhs: (name: String, count: Int)) -> Bool in
+            return lhs.count > rhs.count
+        }
+
+        var items: [MuscleVolumeItem] = []
+        for (index, pair) in pairs.enumerated() {
+            let tint: Color = Self.chartPalette[index % Self.chartPalette.count]
+            items.append(MuscleVolumeItem(muscleGroup: pair.name, setsCount: pair.count, tint: tint))
+        }
+        return items
     }
 
     // MARK: - Monthly Workout Calendar
@@ -161,11 +215,7 @@ public struct AnalyticsView: View {
     /// componente para resaltar los días con entrenamiento y abrir el popup
     /// diario existente al pulsar cualquier fecha.
     private var monthlyCalendarSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Calendario de Entrenamientos")
-                .font(.headline)
-                .foregroundStyle(.white)
-
+        TacticalPanel(code: "CAL.01", title: "Calendario de entrenamientos", contentPadding: 12.0) {
             MonthlyCalendarPagerView(
                 sessions: sessions,
                 onSelectDate: { (date: Date) in
@@ -173,44 +223,51 @@ public struct AnalyticsView: View {
                 }
             )
         }
-        .padding(16)
-        .background(Color(.systemGray6).opacity(0.1))
-        .cornerRadius(16)
     }
 
     // MARK: - Personal Records (PRs) - contenido (sin título, va dentro del DisclosureGroup)
+
     private var personalRecordsSectionContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6.0) {
             if exercises.isEmpty {
-                Text("Sin ejercicios registrados.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                Text("SIN EJERCICIOS REGISTRADOS")
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
             } else {
-                VStack(spacing: 12) {
-                    ForEach(exercises) { exercise in
-                        let pr = computePR(for: exercise)
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(exercise.name)
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(.white)
-                                Text(exercise.muscleGroup.rawValue)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            VStack(alignment: .trailing, spacing: 2) {
-                                Text(pr != nil ? "\(String(format: "%.1f", pr!.weight)) kg" : "—")
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(.green)
-                                Text(pr != nil ? "\(pr!.reps) reps" : "")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
+                ForEach(exercises) { exercise in
+                    let pr = computePR(for: exercise)
+
+                    HStack(spacing: 8.0) {
+                        VStack(alignment: .leading, spacing: 2.0) {
+                            Text(exercise.name.uppercased())
+                                .font(EndfieldFont.label(9.0))
+                                .tracking(0.6)
+                                .foregroundStyle(EndfieldPalette.textPrimary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.7)
+
+                            Text(exercise.muscleGroup.shortName.uppercased())
+                                .font(EndfieldFont.label(7.0))
+                                .foregroundStyle(EndfieldPalette.textSecondary)
                         }
-                        .padding(12)
-                        .background(Color(.systemGray6).opacity(0.1))
-                        .cornerRadius(12)
+
+                        Spacer(minLength: 6.0)
+
+                        Text(pr != nil ? "\(String(format: "%.1f", pr!.weight)) KG" : "—")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.accentYellow)
+
+                        Text(pr != nil ? "× \(pr!.reps)" : "")
+                            .font(EndfieldFont.mono(9.0))
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+                    }
+                    .padding(.vertical, 6.0)
+                    .padding(.horizontal, 8.0)
+                    .background(EndfieldPalette.bgElevated)
+                    .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                    .overlay {
+                        ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                            .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
                     }
                 }
             }
@@ -231,55 +288,59 @@ public struct AnalyticsView: View {
     }
 
     // MARK: - Workout History & Total Volume - contenido (sin título, va dentro del DisclosureGroup)
+
     private var workoutHistorySectionContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 6.0) {
             let sortedSessions = sessions.sorted(by: { (lhs: WorkoutSession, rhs: WorkoutSession) -> Bool in
                 return lhs.startDate > rhs.startDate
             })
 
             if sortedSessions.isEmpty {
-                Text("No hay sesiones registradas.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                Text("NO HAY SESIONES REGISTRADAS")
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
             } else {
-                VStack(spacing: 12) {
-                    ForEach(sortedSessions) { (session: WorkoutSession) in
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(session.startDate, style: .date)
-                                    .font(.subheadline.bold())
-                                    .foregroundStyle(.white)
-                                Text("\(session.setsCompleted.count) series completadas")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            Text("\(Int(session.totalVolumeKg)) kg vol.")
-                                .font(.subheadline.bold())
-                                .foregroundStyle(.white)
+                ForEach(sortedSessions) { (session: WorkoutSession) in
+                    HStack(spacing: 8.0) {
+                        VStack(alignment: .leading, spacing: 2.0) {
+                            Text(session.startDate.formatted(date: .numeric, time: .omitted))
+                                .font(EndfieldFont.mono(10.0, weight: .bold))
+                                .foregroundStyle(EndfieldPalette.textPrimary)
 
-                            Button(role: .destructive) {
-                                sessionPendingDeletion = session
-                            } label: {
-                                Image(systemName: "trash")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.red.opacity(0.9))
-                                    .frame(width: 32, height: 32)
-                                    .background(Color.red.opacity(0.12))
-                                    .clipShape(Circle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Eliminar entrenamiento")
+                            Text("\(session.setsCompleted.count) SERIES")
+                                .font(EndfieldFont.label(7.0))
+                                .tracking(0.8)
+                                .foregroundStyle(EndfieldPalette.textSecondary)
                         }
-                        .padding(12)
-                        .background(Color(.systemGray6).opacity(0.1))
-                        .cornerRadius(12)
-                        .contextMenu {
-                            Button(role: .destructive) {
-                                sessionPendingDeletion = session
-                            } label: {
-                                Label("Eliminar entrenamiento", systemImage: "trash")
-                            }
+
+                        Spacer(minLength: 6.0)
+
+                        Text("\(Int(session.totalVolumeKg)) KG")
+                            .font(EndfieldFont.mono(10.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.accentCyan)
+
+                        Button(role: .destructive) {
+                            sessionPendingDeletion = session
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(EndfieldFont.mono(9.0, weight: .bold))
+                        }
+                        .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentRed, size: 26.0))
+                        .accessibilityLabel("Eliminar entrenamiento")
+                    }
+                    .padding(.vertical, 6.0)
+                    .padding(.horizontal, 8.0)
+                    .background(EndfieldPalette.bgElevated)
+                    .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                    .overlay {
+                        ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                            .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                    }
+                    .contextMenu {
+                        Button(role: .destructive) {
+                            sessionPendingDeletion = session
+                        } label: {
+                            Label("Eliminar entrenamiento", systemImage: "trash")
                         }
                     }
                 }
@@ -349,21 +410,24 @@ struct DaySessionsSheet: View {
     let onSelect: (WorkoutSession) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(dateText)
-                    .font(.title3.bold())
-                    .foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 12.0) {
+            HazardStripeBar(height: 6.0)
+
+            VStack(alignment: .leading, spacing: 4.0) {
+                Text("OP.LOG // \(dateText.uppercased())")
+                    .font(EndfieldFont.label(9.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.accentYellow)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(summaryText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(summaryText.uppercased())
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
             }
-            .padding(.top, 8)
+            .padding(.top, 2.0)
 
             ScrollView {
-                VStack(spacing: 10) {
+                VStack(spacing: 8.0) {
                     ForEach(sessions) { session in
                         Button {
                             onSelect(session)
@@ -373,13 +437,14 @@ struct DaySessionsSheet: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.bottom, 8)
+                .padding(.bottom, 8.0)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.bottom, 16)
+        .padding(.horizontal, 16.0)
+        .padding(.top, 8.0)
+        .padding(.bottom, 16.0)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(Color.black)
+        .background(EndfieldPalette.bgPrimary)
         .preferredColorScheme(.dark)
     }
 
@@ -398,37 +463,44 @@ struct DaySessionRowView: View {
     let session: WorkoutSession
 
     var body: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(routineName)
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
+        HStack(spacing: 8.0) {
+            VStack(alignment: .leading, spacing: 4.0) {
+                Text(routineName.uppercased())
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.7)
 
-                HStack(spacing: 10) {
-                    Label(startTimeText, systemImage: "clock")
-                    Label(durationText, systemImage: "timer")
+                HStack(spacing: 8.0) {
+                    Text(startTimeText)
+                    Text("//")
+                        .foregroundStyle(EndfieldPalette.textSecondary.opacity(0.5))
+                    Text(durationText)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(EndfieldFont.label(8.0))
+                .tracking(0.6)
+                .foregroundStyle(EndfieldPalette.textSecondary)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6.0)
 
             Text(volumeText)
-                .font(.subheadline.bold())
-                .foregroundStyle(.green)
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.accentYellow)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.7)
 
             Image(systemName: "chevron.right")
-                .font(.caption2.bold())
-                .foregroundStyle(.secondary)
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.textSecondary)
         }
-        .padding(12)
-        .background(Color(.systemGray6).opacity(0.12))
-        .cornerRadius(12)
+        .padding(10.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: 6.0))
+        .overlay {
+            ChamferedRectangle(cut: 6.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
         .contentShape(Rectangle())
     }
 
@@ -448,7 +520,7 @@ struct DaySessionRowView: View {
     }
 
     private var volumeText: String {
-        return String(format: "%.0f kg", resolvedVolume())
+        return String(format: "%.0f KG", resolvedVolume())
     }
 
     private func resolvedVolume() -> Double {
@@ -464,4 +536,3 @@ struct DaySessionRowView: View {
         }
     }
 }
-

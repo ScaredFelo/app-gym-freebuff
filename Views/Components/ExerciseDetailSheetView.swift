@@ -68,7 +68,7 @@ struct ExerciseUsageStats: Equatable {
 // MARK: - Popup detallado
 
 /// Hoja informativa que se abre al tocar un ejercicio: frecuencia de uso,
-/// mapa muscular y análisis biomecánico.
+/// mapa muscular y análisis biomecánico, presentada como ficha técnica.
 struct ExerciseDetailSheetView: View {
     @Environment(\.dismiss) private var dismiss
     @Query(sort: \WorkoutSession.startDate, order: .reverse) private var sessions: [WorkoutSession]
@@ -81,8 +81,6 @@ struct ExerciseDetailSheetView: View {
     }
 
     private var primaryAccent: Color { MuscleHighlightRole.accent }
-    private var cardBackground: Color { Color.white.opacity(0.04) }
-    private var cardStroke: Color { Color.white.opacity(0.08) }
 
     private var info: ResolvedExerciseInfo {
         return ExerciseKnowledgeService.resolvedInfo(for: exercise)
@@ -95,10 +93,10 @@ struct ExerciseDetailSheetView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                TechnicalGridBackground()
 
                 ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 20.0) {
+                    VStack(alignment: .leading, spacing: 14.0) {
                         headerSection
                         badgesSection
                         frequencySection
@@ -106,20 +104,20 @@ struct ExerciseDetailSheetView: View {
                         notesSection
                         analysisSection
                     }
-                    .padding(.horizontal, 20.0)
+                    .padding(.horizontal, 16.0)
                     .padding(.top, 10.0)
-                    .padding(.bottom, 36.0)
+                    .padding(.bottom, 32.0)
                 }
             }
-            .navigationTitle("Detalle del ejercicio")
+            .navigationTitle("FICHA TÉCNICA")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Cerrar") {
                         dismiss()
                     }
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.green)
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
                 }
             }
         }
@@ -135,25 +133,57 @@ struct ExerciseDetailSheetView: View {
     // MARK: Cabecera
 
     private var headerSection: some View {
-        VStack(alignment: .leading, spacing: 10.0) {
-            Text(exercise.name)
-                .font(.title2.bold())
-                .foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 8.0) {
+            HStack(spacing: 6.0) {
+                Text("EX.DB")
+                    .font(EndfieldFont.mono(9.0, weight: .heavy))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .padding(.horizontal, 5.0)
+                    .padding(.vertical, 2.0)
+                    .overlay {
+                        ChamferedRectangle(cut: 3.0)
+                            .stroke(EndfieldPalette.accentYellow.opacity(0.55), lineWidth: 1.0)
+                    }
+
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+
+                Text(exercise.muscleGroup.shortName.uppercased())
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+            }
+
+            Text(exercise.name.uppercased())
+                .font(EndfieldFont.mono(19.0, weight: .heavy))
+                .foregroundStyle(EndfieldPalette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            HStack(spacing: 10.0) {
+            HStack(spacing: 8.0) {
                 EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
+                    .frame(width: 30.0, height: 30.0)
+                    .background(EndfieldPalette.bgElevated)
+                    .clipShape(ChamferedRectangle(cut: 3.0))
+                    .overlay {
+                        ChamferedRectangle(cut: 3.0)
+                            .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                    }
 
                 VStack(alignment: .leading, spacing: 2.0) {
-                    Text(exercise.equipmentType.rawValue)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-
-                    Text(exercise.muscleGroup.rawValue)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(exercise.equipmentType.rawValue.uppercased())
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(0.8)
+                        .foregroundStyle(EndfieldPalette.textPrimary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        .minimumScaleFactor(0.75)
+
+                    Text(exercise.muscleGroup.rawValue.uppercased())
+                        .font(EndfieldFont.label(8.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
                 }
 
                 Spacer(minLength: 0.0)
@@ -165,12 +195,15 @@ struct ExerciseDetailSheetView: View {
 
     private var badgesSection: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8.0) {
-                DetailBadge(text: "REPS: \(info.targetRepsText)", tint: .green)
-                DetailBadge(text: info.isCompound ? "COMPLEJO" : "AISLAMIENTO", tint: .orange)
+            HStack(spacing: 6.0) {
+                DetailBadge(text: "REPS: \(info.targetRepsText)", tint: EndfieldPalette.accentYellow)
+                DetailBadge(
+                    text: info.isCompound ? "COMPLEJO" : "AISLAMIENTO",
+                    tint: EndfieldPalette.accentCyan
+                )
                 DetailBadge(
                     text: info.requiresStraps ? "STRAPS: SÍ" : "STRAPS: NO",
-                    tint: info.requiresStraps ? Color.yellow : Color.white.opacity(0.7)
+                    tint: info.requiresStraps ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary
                 )
             }
         }
@@ -179,18 +212,18 @@ struct ExerciseDetailSheetView: View {
     // MARK: Frecuencia
 
     private var frequencySection: some View {
-        HStack(spacing: 12.0) {
+        HStack(spacing: 8.0) {
             FrequencyCard(
                 title: "Último mes",
                 times: stats.lastMonthCount,
                 icon: "calendar",
-                tint: .green
+                tint: EndfieldPalette.accentCyan
             )
 
             FrequencyCard(
                 title: "Total histórico",
                 times: stats.totalCount,
-                icon: "chart.bar.fill",
+                icon: "chart.bar",
                 tint: primaryAccent
             )
         }
@@ -199,85 +232,66 @@ struct ExerciseDetailSheetView: View {
     // MARK: Mapa muscular
 
     private var muscleMapSection: some View {
-        VStack(alignment: .leading, spacing: 12.0) {
-            DetailSectionTitle(title: "MAPA MUSCULAR")
-
+        TacticalPanel(code: "BIO.01", title: "Mapa muscular", contentPadding: 12.0) {
             AnatomicalMuscleMapView(
                 primaryMuscles: info.primaryMuscles,
                 secondaryMuscles: info.secondaryMuscles
             )
-            .padding(.vertical, 8.0)
-        }
-        .padding(16.0)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 20.0, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20.0, style: .continuous)
-                .stroke(cardStroke, lineWidth: 1.0)
+            .padding(.vertical, 2.0)
         }
     }
 
     // MARK: Notas
 
     private var notesSection: some View {
-        VStack(alignment: .leading, spacing: 10.0) {
-            DetailSectionTitle(title: "NOTAS APUNTADAS")
-
+        TacticalPanel(code: "OPS.NOTAS", title: "Notas apuntadas", contentPadding: 12.0) {
             let trimmedNotes: String = exercise.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+
             if trimmedNotes.isEmpty {
-                Text("Sin notas apuntadas")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.white.opacity(0.35))
+                Text("SIN NOTAS APUNTADAS")
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
             } else {
                 Text(trimmedNotes)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.9))
+                    .font(EndfieldFont.mono(11.0))
+                    .foregroundStyle(EndfieldPalette.textPrimary.opacity(0.9))
                     .fixedSize(horizontal: false, vertical: true)
             }
-        }
-        .padding(16.0)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 20.0, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20.0, style: .continuous)
-                .stroke(cardStroke, lineWidth: 1.0)
         }
     }
 
     // MARK: Análisis biomecánico
 
     private var analysisSection: some View {
-        VStack(alignment: .leading, spacing: 12.0) {
-            DetailSectionTitle(title: "ANÁLISIS BIOMECÁNICO")
+        VStack(alignment: .leading, spacing: 8.0) {
+            EndfieldSectionHeader(code: "BIO.02", title: "Análisis biomecánico")
 
             BiomechanicalInfoCard(
-                icon: "checkmark.seal.fill",
+                icon: "checkmark.seal",
                 title: "Por qué es un buen ejercicio",
                 text: info.whyGoodExercise,
-                tint: Color.green
+                tint: EndfieldPalette.accentYellow
             )
 
             BiomechanicalInfoCard(
-                icon: "exclamationmark.triangle.fill",
+                icon: "exclamationmark.triangle",
                 title: "Por qué no es un buen ejercicio",
                 text: info.whyBadExercise,
-                tint: Color.orange
+                tint: EndfieldPalette.accentRed
             )
 
             BiomechanicalInfoCard(
-                icon: "hand.thumbsup.fill",
+                icon: "hand.thumbsup",
                 title: "Cuándo se recomienda usarlo",
                 text: info.whenRecommended,
-                tint: Color.green
+                tint: EndfieldPalette.accentCyan
             )
 
             BiomechanicalInfoCard(
-                icon: "hand.raised.slash.fill",
+                icon: "hand.raised.slash",
                 title: "Cuándo NO se recomienda",
                 text: info.whenNotRecommended,
-                tint: Color.red
+                tint: EndfieldPalette.accentRed
             )
         }
     }
@@ -285,28 +299,30 @@ struct ExerciseDetailSheetView: View {
 
 // MARK: - Componentes de la hoja
 
-/// Chip compacto para los datos rápidos del ejercicio.
+/// Chip compacto angular para los datos rápidos del ejercicio.
 struct DetailBadge: View {
     let text: String
     let tint: Color
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 10.0, weight: .bold))
-            .tracking(0.6)
+        Text(text.uppercased())
+            .font(EndfieldFont.label(8.0))
+            .tracking(1.2)
             .foregroundStyle(tint)
             .lineLimit(1)
             .minimumScaleFactor(0.7)
-            .padding(.horizontal, 10.0)
-            .padding(.vertical, 6.0)
-            .background(tint.opacity(0.14), in: Capsule())
+            .padding(.horizontal, 7.0)
+            .padding(.vertical, 4.0)
+            .background(tint.opacity(0.10))
+            .clipShape(ChamferedRectangle(cut: 4.0))
             .overlay {
-                Capsule().stroke(tint.opacity(0.35), lineWidth: 1.0)
+                ChamferedRectangle(cut: 4.0)
+                    .stroke(tint.opacity(0.45), lineWidth: 1.0)
             }
     }
 }
 
-/// Tarjeta de frecuencia de uso.
+/// Caja de telemetría de frecuencia de uso.
 struct FrequencyCard: View {
     let title: String
     let times: Int
@@ -314,48 +330,55 @@ struct FrequencyCard: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8.0) {
-            HStack(spacing: 6.0) {
+        VStack(alignment: .leading, spacing: 6.0) {
+            HStack(spacing: 5.0) {
                 Image(systemName: icon)
-                    .font(.system(size: 11.0, weight: .semibold))
+                    .font(EndfieldFont.mono(9.0, weight: .bold))
                     .foregroundStyle(tint)
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+
+                Text(title.uppercased())
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.8)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .minimumScaleFactor(0.75)
             }
 
-            Text("\(times) veces")
-                .font(.title3.bold())
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            HStack(alignment: .firstTextBaseline, spacing: 4.0) {
+                Text("\(times)")
+                    .font(EndfieldFont.mono(22.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+
+                Text("×")
+                    .font(EndfieldFont.label(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+            }
         }
-        .padding(14.0)
+        .padding(10.0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 16.0, style: .continuous))
+        .background(EndfieldPalette.bgPanel)
+        .clipShape(ChamferedRectangle(cut: 6.0))
         .overlay {
-            RoundedRectangle(cornerRadius: 16.0, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1.0)
+            ChamferedRectangle(cut: 6.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
         }
     }
 }
 
-/// Título de sección en mayúsculas y espaciado.
+/// Título de sección técnico.
 struct DetailSectionTitle: View {
     let title: String
 
     var body: some View {
-        Text(title)
-            .font(.system(size: 11.0, weight: .bold))
+        Text(title.uppercased())
+            .font(EndfieldFont.label(9.0))
             .tracking(1.2)
-            .foregroundStyle(Color.white.opacity(0.45))
+            .foregroundStyle(EndfieldPalette.textSecondary)
     }
 }
 
-/// Tarjeta de análisis biomecánico con icono semántico.
+/// Ficha de análisis biomecánico con barra de acento lateral.
 struct BiomechanicalInfoCard: View {
     let icon: String
     let title: String
@@ -363,34 +386,39 @@ struct BiomechanicalInfoCard: View {
     let tint: Color
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12.0) {
-            Image(systemName: icon)
-                .font(.system(size: 10.0, weight: .bold))
-                .foregroundStyle(tint)
-                .frame(width: 26.0, height: 26.0)
-                .background(tint.opacity(0.14), in: Circle())
+        HStack(alignment: .top, spacing: 9.0) {
+            Rectangle()
+                .fill(tint.opacity(0.75))
+                .frame(width: 2.0)
 
             VStack(alignment: .leading, spacing: 4.0) {
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 5.0) {
+                    Image(systemName: icon)
+                        .font(EndfieldFont.mono(9.0, weight: .bold))
+                        .foregroundStyle(tint)
+
+                    Text(title.uppercased())
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(0.8)
+                        .foregroundStyle(EndfieldPalette.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 Text(text)
-                    .font(.footnote)
-                    .foregroundStyle(Color.white.opacity(0.62))
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 0.0)
         }
-        .padding(14.0)
+        .padding(10.0)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: 16.0, style: .continuous))
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: 2.0))
         .overlay {
-            RoundedRectangle(cornerRadius: 16.0, style: .continuous)
-                .stroke(tint.opacity(0.18), lineWidth: 1.0)
+            ChamferedRectangle(cut: 2.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
         }
     }
 }

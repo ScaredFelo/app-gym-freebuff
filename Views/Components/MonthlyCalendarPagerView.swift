@@ -10,7 +10,7 @@ private enum MonthlyCalendarMetrics {
     static let totalCells: Int = 42
     static let rowCount: Int = 6
     static let cellHeight: CGFloat = 36.0
-    static let gridSpacing: CGFloat = 4.0
+    static let gridSpacing: CGFloat = 3.0
 
     static var gridHeight: CGFloat {
         let rows: CGFloat = CGFloat(rowCount)
@@ -94,33 +94,62 @@ struct MonthlyCalendarPagerView: View {
     // MARK: Month header
 
     private var monthHeader: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8.0) {
-            Text(monthTitle)
-                .font(.headline)
-                .foregroundStyle(.white)
-
-            Spacer()
-
-            if monthOffset != 0 {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        monthOffset = 0
-                    }
-                } label: {
-                    Text("Hoy")
-                        .font(.caption.bold())
-                        .foregroundStyle(.green)
-                        .padding(.horizontal, 10.0)
-                        .padding(.vertical, 5.0)
-                        .background(Color.green.opacity(0.12))
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .transition(.opacity)
-                .accessibilityLabel("Volver al mes actual")
+        HStack(spacing: 6.0) {
+            arrowButton(systemName: "chevron.left") {
+                shiftMonth(-1)
             }
+            .accessibilityLabel("Mes anterior")
+
+            Text(monthTitle)
+                .font(EndfieldFont.mono(12.0, weight: .heavy))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .fixedSize(horizontal: false, vertical: true)
+
+            arrowButton(systemName: "chevron.right") {
+                shiftMonth(1)
+            }
+            .accessibilityLabel("Mes siguiente")
+
+            Spacer(minLength: 4.0)
+
+            todayButton
         }
-        .animation(.easeInOut(duration: 0.2), value: monthOffset != 0)
+    }
+
+    private func arrowButton(systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+        }
+        .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.textSecondary, size: 24.0))
+    }
+
+    private var todayButton: some View {
+        Button {
+            guard monthOffset != 0 else { return }
+            withAnimation(.easeInOut(duration: 0.25)) {
+                monthOffset = 0
+            }
+        } label: {
+            Text("HOY")
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+                .tracking(1.2)
+        }
+        .buttonStyle(EndfieldSecondaryButtonStyle(fullWidth: false, compact: true, tint: EndfieldPalette.accentYellow))
+        .opacity(monthOffset == 0 ? 0.4 : 1.0)
+        .accessibilityLabel("Volver al mes actual")
+    }
+
+    private func shiftMonth(_ delta: Int) {
+        let next: Int = monthOffset + delta
+        guard next >= Self.monthOffsetRange.lowerBound, next <= Self.monthOffsetRange.upperBound else { return }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            monthOffset = next
+        }
     }
 
     private var monthTitle: String {
@@ -129,14 +158,14 @@ struct MonthlyCalendarPagerView: View {
         formatter.calendar = MonthlyCalendarMetrics.calendar
         formatter.locale = MonthlyCalendarMetrics.locale
         formatter.timeZone = .current
-        formatter.dateFormat = "LLLL yyyy"
 
-        let raw: String = formatter.string(from: date)
-        guard let firstCharacter: Character = raw.first else { return raw }
+        formatter.dateFormat = "LLLL"
+        let month: String = formatter.string(from: date).uppercased(with: MonthlyCalendarMetrics.locale)
 
-        let first: String = String(firstCharacter).uppercased(with: MonthlyCalendarMetrics.locale)
-        let rest: String = String(raw.dropFirst())
-        return first + rest
+        formatter.dateFormat = "yyyy"
+        let year: String = formatter.string(from: date)
+
+        return "\(month) // \(year)"
     }
 
     // MARK: Weekday header
@@ -145,8 +174,9 @@ struct MonthlyCalendarPagerView: View {
         return LazyVGrid(columns: columns, spacing: MonthlyCalendarMetrics.gridSpacing) {
             ForEach(MonthlyCalendarMetrics.weekdaySymbols.indices, id: \.self) { (index: Int) in
                 Text(MonthlyCalendarMetrics.weekdaySymbols[index])
-                    .font(.caption2.bold())
-                    .foregroundStyle(.secondary)
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.6)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
                     .frame(maxWidth: .infinity)
             }
         }
@@ -223,26 +253,19 @@ struct CalendarDayCellView: View {
 
     var body: some View {
         ZStack {
-            if isToday {
-                Circle()
-                    .fill(Color.white)
-                    .frame(
-                        width: MonthlyCalendarMetrics.indicatorSize,
-                        height: MonthlyCalendarMetrics.indicatorSize
-                    )
-            }
+            Rectangle()
+                .fill(cellFill)
+
+            Rectangle()
+                .stroke(borderColor, lineWidth: isToday ? 1.5 : 1.0)
 
             if hasWorkout {
-                Circle()
-                    .stroke(Color.green, lineWidth: 2.0)
-                    .frame(
-                        width: MonthlyCalendarMetrics.indicatorSize,
-                        height: MonthlyCalendarMetrics.indicatorSize
-                    )
+                workoutCornerMark
             }
 
-            Text("\(dayNumber)")
-                .font(.caption.bold())
+            Text(String(format: "%02d", dayNumber))
+                .font(EndfieldFont.mono(11.0, weight: isToday ? .heavy : .medium))
+                .monospacedDigit()
                 .foregroundStyle(dayTextColor)
         }
         .frame(maxWidth: .infinity)
@@ -250,13 +273,41 @@ struct CalendarDayCellView: View {
         .contentShape(Rectangle())
     }
 
-    private var dayTextColor: Color {
+    private var cellFill: Color {
         if hasWorkout {
-            return Color.green
+            return EndfieldPalette.accentYellow.opacity(0.22)
         }
+        return EndfieldPalette.bgElevated.opacity(0.30)
+    }
+
+    private var borderColor: Color {
         if isToday {
-            return Color.black
+            return EndfieldPalette.accentYellow
         }
-        return Color.white.opacity(0.85)
+        return EndfieldPalette.borderSubtle
+    }
+
+    private var dayTextColor: Color {
+        if isToday {
+            return EndfieldPalette.accentYellow
+        }
+        if hasWorkout {
+            return EndfieldPalette.textPrimary
+        }
+        return EndfieldPalette.textSecondary
+    }
+
+    private var workoutCornerMark: some View {
+        VStack(spacing: 0.0) {
+            HStack(spacing: 0.0) {
+                Spacer(minLength: 0.0)
+                Rectangle()
+                    .fill(EndfieldPalette.accentYellow)
+                    .frame(width: 5.0, height: 5.0)
+            }
+            Spacer(minLength: 0.0)
+        }
+        .padding(2.0)
+        .allowsHitTesting(false)
     }
 }

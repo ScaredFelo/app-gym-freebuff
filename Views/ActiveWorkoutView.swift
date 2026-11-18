@@ -175,354 +175,415 @@ public struct ActiveWorkoutView: View {
 
     private var normalBody: some View {
         GeometryReader { geometry in
-        ZStack(alignment: .bottom) {
-            Color.black.ignoresSafeArea()
+            ZStack(alignment: .bottom) {
+                TechnicalGridBackground()
 
-            // List of exercises on the main level
-            ScrollView {
-                LazyVStack(spacing: 24) {
-                    // Header Status & BPM
-                    workoutHeader
-                        .padding(.top, 10)
+                // List of exercises on the main level
+                ScrollView {
+                    LazyVStack(spacing: 14) {
+                        HUDStatusPanel(
+                            routineName: viewModel.routine.name,
+                            sessionStart: viewModel.session.startDate,
+                            volumeKg: viewModel.session.totalVolumeKg,
+                            bpm: healthKitManager.currentBPM,
+                            isResting: viewModel.isResting,
+                            isRestPaused: viewModel.isRestPaused,
+                            totalRestSeconds: viewModel.totalRestSeconds,
+                            restEndDate: viewModel.restTimerEndDate,
+                            restRemainingFallback: viewModel.restTimeRemaining,
+                            onCancel: { showingCancelConfirmation = true }
+                        )
 
-                    if healthKitManager.currentBPM == 0 {
-                        healthKitDiagnosticBanner
-                    }
-
-                    let _ = viewModel.structureVersion
-
-                    ForEach(viewModel.routine.exercises.sorted(by: { $0.sortOrder < $1.sortOrder })) { routineExercise in
-                        if let exercise = routineExercise.exercise {
-                            ExerciseCardView(
-                                routineExercise: routineExercise,
-                                exercise: exercise,
-                                sets: viewModel.activeSets[routineExercise.id] ?? [],
-                                isTimerOrigin: timerIsLaunching && timerOriginCardID == routineExercise.id,
-                                onToggleSet: { setIndex in
-                                    toggleSet(for: routineExercise, setIndex: setIndex)
-                                },
-                                onUpdateSet: { setIndex, weight, reps in
-                                    viewModel.updateSetValues(
-                                        for: routineExercise.id,
-                                        setIndex: setIndex,
-                                        weight: weight,
-                                        reps: reps,
-                                        modelContext: modelContext
-                                    )
-                                },
-                                onRemove: {
-                                    exercisePendingRemoval = routineExercise
-                                }
-                            )
+                        if healthKitManager.currentBPM == 0 {
+                            healthKitDiagnosticBanner
                         }
-                    }
 
-                    Button {
-                        showingExercisePicker = true
-                    } label: {
-                        Label("Añadir ejercicio", systemImage: "plus.circle.fill")
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(.systemGray6).opacity(0.2))
-                            .cornerRadius(12)
-                    }
+                        let _ = viewModel.structureVersion
 
-                    // Finish Workout Button
-                    Button(action: {
-                        if viewModel.hasWorkoutChanges {
-                            showingRoutineChangeOptions = true
-                        } else {
-                            _ = viewModel.finishWorkout(modelContext: modelContext)
-                        }
-                    }) {
-                        Text("Finalizar Entrenamiento")
-                            .font(.headline)
-                            .foregroundColor(.black)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.white)
-                            .cornerRadius(12)
-                    }
-                    .padding(.top, 8)
+                        let sortedExercises: [RoutineExercise] = viewModel.routine.exercises
+                            .sorted(by: { $0.sortOrder < $1.sortOrder })
 
-                    Button(action: {
-                        showingCancelConfirmation = true
-                    }) {
-                        Label("Cancelar entrenamiento", systemImage: "xmark.circle")
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red.opacity(0.12))
-                            .cornerRadius(12)
-                    }
-
-                    // Reserva el mismo espacio inferior exista o no temporizador flotante.
-                    Color.clear
-                        .frame(height: 80)
-                }
-                .padding(.horizontal, horizontalPadding)
-                .padding(.vertical, 20)
-                .frame(width: geometry.size.width)
-            }
-            .frame(width: geometry.size.width)
-
-            // Temporizador maximizado
-            if viewModel.isResting && (!viewModel.isTimerMinimized || (!viewModel.hasActiveRestTimer && !viewModel.isRestFinishing)) {
-                ZStack {
-                    Color.black
-                        .ignoresSafeArea()
-                        .opacity(viewModel.isRestFinishing ? 0 : 1)
-                        .transition(.opacity)
-
-                    VStack {
-                        Spacer()
-                        TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
-                            CircularTimerView(
-                                timeRemaining: displayedRestTime(at: timeline.date),
-                                totalSeconds: viewModel.totalRestSeconds,
-                                isPaused: viewModel.isRestPaused,
-                                onAdd10: { viewModel.add10Seconds() },
-                                onSub10: { viewModel.sub10Seconds() },
-                                onTogglePause: {
-                                    if viewModel.isRestPaused {
-                                        viewModel.resumeRest()
-                                    } else {
-                                        viewModel.pauseRest()
+                        ForEach(Array(sortedExercises.enumerated()), id: \.element.id) { index, routineExercise in
+                            if let exercise = routineExercise.exercise {
+                                ExerciseCardView(
+                                    index: index,
+                                    routineExercise: routineExercise,
+                                    exercise: exercise,
+                                    sets: viewModel.activeSets[routineExercise.id] ?? [],
+                                    isTimerOrigin: timerIsLaunching && timerOriginCardID == routineExercise.id,
+                                    onToggleSet: { setIndex in
+                                        toggleSet(for: routineExercise, setIndex: setIndex)
+                                    },
+                                    onUpdateSet: { setIndex, weight, reps in
+                                        viewModel.updateSetValues(
+                                            for: routineExercise.id,
+                                            setIndex: setIndex,
+                                            weight: weight,
+                                            reps: reps,
+                                            modelContext: modelContext
+                                        )
+                                    },
+                                    onRemove: {
+                                        exercisePendingRemoval = routineExercise
                                     }
-                                },
-                                onSkip: { skipRest() },
-                                onMinimize: { minimizeTimer() }
-                            )
-                        }
-                        .matchedGeometryEffect(id: timerIsLaunching ? "timerContainer-inactive" : "timerContainer", in: timerAnimation, isSource: false)
-                        .scaleEffect(viewModel.isRestFinishing ? 1.05 : 1)
-                        .opacity(viewModel.isRestFinishing ? 0 : 1)
-                        .offset(y: timerDragOffset)
-                        .scaleEffect(timerDragOffset > 0 ? max(0.92, 1 - timerDragOffset / 1200) : 1)
-                        .gesture(timerDragGesture)
-                        .transition(.opacity)
-                        Spacer()
-                    }
-                }
-                .allowsHitTesting(!viewModel.isRestFinishing)
-                .zIndex(2)
-            }
-
-            // Temporizador minimizado flotando sobre la lista
-            if viewModel.isResting && viewModel.isTimerMinimized && viewModel.hasActiveRestTimer {
-                TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
-                    MinimizedTimerView(
-                        timeRemaining: displayedRestTime(at: timeline.date),
-                        totalSeconds: viewModel.totalRestSeconds,
-                        isPaused: viewModel.isRestPaused,
-                        onExpand: { expandTimer() },
-                        onTogglePause: {
-                            if viewModel.isRestPaused {
-                                viewModel.resumeRest()
-                            } else {
-                                viewModel.pauseRest()
+                                )
                             }
-                        },
-                        onAdd10: { viewModel.add10Seconds() },
-                        onSub10: { viewModel.sub10Seconds() },
-                        onSkip: { skipRest() }
+                        }
+
+                        Button {
+                            showingExercisePicker = true
+                        } label: {
+                            HStack(spacing: 8.0) {
+                                Image(systemName: "plus")
+                                    .font(EndfieldFont.mono(12.0, weight: .bold))
+
+                                Text("AÑADIR EJERCICIO")
+                                    .font(EndfieldFont.mono(12.0, weight: .bold))
+                                    .tracking(1.2)
+                            }
+                        }
+                        .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
+
+                        // Finish Workout Button
+                        Button(action: {
+                            if viewModel.hasWorkoutChanges {
+                                showingRoutineChangeOptions = true
+                            } else {
+                                _ = viewModel.finishWorkout(modelContext: modelContext)
+                            }
+                        }) {
+                            Text("EJECUTAR // FINALIZAR SESIÓN")
+                        }
+                        .buttonStyle(EndfieldPrimaryButtonStyle())
+                        .padding(.top, 2.0)
+
+                        Button(action: {
+                            showingCancelConfirmation = true
+                        }) {
+                            HStack(spacing: 6.0) {
+                                Image(systemName: "xmark")
+                                    .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                                Text("ABORTAR // CANCELAR ENTRENAMIENTO")
+                                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                                    .tracking(1.0)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                            }
+                        }
+                        .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentRed))
+
+                        // Reserva el mismo espacio inferior exista o no temporizador flotante.
+                        Color.clear
+                            .frame(height: 88)
+                    }
+                    .padding(.horizontal, horizontalPadding)
+                    .padding(.vertical, 16)
+                    .frame(width: geometry.size.width)
+                }
+                .frame(width: geometry.size.width)
+
+                // Temporizador maximizado
+                if viewModel.isResting && (!viewModel.isTimerMinimized || (!viewModel.hasActiveRestTimer && !viewModel.isRestFinishing)) {
+                    ZStack {
+                        ZStack {
+                            EndfieldPalette.bgPrimary
+                                .ignoresSafeArea()
+
+                            TechnicalGridOverlay(step: 28.0, lineColor: Color.white.opacity(0.05))
+                        }
+                        .opacity(viewModel.isRestFinishing ? 0 : 1)
+                        .transition(.opacity)
+
+                        VStack {
+                            Spacer()
+                            TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                                CircularTimerView(
+                                    timeRemaining: displayedRestTime(at: timeline.date),
+                                    totalSeconds: viewModel.totalRestSeconds,
+                                    isPaused: viewModel.isRestPaused,
+                                    onAdd10: { viewModel.add10Seconds() },
+                                    onSub10: { viewModel.sub10Seconds() },
+                                    onTogglePause: {
+                                        if viewModel.isRestPaused {
+                                            viewModel.resumeRest()
+                                        } else {
+                                            viewModel.pauseRest()
+                                        }
+                                    },
+                                    onSkip: { skipRest() },
+                                    onMinimize: { minimizeTimer() }
+                                )
+                            }
+                            .matchedGeometryEffect(id: timerIsLaunching ? "timerContainer-inactive" : "timerContainer", in: timerAnimation, isSource: false)
+                            .scaleEffect(viewModel.isRestFinishing ? 1.05 : 1)
+                            .opacity(viewModel.isRestFinishing ? 0 : 1)
+                            .offset(y: timerDragOffset)
+                            .scaleEffect(timerDragOffset > 0 ? max(0.92, 1 - timerDragOffset / 1200) : 1)
+                            .gesture(timerDragGesture)
+                            .transition(.opacity)
+                            Spacer()
+                        }
+                    }
+                    .allowsHitTesting(!viewModel.isRestFinishing)
+                    .zIndex(2)
+                }
+
+                // Temporizador minimizado flotando sobre la lista
+                if viewModel.isResting && viewModel.isTimerMinimized && viewModel.hasActiveRestTimer {
+                    TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                        MinimizedTimerView(
+                            timeRemaining: displayedRestTime(at: timeline.date),
+                            totalSeconds: viewModel.totalRestSeconds,
+                            isPaused: viewModel.isRestPaused,
+                            onExpand: { expandTimer() },
+                            onTogglePause: {
+                                if viewModel.isRestPaused {
+                                    viewModel.resumeRest()
+                                } else {
+                                    viewModel.pauseRest()
+                                }
+                            },
+                            onAdd10: { viewModel.add10Seconds() },
+                            onSub10: { viewModel.sub10Seconds() },
+                            onSkip: { skipRest() }
+                        )
+                    }
+                    .matchedGeometryEffect(id: "timerContainer", in: timerAnimation, isSource: true)
+                    .padding(.horizontal, horizontalPadding)
+                    .frame(width: geometry.size.width)
+                    .padding(.bottom, 8)
+                    .offset(y: viewModel.isRestFinishing ? 44 : 0)
+                    .opacity(viewModel.isRestFinishing ? 0 : 1)
+                    .allowsHitTesting(!viewModel.isRestFinishing)
+                    .transition(.opacity)
+                    .zIndex(1)
+                }
+            }
+            .animation(.easeInOut(duration: 0.25), value: viewModel.isResting)
+            .animation(.spring(response: 0.42, dampingFraction: 0.82), value: viewModel.isTimerMinimized)
+            .animation(.easeIn(duration: 0.22), value: viewModel.isRestFinishing)
+        }
+    }
+
+    // MARK: - Barra de estado HUD del entrenamiento
+
+    private struct HUDStatusPanel: View {
+        let routineName: String
+        let sessionStart: Date
+        let volumeKg: Double
+        let bpm: Int
+        let isResting: Bool
+        let isRestPaused: Bool
+        let totalRestSeconds: Int
+        let restEndDate: Date?
+        let restRemainingFallback: Int
+        let onCancel: () -> Void
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 9.0) {
+                headerRow
+
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+
+                TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                    metricsBlock(now: timeline.date)
+                }
+            }
+            .padding(.horizontal, 12.0)
+            .padding(.vertical, 11.0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(EndfieldPalette.bgPanel)
+            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cornerCut))
+            .overlay {
+                ChamferedRectangle(cut: EndfieldMetrics.cornerCut)
+                    .stroke(EndfieldPalette.borderActive, lineWidth: 1.0)
+            }
+            .overlay {
+                TacticalCornerCrosses()
+            }
+        }
+
+        // MARK: Cabecera
+
+        private var headerRow: some View {
+            HStack(spacing: 8.0) {
+                Text("OP // ACTIVA")
+                    .font(EndfieldFont.label(9.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .fixedSize()
+
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+
+                Text("VOL // \(Int(volumeKg)) KG")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.8)
+                    .foregroundStyle(EndfieldPalette.accentCyan)
+                    .lineLimit(1)
+                    .fixedSize()
+
+                Text(routineName.uppercased())
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.8)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentRed, size: 26.0))
+                .accessibilityLabel("Cancelar entrenamiento")
+            }
+        }
+
+        // MARK: Telemetría
+
+        @ViewBuilder
+        private func metricsBlock(now: Date) -> some View {
+            VStack(alignment: .leading, spacing: 7.0) {
+                HStack(alignment: .top, spacing: 8.0) {
+                    metricCell(
+                        code: "T+ SESIÓN",
+                        value: elapsedText(now: now),
+                        unit: "",
+                        tint: EndfieldPalette.textPrimary
+                    )
+
+                    verticalSeparator
+
+                    pulseCell
+
+                    verticalSeparator
+
+                    metricCell(
+                        code: "DESCANSO",
+                        value: restText(now: now),
+                        unit: "",
+                        tint: isResting ? EndfieldPalette.accentYellow : EndfieldPalette.textSecondary
                     )
                 }
-                .matchedGeometryEffect(id: "timerContainer", in: timerAnimation, isSource: true)
-                .padding(.horizontal, horizontalPadding)
-                .frame(width: geometry.size.width)
-                .padding(.bottom, 8)
-                .offset(y: viewModel.isRestFinishing ? 44 : 0)
-                .opacity(viewModel.isRestFinishing ? 0 : 1)
-                .allowsHitTesting(!viewModel.isRestFinishing)
-                .transition(.opacity)
-                .zIndex(1)
+
+                if isResting {
+                    SegmentedProgressBar(
+                        progress: restProgress(now: now),
+                        segments: 22,
+                        tint: isRestPaused ? EndfieldPalette.accentRed : EndfieldPalette.accentYellow,
+                        height: 4.0,
+                        spacing: 2.0
+                    )
+                }
             }
         }
-        .animation(.easeInOut(duration: 0.25), value: viewModel.isResting)
-        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: viewModel.isTimerMinimized)
-        .animation(.easeIn(duration: 0.22), value: viewModel.isRestFinishing)
-        }
-    }
 
-    /// Relleno superior (cerrar + nombre de rutina).
-    @ViewBuilder
-    private var bigPictureTopBar: some View {
-        HStack {
-            Button {
-                showingBigPictureCancelConfirmation = true
-            } label: {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.white)
-            }
-            .padding(.top, 6)
-            .padding(.leading, 6)
-
-            Spacer()
-
-            Text(viewModel.routine.name)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .padding(.top, 6)
-        }
-        .padding(.horizontal, 20)
-    }
-
-    /// Encabezado de pulsaciones (BPM).
-    @ViewBuilder
-    private var headerBPMView: some View {
-        HStack {
-            Spacer()
-            HStack(spacing: 8) {
-                Image(systemName: "heart.fill")
-                    .font(.title2)
-                    .foregroundStyle(.red)
-                Text("\(Int(healthKitManager.currentBPM)) BPM")
-                    .font(.title2.bold())
-                    .foregroundStyle(.red)
-                    .contentTransition(.numericText())
-            }
-        }
-        .padding(.top, 2)
-        .padding(.horizontal, 24)
-    }
-
-    /// Título del ejercicio, rango objetivo en verde y siguiente ejercicio.
-    @ViewBuilder
-    private var exerciseTitleView: some View {
-        VStack(spacing: 4) {
-            Text(viewModel.bigPictureCurrentExercise)
-                .font(.title2.bold())
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-
-            if let routineExercise = viewModel.bigPictureCurrentRoutineExercise {
-                Text("\(routineExercise.targetRepsMin) - \(routineExercise.targetRepsMax) reps")
-                    .font(.subheadline.bold())
-                    .foregroundColor(.green)
+        private func metricCell(code: String, value: String, unit: String, tint: Color) -> some View {
+            VStack(alignment: .leading, spacing: 2.0) {
+                Text(code)
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
+                    .minimumScaleFactor(0.7)
 
-            if !viewModel.bigPictureNextExercise.isEmpty {
-                Text(viewModel.bigPictureNextExercise)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-            }
-        }
-        .padding(.horizontal, 24)
-    }
-
-    /// Barra de descanso con temporizador centrado y botones de pausa/saltar,
-    /// o botón "Registrar serie" cuando no hay descanso activo.
-    @ViewBuilder
-    private var restTimerProgressView: some View {
-        if viewModel.bigPictureIsTimerShowing {
-            bigPictureTimerBar
-            bigPictureTimerControls
-        } else {
-            Button {
-                viewModel.bigPictureRegisterSet(modelContext: modelContext)
-            } label: {
-                Text("REGISTRAR SERIE")
-                    .font(.title2.bold())
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.white)
-                    .cornerRadius(14)
-            }
-            .padding(.horizontal, 32)
-            .padding(.bottom, 8)
-        }
-    }
-
-    private var bigPictureTimerBar: some View {
-        TimelineView(.periodic(from: .now, by: 1.0)) { _ in
-            GeometryReader { geometry in
-                let barWidth: CGFloat = geometry.size.width
-                let progress: CGFloat = CGFloat(viewModel.bigPictureRestProgress)
-                let filledWidth: CGFloat = max(0, barWidth * progress)
-
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.white.opacity(0.12))
-                        .frame(width: barWidth, height: 36)
-
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(Color.white)
-                        .frame(
-                            width: filledWidth,
-                            height: 36
-                        )
-                        .animation(.linear(duration: 1.0), value: viewModel.bigPictureRestProgress)
-
-                    Text(viewModel.bigPictureRemainingTimeFormatted)
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                HStack(alignment: .firstTextBaseline, spacing: 3.0) {
+                    Text(value)
+                        .font(EndfieldFont.mono(19.0, weight: .bold))
                         .monospacedDigit()
-                        .foregroundStyle(.white)
-                        .blendMode(.difference)
-                        .frame(width: barWidth, alignment: .center)
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .contentTransition(.numericText())
+
+                    if !unit.isEmpty {
+                        Text(unit)
+                            .font(EndfieldFont.label(8.0))
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+                            .fixedSize()
+                    }
                 }
-                .frame(width: barWidth, height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
-            .frame(height: 36)
-            .padding(.horizontal, 24)
-            .padding(.bottom, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        private var pulseCell: some View {
+            VStack(alignment: .leading, spacing: 2.0) {
+                HStack(spacing: 4.0) {
+                    EndfieldLiveDot(size: 5.0)
+
+                    Text("LIVE // 4HZ")
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.accentRed.opacity(0.9))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
+
+                HStack(alignment: .firstTextBaseline, spacing: 3.0) {
+                    Text(bpm > 0 ? "\(bpm)" : "--")
+                        .font(EndfieldFont.mono(19.0, weight: .bold))
+                        .monospacedDigit()
+                        .foregroundStyle(bpm > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .contentTransition(.numericText())
+
+                    Text("BPM")
+                        .font(EndfieldFont.label(8.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize()
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+
+        private var verticalSeparator: some View {
+            Rectangle()
+                .fill(EndfieldPalette.borderSubtle)
+                .frame(width: 1.0, height: 34.0)
+        }
+
+        // MARK: Cálculos de tiempo
+
+        private func elapsedText(now: Date) -> String {
+            let interval: TimeInterval = max(0.0, now.timeIntervalSince(sessionStart))
+            let total: Int = Int(interval)
+            let hours: Int = total / 3600
+            let minutes: Int = (total % 3600) / 60
+            let seconds: Int = total % 60
+
+            if hours > 0 {
+                return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+            }
+            return String(format: "%02d:%02d", minutes, seconds)
+        }
+
+        private func remainingSeconds(now: Date) -> Int {
+            if isRestPaused {
+                return max(0, restRemainingFallback)
+            }
+            guard let deadline: Date = restEndDate else {
+                return max(0, restRemainingFallback)
+            }
+            return max(0, Int(ceil(deadline.timeIntervalSince(now))))
+        }
+
+        private func restText(now: Date) -> String {
+            guard isResting else { return "--:--" }
+            let remaining: Int = remainingSeconds(now: now)
+            return String(format: "%02d:%02d", remaining / 60, remaining % 60)
+        }
+
+        private func restProgress(now: Date) -> Double {
+            guard totalRestSeconds > 0 else { return 0.0 }
+            let remaining: Int = remainingSeconds(now: now)
+            let consumed: Int = max(0, totalRestSeconds - remaining)
+            return min(1.0, Double(consumed) / Double(totalRestSeconds))
         }
     }
-
-    private var bigPictureTimerControls: some View {
-        HStack(spacing: 14) {
-            Button {
-                if viewModel.isRestPaused {
-                    viewModel.resumeRest()
-                } else {
-                    viewModel.pauseRest()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: viewModel.isRestPaused ? "play.fill" : "pause.fill")
-                    Text(viewModel.isRestPaused ? "Reanudar" : "Pausar")
-                }
-                .font(.subheadline.bold())
-                .foregroundStyle(.black)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(Color.white)
-                .cornerRadius(10)
-            }
-
-            Button {
-                viewModel.skipRest()
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "forward.end.fill")
-                    Text("Saltar")
-                }
-                .font(.subheadline.bold())
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(Color.red)
-                .cornerRadius(10)
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 6)
-    }
-
-
 
     private var timerDragGesture: some Gesture {
         DragGesture(minimumDistance: 10)
@@ -612,101 +673,58 @@ public struct ActiveWorkoutView: View {
     }
 
     private var healthKitDiagnosticBanner: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "heart.text.square.fill")
-                    .font(.subheadline)
-                    .foregroundStyle(.red)
+        TacticalPanel(code: "SYS.ERR", title: "SENSOR CARDÍACO", accentBorder: false, contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 9.0) {
+                HStack(spacing: 7.0) {
+                    Image(systemName: "heart.text.square")
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+                        .foregroundStyle(EndfieldPalette.accentRed)
 
-                Text("Diagnóstico")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
+                    Text("DIAGNÓSTICO")
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(1.2)
+                        .foregroundStyle(EndfieldPalette.accentRed)
 
-                Spacer(minLength: 0)
-            }
-
-            Text("Estado: \(healthKitManager.debugMessage)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .multilineTextAlignment(.leading)
-
-            Text("Live Activity: \(liveActivityManager.debugMessage)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .multilineTextAlignment(.leading)
-
-            Button {
-                HealthKitManager.shared.requestAuthorization()
-            } label: {
-                Label("Conectar Apple Salud / AirPods", systemImage: "heart.fill")
-                    .font(.footnote.bold())
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(Color.white, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Conectar Apple Salud o AirPods")
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Color(.systemGray6).opacity(0.12),
-            in: RoundedRectangle(cornerRadius: 16)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.red.opacity(0.25), lineWidth: 1)
-        )
-    }
-
-    private var workoutHeader: some View {
-        ZStack {
-            VStack(spacing: 2) {
-                Text(viewModel.routine.name)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                Text("\(Int(viewModel.session.totalVolumeKg)) kg")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 44)
-
-            HStack {
-                Button {
-                    showingCancelConfirmation = true
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.subheadline.bold())
-                        .foregroundStyle(.white)
-                        .frame(width: 32, height: 32)
-                        .background(Color(.systemGray6).opacity(0.3))
-                        .clipShape(Circle())
+                    Spacer(minLength: 0.0)
                 }
-                .accessibilityLabel("Cancelar entrenamiento")
 
-                Spacer()
+                Text("ESTADO: \(healthKitManager.debugMessage)")
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+
+                Text("LIVE_ACTIVITY: \(liveActivityManager.debugMessage)")
+                    .font(EndfieldFont.mono(10.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+
+                Button {
+                    HealthKitManager.shared.requestAuthorization()
+                } label: {
+                    HStack(spacing: 6.0) {
+                        Image(systemName: "heart")
+                            .font(EndfieldFont.mono(10.0, weight: .bold))
+
+                        Text("CONECTAR APPLE SALUD / AIRPODS")
+                            .font(EndfieldFont.mono(10.0, weight: .bold))
+                            .tracking(0.8)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                    }
+                }
+                .buttonStyle(EndfieldSecondaryButtonStyle(compact: true, tint: EndfieldPalette.accentRed))
+                .accessibilityLabel("Conectar Apple Salud o AirPods")
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
-        .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-        )
     }
 }
 
 // MARK: - Exercise Card Component
+
 struct ExerciseCardView: View {
+    let index: Int
     let routineExercise: RoutineExercise
     let exercise: Exercise
     let sets: [ActiveWorkoutViewModel.SetInputState]
@@ -740,68 +758,159 @@ struct ExerciseCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(exercise.name)
-                        .font(.title3.bold())
-                        .foregroundStyle(.white)
-                    Text("\(exercise.muscleGroup.rawValue) • \(exercise.equipmentType.rawValue)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+        TacticalPanel(
+            accentBorder: isTimerOrigin,
+            contentPadding: 12.0
+        ) {
+            VStack(alignment: .leading, spacing: 10.0) {
+                headerStrip
 
-                    Text("Objetivo: \(routineExercise.targetRepsText) reps")
-                        .font(.caption)
-                        .foregroundStyle(.green)
+                Rectangle()
+                    .fill(isTimerOrigin ? EndfieldPalette.borderActive : EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
 
-                    if exercise.requiresStraps {
-                        Label("Recoger Straps", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption.bold())
-                            .foregroundStyle(.orange)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.orange.opacity(0.15))
-                            .clipShape(Capsule())
-                    }
+                titleBlock
+
+                tableHeader
+
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+
+                setRows
+
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+
+                notesBlock
+            }
+        }
+        .sheet(isPresented: $showingEquipmentSheet) {
+            ExerciseEquipmentSheet(
+                equipmentType: exercise.equipmentType,
+                weight: activeWeight
+            )
+            .presentationDetents([.height(300.0)])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(EndfieldPalette.bgPrimary)
+        }
+    }
+
+    // MARK: Cabecera técnica
+
+    private var headerStrip: some View {
+        HStack(spacing: 7.0) {
+            Text("EX-\(String(format: "%02d", index + 1))")
+                .font(EndfieldFont.mono(10.0, weight: .heavy))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.accentYellow)
+                .padding(.horizontal, 5.0)
+                .padding(.vertical, 2.0)
+                .overlay {
+                    ChamferedRectangle(cut: 3.0)
+                        .stroke(EndfieldPalette.accentYellow.opacity(0.55), lineWidth: 1.0)
+                }
+                .fixedSize()
+
+            Text(exercise.muscleGroup.shortName.uppercased())
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.2)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .lineLimit(1)
+
+            Rectangle()
+                .fill(EndfieldPalette.borderSubtle)
+                .frame(height: 1.0)
+
+            Button(action: onRemove) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentRed, size: 28.0))
+            .accessibilityLabel("Eliminar ejercicio")
+
+            equipmentBox
+        }
+    }
+
+    @ViewBuilder
+    private var equipmentBox: some View {
+        if exercise.equipmentType.usesPlates {
+            Button {
+                showingEquipmentSheet = true
+            } label: {
+                EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
+                    .frame(width: 28.0, height: 28.0)
+            }
+            .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentCyan, size: 28.0))
+            .accessibilityLabel("Ver discos de \(exercise.equipmentType.rawValue)")
+        } else {
+            EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
+                .frame(width: 28.0, height: 28.0)
+                .background(EndfieldPalette.bgElevated)
+                .clipShape(ChamferedRectangle(cut: 3.0))
+                .overlay {
+                    ChamferedRectangle(cut: 3.0)
+                        .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                }
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var titleBlock: some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            Text(exercise.name.uppercased())
+                .font(EndfieldFont.mono(15.0, weight: .heavy))
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+
+            HStack(spacing: 5.0) {
+                TacticalTagBadge(
+                    text: "REPS: \(routineExercise.targetRepsMin)-\(routineExercise.targetRepsMax)",
+                    tint: EndfieldPalette.accentYellow
+                )
+
+                if exercise.isCompound {
+                    TacticalTagBadge(text: "COMPLEJO", tint: EndfieldPalette.accentCyan)
+                } else {
+                    TacticalTagBadge(text: "AISLAMIENTO", tint: EndfieldPalette.accentCyan)
                 }
 
-                Spacer()
-
-                VStack(spacing: 8.0) {
-                    Button(action: onRemove) {
-                        Image(systemName: "trash")
-                            .font(.subheadline)
-                            .foregroundStyle(.red.opacity(0.9))
-                            .frame(width: 32, height: 32)
-                            .background(Color.red.opacity(0.12))
-                            .clipShape(Circle())
-                    }
-                    .accessibilityLabel("Eliminar ejercicio")
-
-                    equipmentIconView
+                if exercise.requiresStraps {
+                    TacticalTagBadge(text: "STRAPS: SÍ", tint: EndfieldPalette.accentRed)
                 }
+
+                Spacer(minLength: 0.0)
             }
+        }
+    }
 
-            // Table Header
-            HStack {
-                Text("SERIE")
-                    .frame(width: 40, alignment: .center)
-                Text("ANTERIOR (GHOST)")
-                    .frame(maxWidth: .infinity, alignment: .center)
-                Text("KG")
-                    .frame(width: 60, alignment: .center)
-                Text("REPS")
-                    .frame(width: 50, alignment: .center)
-                Text("OK")
-                    .frame(width: 32, alignment: .center)
-            }
-            .font(.caption2.bold())
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
+    private var tableHeader: some View {
+        HStack(spacing: 6.0) {
+            Text("Nº")
+                .frame(width: 30.0, alignment: .leading)
 
-            Divider().background(Color.gray.opacity(0.3))
+            Text("GHOST")
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Set Rows
+            Text("KG")
+                .frame(width: 62.0, alignment: .center)
+
+            Text("REPS")
+                .frame(width: 50.0, alignment: .center)
+
+            Text("OK")
+                .frame(width: 28.0, alignment: .center)
+        }
+        .font(EndfieldFont.label(8.0))
+        .tracking(1.0)
+        .foregroundStyle(EndfieldPalette.textSecondary)
+    }
+
+    private var setRows: some View {
+        VStack(spacing: 5.0) {
             ForEach(Array(sets.enumerated()), id: \.element.id) { index, set in
                 SetRowView(
                     set: set,
@@ -811,59 +920,51 @@ struct ExerciseCardView: View {
                     onUpdate: { w, r in onUpdateSet(index, w, r) }
                 )
             }
-
-            Divider().background(Color.gray.opacity(0.3))
-
-            DisclosureGroup(isExpanded: $notesExpanded) {
-                TextField("Consejos, altura de poleas, agarre...", text: notesBinding, axis: .vertical)
-                    .font(.subheadline)
-                    .foregroundStyle(.white)
-                    .lineLimit(2...6)
-                    .padding(10)
-                    .background(Color(.systemGray6).opacity(0.2))
-                    .cornerRadius(10)
-            } label: {
-                Label("Notas", systemImage: "note.text")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.systemGray6).opacity(0.1))
-        .cornerRadius(16)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(isTimerOrigin ? Color.green.opacity(0.45) : Color.white.opacity(0.08), lineWidth: 1)
-        )
-        .sheet(isPresented: $showingEquipmentSheet) {
-            ExerciseEquipmentSheet(
-                equipmentType: exercise.equipmentType,
-                weight: activeWeight
-            )
-            .presentationDetents([.height(260)])
-            .presentationDragIndicator(.visible)
         }
     }
 
-    // MARK: - Equipment icon
+    // MARK: Notas
 
-    @ViewBuilder
-    private var equipmentIconView: some View {
-        if exercise.equipmentType.usesPlates {
+    private var notesBlock: some View {
+        VStack(alignment: .leading, spacing: 8.0) {
             Button {
-                showingEquipmentSheet = true
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    notesExpanded.toggle()
+                }
             } label: {
-                EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
-                    .padding(6.0)
-                    .background(Color.green.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 8.0))
+                HStack(spacing: 6.0) {
+                    Image(systemName: "note.text")
+                        .font(EndfieldFont.mono(9.0, weight: .bold))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+
+                    Text("NOTAS_OP")
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(1.2)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+
+                    Spacer(minLength: 0.0)
+
+                    Text(notesExpanded ? "–" : "+")
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Ver discos de \(exercise.equipmentType.rawValue)")
-        } else {
-            EquipmentSimplifiedIconView(equipmentType: exercise.equipmentType)
-                .accessibilityHidden(true)
+
+            if notesExpanded {
+                TextField("Poleas, agarre, altura...", text: notesBinding, axis: .vertical)
+                    .font(EndfieldFont.mono(11.0))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(2...6)
+                    .padding(9.0)
+                    .background(EndfieldPalette.bgElevated)
+                    .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                    .overlay {
+                        ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                            .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                    }
+            }
         }
     }
 }
@@ -875,17 +976,23 @@ private struct ExerciseEquipmentSheet: View {
     let weight: Double
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12.0) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(equipmentType.rawValue)
-                    .font(.headline)
-                    .foregroundStyle(.white)
+        VStack(alignment: .leading, spacing: 10.0) {
+            HazardStripeBar(height: 6.0)
 
-                Spacer()
+            HStack(alignment: .firstTextBaseline, spacing: 8.0) {
+                Text(equipmentType.rawValue.uppercased())
+                    .font(EndfieldFont.mono(13.0, weight: .bold))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
 
-                Text("\(UserSettingsManager.formatted(weight)) kg")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.green)
+                Spacer(minLength: 0.0)
+
+                Text("\(UserSettingsManager.formatted(weight)) KG")
+                    .font(EndfieldFont.mono(13.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .fixedSize()
             }
 
             EquipmentVisualizerView(
@@ -896,12 +1003,13 @@ private struct ExerciseEquipmentSheet: View {
             Spacer(minLength: 0.0)
         }
         .padding(16.0)
-        .background(Color.black.ignoresSafeArea())
+        .background(EndfieldPalette.bgPrimary.ignoresSafeArea())
         .preferredColorScheme(.dark)
     }
 }
 
 // MARK: - Set Row Component
+
 struct SetRowView: View {
     let set: ActiveWorkoutViewModel.SetInputState
     let targetRepsMin: Int
@@ -929,30 +1037,37 @@ struct SetRowView: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6.0) {
             // Set Number
-            Text("\(set.setNumber)")
-                .font(.subheadline.bold())
-                .foregroundStyle(set.isCompleted ? Color.green : Color.secondary)
-                .frame(width: 40, alignment: .center)
-                .multilineTextAlignment(.center)
+            Text(String(format: "%02d", set.setNumber))
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(set.isCompleted ? EndfieldPalette.accentYellow : EndfieldPalette.textSecondary)
+                .frame(width: 30.0, alignment: .leading)
 
             // Ghost Reference
             Text(ghostText)
-                .font(.caption)
-                .foregroundStyle(.secondary.opacity(0.7))
-                .frame(maxWidth: .infinity, alignment: .center)
-                .multilineTextAlignment(.center)
+                .font(EndfieldFont.mono(10.0))
+                .foregroundStyle(EndfieldPalette.textSecondary.opacity(0.8))
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             // Weight Input
             TextField("0", text: $weightString)
+                .textFieldStyle(.plain)
                 .keyboardType(.decimalPad)
                 .multilineTextAlignment(.center)
-                .font(.subheadline)
-                .padding(6)
-                .background(Color(.systemGray6).opacity(0.3))
-                .cornerRadius(8)
-                .frame(width: 60, height: 32)
+                .font(EndfieldFont.mono(16.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .frame(width: 62.0, height: 36.0)
+                .background(EndfieldPalette.bgElevated)
+                .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                .overlay {
+                    ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                        .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                }
                 .onChange(of: weightString) { _, newValue in
                     if let w = Double(newValue) {
                         onUpdate(w, set.reps)
@@ -961,13 +1076,19 @@ struct SetRowView: View {
 
             // Reps Input
             TextField(targetRepsMax > 0 ? "\(targetRepsMax)" : "0", text: $repsString)
+                .textFieldStyle(.plain)
                 .keyboardType(.numberPad)
                 .multilineTextAlignment(.center)
-                .font(.subheadline)
-                .padding(6)
-                .background(Color(.systemGray6).opacity(0.3))
-                .cornerRadius(8)
-                .frame(width: 50, height: 32)
+                .font(EndfieldFont.mono(16.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .frame(width: 50.0, height: 36.0)
+                .background(EndfieldPalette.bgElevated)
+                .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                .overlay {
+                    ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                        .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                }
                 .onChange(of: repsString) { _, newValue in
                     if let r = Int(newValue) {
                         onUpdate(set.weight, r)
@@ -976,18 +1097,18 @@ struct SetRowView: View {
 
             // Checkmark Button
             Button(action: onToggle) {
-                Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
-                    .font(.subheadline)
-                    .foregroundStyle(set.isCompleted ? .green : .gray)
-                    .frame(width: 28, height: 28)
+                Image(systemName: "checkmark")
+                    .font(EndfieldFont.mono(13.0, weight: .heavy))
+                    .opacity(set.isCompleted ? 1.0 : 0.0)
+                    .frame(width: 28.0, height: 28.0)
             }
-            .frame(width: 34, height: 32)
+            .buttonStyle(SetCompletionButtonStyle(isCompleted: set.isCompleted))
             .accessibilityLabel(set.isCompleted ? "Serie completada" : "Marcar serie como completada")
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(set.isCompleted ? Color.green.opacity(0.12) : Color.clear)
-        .cornerRadius(8)
+        .padding(.horizontal, 6.0)
+        .padding(.vertical, 5.0)
+        .background(set.isCompleted ? EndfieldPalette.accentYellow.opacity(0.06) : Color.clear)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
     }
 
     private var ghostText: String {
@@ -996,3 +1117,23 @@ struct SetRowView: View {
     }
 }
 
+/// Botón cuadrado de 28x28 pt que se ilumina en amarillo al completar la serie.
+private struct SetCompletionButtonStyle: ButtonStyle {
+    let isCompleted: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(isCompleted ? EndfieldPalette.bgPrimary : EndfieldPalette.textSecondary)
+            .frame(width: 28.0, height: 28.0)
+            .background(isCompleted ? EndfieldPalette.accentYellow : Color.clear)
+            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+            .overlay {
+                ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                    .stroke(
+                        isCompleted ? EndfieldPalette.accentYellow : EndfieldPalette.borderSubtle,
+                        lineWidth: 1.0
+                    )
+            }
+            .opacity(configuration.isPressed ? 0.65 : 1.0)
+    }
+}

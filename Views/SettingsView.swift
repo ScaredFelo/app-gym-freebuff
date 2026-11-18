@@ -36,90 +36,31 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section {
-                barWeightRow(
-                    title: "Peso barra Multipower",
-                    value: $multipowerBarWeight
-                )
+        ZStack {
+            TechnicalGridBackground()
 
-                Stepper(
-                    "Ajustar Multipower: \(UserSettingsManager.formatted(multipowerBarWeight)) kg",
-                    value: $multipowerBarWeight,
-                    in: 0...100,
-                    step: 0.5
-                )
+            ScrollView {
+                VStack(spacing: 12.0) {
+                    equipmentPanel
+                    platesPanel
+                    visualModePanel
+                    backupPanel
 
-                barWeightRow(
-                    title: "Peso barra EZ",
-                    value: $ezBarWeight
-                )
-
-                Stepper(
-                    "Ajustar barra EZ: \(UserSettingsManager.formatted(ezBarWeight)) kg",
-                    value: $ezBarWeight,
-                    in: 0...100,
-                    step: 0.5
-                )
-
-                DisclosureGroup(isExpanded: $arePlatesExpanded) {
-                    ForEach(UserSettingsManager.plateOptions, id: \.self) { (plate: Double) in
-                        Toggle(isOn: plateBinding(for: plate)) {
-                            plateLabel(for: plate)
-                        }
-                        .tint(.green)
-                    }
-                } label: {
-                    HStack(spacing: 8.0) {
-                        Text("Discos disponibles en el gimnasio")
-
-                        Spacer(minLength: 8.0)
-
-                        Text("\(availablePlates.count) activos")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: true, vertical: false)
+                    if !safetyCopies.isEmpty {
+                        safetyCopiesPanel
                     }
                 }
-            } header: {
-                Text("Equipamiento y Discos")
-            } footer: {
-                Text("Estos pesos se usan como base al calcular los discos de Multipower y de barra EZ. Activa solo los discos de los que dispone tu gimnasio.")
-            }
-
-            Section {
-                Toggle(isOn: $isBigPictureModeEnabled) {
-                    Label("BIG PICTURE", systemImage: "textformat.size")
-                }
-                .tint(.green)
-            } header: {
-                Text("Modo visual")
-            } footer: {
-                Text("Aumenta la tipografía y el contraste durante el entrenamiento activo.")
-            }
-
-            BackupSettingsSectionView(
-                onExportTapped: { () -> Void in exportBackup() },
-                onImportTapped: { () -> Void in showImportWarningAlert = true }
-            )
-
-            if !safetyCopies.isEmpty {
-                SafetyBackupSectionView(
-                    copies: safetyCopies,
-                    onRestoreTapped: { (copy: PreImportBackup) -> Void in
-                        safetyCopyPendingRestore = copy
-                    }
-                )
+                .padding(.horizontal, 16.0)
+                .padding(.vertical, 14.0)
             }
         }
         .onAppear {
             reloadSafetyCopies()
         }
-        .scrollContentBackground(.hidden)
-        .background(Color.black)
         .preferredColorScheme(.dark)
-        .tint(.green)
-        .navigationTitle("Configuración")
+        .tint(EndfieldPalette.accentYellow)
+        .navigationTitle("AJUSTES")
+        .navigationBarTitleDisplayMode(.inline)
         .withKeyboardDismiss()
         .fileExporter(
             isPresented: $showFileExporter,
@@ -184,35 +125,183 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Paneles
+
+    private var equipmentPanel: some View {
+        TacticalPanel(code: "EQP.01", title: "Equipamiento y discos", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 12.0) {
+                barWeightBlock(
+                    title: "Peso barra Multipower",
+                    value: $multipowerBarWeight,
+                    stepperLabel: "Ajustar Multipower: \(UserSettingsManager.formatted(multipowerBarWeight)) kg",
+                    range: 0...100
+                )
+
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+
+                barWeightBlock(
+                    title: "Peso barra EZ",
+                    value: $ezBarWeight,
+                    stepperLabel: "Ajustar barra EZ: \(UserSettingsManager.formatted(ezBarWeight)) kg",
+                    range: 0...100
+                )
+
+                Text("Estos pesos se usan como base al calcular los discos de Multipower y de barra EZ.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var platesPanel: some View {
+        EndfieldDisclosure(
+            code: "PLT.02",
+            title: "Discos disponibles (\(availablePlates.count) activos)",
+            isExpanded: $arePlatesExpanded
+        ) {
+            VStack(alignment: .leading, spacing: 6.0) {
+                ForEach(UserSettingsManager.plateOptions, id: \.self) { (plate: Double) in
+                    Toggle(isOn: plateBinding(for: plate)) {
+                        plateLabel(for: plate)
+                    }
+                    .tint(EndfieldPalette.accentYellow)
+                }
+
+                Text("Activa solo los discos de los que dispone tu gimnasio.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 2.0)
+            }
+        }
+    }
+
+    private var visualModePanel: some View {
+        TacticalPanel(code: "UI.03", title: "Modo visual", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 6.0) {
+                Toggle(isOn: $isBigPictureModeEnabled) {
+                    HStack(spacing: 7.0) {
+                        Image(systemName: "textformat.size")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.accentYellow)
+
+                        Text("BIG PICTURE")
+                            .font(EndfieldFont.label(10.0))
+                            .tracking(1.0)
+                            .foregroundStyle(EndfieldPalette.textPrimary)
+                    }
+                }
+                .tint(EndfieldPalette.accentYellow)
+
+                Text("Aumenta la tipografía y el contraste durante el entrenamiento activo.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var backupPanel: some View {
+        TacticalPanel(code: "BK.04", title: "Copia de seguridad", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 8.0) {
+                BackupSettingsSectionView(
+                    onExportTapped: { () -> Void in exportBackup() },
+                    onImportTapped: { () -> Void in showImportWarningAlert = true }
+                )
+
+                Text("Exporta o restaura rutinas, ejercicios, sesiones de entrenamiento y ajustes del gimnasio en un archivo JSON.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var safetyCopiesPanel: some View {
+        TacticalPanel(code: "BK.05", title: "Copias automáticas", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 8.0) {
+                SafetyBackupSectionView(
+                    copies: safetyCopies,
+                    onRestoreTapped: { (copy: PreImportBackup) -> Void in
+                        safetyCopyPendingRestore = copy
+                    }
+                )
+
+                Text("Se guardan antes de cada importación. Restaurar una copia sustituye las rutinas y las sesiones actuales.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     // MARK: - Filas auxiliares
 
-    private func barWeightRow(title: String, value: Binding<Double>) -> some View {
-        return HStack {
-            Text(title)
+    private func barWeightBlock(
+        title: String,
+        value: Binding<Double>,
+        stepperLabel: String,
+        range: ClosedRange<Double>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            Text(title.uppercased())
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.textSecondary)
 
-            Spacer()
+            HStack(spacing: 6.0) {
+                TextField("0", value: value, format: .number)
+                    .textFieldStyle(.plain)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.trailing)
+                    .font(EndfieldFont.mono(14.0, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .tint(EndfieldPalette.accentYellow)
+                    .frame(width: 74.0)
+                    .padding(.vertical, 8.0)
+                    .padding(.horizontal, 8.0)
+                    .background(EndfieldPalette.bgElevated)
+                    .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                    .overlay {
+                        ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                            .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                    }
 
-            TextField("0", value: value, format: .number)
-                .keyboardType(.decimalPad)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 72.0)
+                Text("KG")
+                    .font(EndfieldFont.label(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
 
-            Text("kg")
-                .foregroundStyle(.secondary)
+                Spacer(minLength: 0.0)
+            }
+
+            Stepper(value: value, in: range, step: 0.5) {
+                Text(stepperLabel)
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            .tint(EndfieldPalette.accentYellow)
         }
     }
 
     private func plateLabel(for plate: Double) -> some View {
-        return HStack(spacing: 10.0) {
-            Circle()
+        return HStack(spacing: 8.0) {
+            Rectangle()
                 .fill(PlateCalculatorService.color(for: plate))
-                .frame(width: 14.0, height: 14.0)
-                .overlay(
-                    Circle()
-                        .stroke(Color.gray.opacity(0.55), lineWidth: 0.8)
-                )
+                .frame(width: 10.0, height: 10.0)
+                .overlay {
+                    Rectangle()
+                        .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+                }
 
-            Text("\(UserSettingsManager.formatted(plate)) kg")
+            Text("\(UserSettingsManager.formatted(plate)) KG")
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.textPrimary)
         }
     }
 
@@ -302,36 +391,40 @@ struct SafetyBackupSectionView: View {
     let onRestoreTapped: (PreImportBackup) -> Void
 
     var body: some View {
-        Section {
+        VStack(spacing: 6.0) {
             ForEach(copies) { (copy: PreImportBackup) in
                 Button {
                     onRestoreTapped(copy)
                 } label: {
-                    HStack(spacing: 12.0) {
+                    HStack(spacing: 10.0) {
                         VStack(alignment: .leading, spacing: 2.0) {
-                            Text(copy.date.formatted(date: .abbreviated, time: .shortened))
-                                .font(.subheadline)
-                                .foregroundStyle(.white)
+                            Text(copy.date.formatted(date: .numeric, time: .shortened))
+                                .font(EndfieldFont.mono(10.0, weight: .bold))
+                                .foregroundStyle(EndfieldPalette.textPrimary)
 
-                            Text(ByteCountFormatter.string(fromByteCount: Int64(copy.byteCount), countStyle: .file))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            Text(ByteCountFormatter.string(fromByteCount: Int64(copy.byteCount), countStyle: .file).uppercased())
+                                .font(EndfieldFont.label(7.0))
+                                .foregroundStyle(EndfieldPalette.textSecondary)
                         }
 
-                        Spacer(minLength: 8.0)
+                        Spacer(minLength: 6.0)
 
-                        Image(systemName: "arrow.counterclockwise.circle.fill")
-                            .foregroundStyle(.green)
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(EndfieldFont.mono(10.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.accentYellow)
                             .fixedSize()
+                    }
+                    .padding(9.0)
+                    .background(EndfieldPalette.bgElevated)
+                    .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+                    .overlay {
+                        ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                            .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
                     }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
             }
-        } header: {
-            Text("Copias automáticas")
-        } footer: {
-            Text("Se guardan antes de cada importación. Restaurar una copia sustituye las rutinas y las sesiones de entrenamiento actuales.")
         }
     }
 }
@@ -343,20 +436,30 @@ struct BackupSettingsSectionView: View {
     let onImportTapped: () -> Void
 
     var body: some View {
-        Section {
+        VStack(spacing: 7.0) {
             Button(action: onExportTapped) {
-                Label("Exportar datos", systemImage: "square.and.arrow.up")
-                    .fontWeight(.semibold)
+                HStack(spacing: 7.0) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                    Text("EXPORTAR DATOS")
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+                        .tracking(1.0)
+                }
             }
+            .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentYellow))
 
             Button(action: onImportTapped) {
-                Label("Importar datos", systemImage: "square.and.arrow.down")
-                    .fontWeight(.semibold)
+                HStack(spacing: 7.0) {
+                    Image(systemName: "square.and.arrow.down")
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                    Text("IMPORTAR DATOS")
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+                        .tracking(1.0)
+                }
             }
-        } header: {
-            Text("Copia de seguridad")
-        } footer: {
-            Text("Exporta o restaura rutinas, ejercicios, sesiones de entrenamiento y ajustes del gimnasio en un archivo JSON.")
+            .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
         }
     }
 }

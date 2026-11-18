@@ -62,30 +62,36 @@ struct HypertrophyQualityHelpSheet: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                TechnicalGridBackground()
 
                 ScrollView {
-                    VStack(spacing: 14) {
+                    VStack(spacing: 10.0) {
+                        HazardStripeBar(height: 6.0)
+                            .padding(.horizontal, -16.0)
+
                         header
 
-                        ForEach(Self.metrics) { (metric: HypertrophyMetricHelp) in
-                            HypertrophyMetricHelpCard(metric: metric)
+                        ForEach(Array(Self.metrics.enumerated()), id: \.element.id) { index, metric in
+                            HypertrophyMetricHelpCard(
+                                metric: metric,
+                                code: String(format: "HYP.%02d", index + 1)
+                            )
                         }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 24)
+                    .padding(.horizontal, 16.0)
+                    .padding(.top, 8.0)
+                    .padding(.bottom, 24.0)
                 }
             }
-            .navigationTitle("Calidad de hipertrofia")
+            .navigationTitle("HYP // TELEMETRÍA")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Cerrar") {
                         dismiss()
                     }
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.green)
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
                 }
             }
         }
@@ -93,11 +99,19 @@ struct HypertrophyQualityHelpSheet: View {
     }
 
     private var header: some View {
-        Text("Cómo interpretar tus métricas cardiovasculares y de carga durante la sesión.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 5.0) {
+            Text("MANUAL DE INTERPRETACIÓN // MÉTRICAS CARDIOVASCULARES Y DE CARGA")
+                .font(EndfieldFont.label(9.0))
+                .tracking(1.2)
+                .foregroundStyle(EndfieldPalette.accentYellow)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("Cómo interpretar tus métricas cardiovasculares y de carga durante la sesión.")
+                .font(EndfieldFont.mono(10.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -106,54 +120,49 @@ struct HypertrophyQualityHelpSheet: View {
 /// Tarjeta independiente con los cinco puntos explicativos de una métrica.
 struct HypertrophyMetricHelpCard: View {
     let metric: HypertrophyMetricHelp
+    let code: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: metric.icon)
-                    .font(.subheadline)
-                    .foregroundStyle(.green)
-                    .frame(width: 24, alignment: .center)
+        TacticalPanel(code: code, title: metric.title, contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 9.0) {
+                HStack(spacing: 6.0) {
+                    Image(systemName: metric.icon)
+                        .font(EndfieldFont.mono(10.0, weight: .bold))
+                        .foregroundStyle(EndfieldPalette.accentYellow)
 
-                Text(metric.title)
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(metric.units.uppercased())
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(0.8)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HypertrophyMetricHelpBlock(
+                    label: "Qué es",
+                    text: metric.summary
+                )
+
+                HypertrophyMetricHelpBlock(
+                    label: "Para qué sirve",
+                    text: paraQueSirve
+                )
+
+                HypertrophyMetricHelpBlock(
+                    label: "Unidades",
+                    text: metric.units
+                )
+
+                HypertrophyMetricHelpBlock(
+                    label: "Valores objetivo en hipertrofia",
+                    text: metric.target
+                )
+
+                HypertrophyMetricHelpBlock(
+                    label: "Por qué es importante",
+                    text: metric.importance
+                )
             }
-
-            HypertrophyMetricHelpBlock(
-                label: "Qué es",
-                text: metric.summary
-            )
-
-            HypertrophyMetricHelpBlock(
-                label: "Para qué sirve",
-                text: paraQueSirve
-            )
-
-            HypertrophyMetricHelpBlock(
-                label: "Unidades",
-                text: metric.units
-            )
-
-            HypertrophyMetricHelpBlock(
-                label: "Valores objetivo en hipertrofia",
-                text: metric.target
-            )
-
-            HypertrophyMetricHelpBlock(
-                label: "Por qué es importante",
-                text: metric.importance
-            )
         }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.systemGray6).opacity(0.1))
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
     }
 
     private var paraQueSirve: String {
@@ -177,14 +186,21 @@ struct HypertrophyMetricHelpBlock: View {
     let text: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(label.uppercased())
-                .font(.caption2.bold())
-                .foregroundStyle(.green)
+        VStack(alignment: .leading, spacing: 2.0) {
+            HStack(spacing: 5.0) {
+                Rectangle()
+                    .fill(EndfieldPalette.accentYellow.opacity(0.7))
+                    .frame(width: 3.0, height: 3.0)
+
+                Text(label.uppercased())
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.accentYellow.opacity(0.9))
+            }
 
             Text(text)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(EndfieldFont.mono(10.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

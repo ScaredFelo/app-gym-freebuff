@@ -8,27 +8,27 @@ enum MuscleHighlightRole {
     case secondary
     case primary
 
-    static let accent: Color = Color(red: 1.0, green: 0.23, blue: 0.19)
+    static let accent: Color = EndfieldPalette.accentYellow
 
     var fillColor: Color {
         switch self {
         case .inactive:
-            return Color.white.opacity(0.08)
+            return Color.white.opacity(0.04)
         case .secondary:
-            return MuscleHighlightRole.accent.opacity(0.45)
+            return EndfieldPalette.accentCyan.opacity(0.30)
         case .primary:
-            return MuscleHighlightRole.accent
+            return EndfieldPalette.accentYellow.opacity(0.85)
         }
     }
 
     var strokeColor: Color {
         switch self {
         case .inactive:
-            return Color.white.opacity(0.18)
+            return Color.white.opacity(0.16)
         case .secondary:
-            return MuscleHighlightRole.accent.opacity(0.55)
+            return EndfieldPalette.accentCyan.opacity(0.55)
         case .primary:
-            return Color.white.opacity(0.6)
+            return Color.white.opacity(0.70)
         }
     }
 
@@ -37,9 +37,9 @@ enum MuscleHighlightRole {
         case .inactive:
             return Color.clear
         case .secondary:
-            return MuscleHighlightRole.accent.opacity(0.25)
+            return EndfieldPalette.accentCyan.opacity(0.30)
         case .primary:
-            return MuscleHighlightRole.accent.opacity(0.8)
+            return EndfieldPalette.accentYellow.opacity(0.80)
         }
     }
 
@@ -50,18 +50,18 @@ enum MuscleHighlightRole {
         case .secondary:
             return 3.0
         case .primary:
-            return 6.0
+            return 5.0
         }
     }
 
     var legendColor: Color {
         switch self {
         case .inactive:
-            return Color.white.opacity(0.3)
+            return Color.white.opacity(0.30)
         case .secondary:
-            return MuscleHighlightRole.accent.opacity(0.55)
+            return EndfieldPalette.accentCyan.opacity(0.75)
         case .primary:
-            return MuscleHighlightRole.accent
+            return EndfieldPalette.accentYellow
         }
     }
 }
@@ -132,7 +132,7 @@ struct MuscleShapeView: View {
         shape
             .fill(role.fillColor)
             .overlay {
-                shape.stroke(role.strokeColor, lineWidth: 0.8)
+                shape.stroke(role.strokeColor, lineWidth: 1.0)
             }
             .shadow(color: role.glowColor, radius: role.glowRadius)
     }
@@ -143,8 +143,8 @@ struct MuscleShapeView: View {
 /// Cuerpo base limpio (cabeza, torso, brazos y piernas) sobre el que se
 /// superponen los músculos iluminados.
 struct NeutralBodySilhouetteView: View {
-    private let fillColor: Color = Color.white.opacity(0.06)
-    private let strokeColor: Color = Color.white.opacity(0.14)
+    private let fillColor: Color = Color.white.opacity(0.03)
+    private let strokeColor: Color = Color.white.opacity(0.16)
 
     private let torsoPoints: [CGPoint] = [
         CGPoint(x: 0.12, y: 0.00),
@@ -324,17 +324,19 @@ struct MuscleMapLegendView: View {
     var body: some View {
         VStack(spacing: 6) {
             HStack(spacing: 14) {
-                legendDot(color: MuscleHighlightRole.primary.legendColor, label: "Principal")
-                legendDot(color: MuscleHighlightRole.secondary.legendColor, label: "Secundario")
+                legendMark(color: MuscleHighlightRole.primary.legendColor, label: "PRINCIPAL")
+                legendMark(color: MuscleHighlightRole.secondary.legendColor, label: "SECUNDARIO")
             }
 
             if highlightedMuscles.isEmpty {
-                Text("Sin músculos definidos para este ejercicio")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text("SIN MÚSCULOS DEFINIDOS")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
             } else {
                 muscleNamesText
-                    .font(.caption2.weight(.semibold))
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.8)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -346,22 +348,23 @@ struct MuscleMapLegendView: View {
         var output: Text = Text("")
         for (index, muscle) in highlightedMuscles.enumerated() {
             if index > 0 {
-                output = output + Text("  ·  ").foregroundStyle(Color.white.opacity(0.25))
+                output = output + Text("  /  ").foregroundStyle(Color.white.opacity(0.20))
             }
             let role: MuscleHighlightRole = primaryMuscles.contains(muscle) ? .primary : .secondary
-            output = output + Text(muscle.shortName).foregroundStyle(role.legendColor)
+            output = output + Text(muscle.shortName.uppercased()).foregroundStyle(role.legendColor)
         }
         return output
     }
 
-    private func legendDot(color: Color, label: String) -> some View {
+    private func legendMark(color: Color, label: String) -> some View {
         HStack(spacing: 5.0) {
-            Circle()
+            Rectangle()
                 .fill(color)
-                .frame(width: 7.0, height: 7.0)
+                .frame(width: 6.0, height: 6.0)
             Text(label)
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.textSecondary)
         }
     }
 }
@@ -374,8 +377,8 @@ struct AnatomicalMuscleMapView: View {
     let secondaryMuscles: [MuscleGroup]
 
     var body: some View {
-        VStack(spacing: 12.0) {
-            HStack(alignment: .top, spacing: 0.0) {
+        VStack(spacing: 10.0) {
+            HStack(alignment: .top, spacing: 8.0) {
                 silhouetteColumn(title: "FRONTAL", isFront: true)
                 silhouetteColumn(title: "POSTERIOR", isFront: false)
             }
@@ -389,20 +392,37 @@ struct AnatomicalMuscleMapView: View {
     }
 
     private func silhouetteColumn(title: String, isFront: Bool) -> some View {
-        VStack(spacing: 8.0) {
-            Group {
-                if isFront {
-                    FrontHumanSilhouetteView(role: roleProvider)
-                } else {
-                    BackHumanSilhouetteView(role: roleProvider)
+        VStack(spacing: 6.0) {
+            ZStack {
+                EndfieldPalette.bgPrimary.opacity(0.55)
+
+                TechnicalGridOverlay(step: 12.0, lineColor: Color.white.opacity(0.05))
+
+                Group {
+                    if isFront {
+                        FrontHumanSilhouetteView(role: roleProvider)
+                    } else {
+                        BackHumanSilhouetteView(role: roleProvider)
+                    }
                 }
+                .frame(height: 240.0)
             }
             .frame(height: 240.0)
+            .clipShape(ChamferedRectangle(cut: 6.0))
+            .overlay {
+                ChamferedRectangle(cut: 6.0)
+                    .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+            }
+            .overlay {
+                TacticalCornerCrosses(size: 5.0, inset: 3.0, tint: EndfieldPalette.accentCyan.opacity(0.45))
+            }
 
-            Text(title)
-                .font(.system(size: 9.0, weight: .semibold))
-                .tracking(2.0)
-                .foregroundStyle(Color.white.opacity(0.45))
+            Text("SCAN // \(title)")
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.4)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity)
     }

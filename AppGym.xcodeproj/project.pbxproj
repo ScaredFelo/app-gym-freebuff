@@ -52,6 +52,8 @@
 		AA1000000000000000000022 /* AnatomicalMuscleMapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000022 /* AnatomicalMuscleMapView.swift */; };
 		AA1000000000000000000023 /* ExerciseDetailSheetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000023 /* ExerciseDetailSheetView.swift */; };
 		AA1000000000000000000024 /* ExerciseDuplicateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000024 /* ExerciseDuplicateService.swift */; };
+AA5000000000000000000001 /* EndfieldTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000001 /* EndfieldTheme.swift */; };
+		AA5000000000000000000002 /* EndfieldHUDComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000002 /* EndfieldHUDComponents.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -127,6 +129,8 @@
 		AA2000000000000000000022 /* AnatomicalMuscleMapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnatomicalMuscleMapView.swift; sourceTree = "<group>"; };
 		AA2000000000000000000023 /* ExerciseDetailSheetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseDetailSheetView.swift; sourceTree = "<group>"; };
 		AA2000000000000000000024 /* ExerciseDuplicateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseDuplicateService.swift; sourceTree = "<group>"; };
+AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndfieldTheme.swift; sourceTree = "<group>"; };
+		AA4000000000000000000002 /* EndfieldHUDComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndfieldHUDComponents.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -215,6 +219,7 @@
 				C434C8592D6EC9FA43B397B6 /* ExercisePickerView.swift */,
 				94CA701EF11A30A10FAA7627 /* MinimizedTimerView.swift */,
 				AA2000000000000000000030 /* HypertrophyQualityHelpSheet.swift */,
+				AA4000000000000000000002 /* EndfieldHUDComponents.swift */,
 			);
 			name = Components;
 			path = Components;
@@ -271,6 +276,7 @@
 				42157422C220C5AE87697273 /* ViewModels */,
 				D31658B1AF7DDACDC2AF43DA /* Views */,
 				DE91E74F4BE87A1EBB1A5BEB /* AppGym */,
+				AA4000000000000000000010 /* Theme */,
 				F5A6ED6C597C1D1074BF4F12 /* Widgets */,
 			);
 			sourceTree = "<group>";
@@ -296,6 +302,15 @@
 			);
 			name = Models;
 			path = Models;
+			sourceTree = "<group>";
+		};
+		AA4000000000000000000010 /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				AA4000000000000000000001 /* EndfieldTheme.swift */,
+			);
+			name = Theme;
+			path = Theme;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -443,6 +458,8 @@
 				AA1000000000000000000023 /* ExerciseDetailSheetView.swift in Sources */,
 				AA1000000000000000000030 /* HypertrophyQualityHelpSheet.swift in Sources */,
 				AA1000000000000000000040 /* BackupManager.swift in Sources */,
+				AA5000000000000000000001 /* EndfieldTheme.swift in Sources */,
+				AA5000000000000000000002 /* EndfieldHUDComponents.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

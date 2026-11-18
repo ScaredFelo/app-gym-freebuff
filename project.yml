@@ -29,6 +29,7 @@ targets:
       - path: Services
       - path: ViewModels
       - path: Views
+      - path: Theme
     dependencies:
       - target: AppGymWidgets
     frameworks:

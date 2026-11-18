@@ -30,12 +30,15 @@ public struct WorkoutReviewView: View {
 
     public var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            TechnicalGridBackground()
 
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: 14.0) {
+                    HazardStripeBar(height: 7.0)
+                        .padding(.horizontal, -16.0)
+
                     WorkoutReviewHeaderView(
-                        title: isPostWorkout ? "Entrenamiento completado" : "Review de rutina",
+                        title: isPostWorkout ? "OPERACIÓN COMPLETADA" : "REVIEW DE MISIÓN",
                         routineName: routineName,
                         sessionDate: session.startDate
                     )
@@ -46,9 +49,9 @@ public struct WorkoutReviewView: View {
 
                     WorkoutReviewQualitySectionView(metrics: metrics)
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 24)
-                .padding(.bottom, 24)
+                .padding(.horizontal, 16.0)
+                .padding(.top, 8.0)
+                .padding(.bottom, 24.0)
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -65,23 +68,23 @@ public struct WorkoutReviewView: View {
 
     @ViewBuilder
     private var footer: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: 0.0) {
             Button {
                 finish()
             } label: {
-                Text(isPostWorkout ? "Terminar sesión" : "Cerrar")
-                    .font(.headline.bold())
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.white)
-                    .cornerRadius(14)
+                Text(isPostWorkout ? "TERMINAR // CERRAR SESIÓN" : "CERRAR // INFORME")
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
-            .padding(.bottom, 12)
+            .buttonStyle(EndfieldPrimaryButtonStyle())
+            .padding(.horizontal, 16.0)
+            .padding(.top, 12.0)
+            .padding(.bottom, 12.0)
         }
-        .background(.ultraThinMaterial)
+        .background(EndfieldPalette.bgPrimary)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(EndfieldPalette.borderSubtle)
+                .frame(height: 1.0)
+        }
     }
 
     private func finish() {
@@ -104,23 +107,40 @@ struct WorkoutReviewHeaderView: View {
     let sessionDate: Date
 
     var body: some View {
-        VStack(spacing: 8) {
-            Text(title)
-                .font(.title2.bold())
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
+        VStack(alignment: .leading, spacing: 6.0) {
+            Text("INFORME DE MISIÓN // DEBRIEFING")
+                .font(EndfieldFont.label(9.0))
+                .tracking(1.4)
+                .foregroundStyle(EndfieldPalette.accentYellow)
 
-            Text(routineName)
-                .font(.headline)
-                .foregroundStyle(.green)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
+            Text(title.uppercased())
+                .font(EndfieldFont.mono(19.0, weight: .heavy))
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
 
-            Text(sessionDate, format: .dateTime.day().month().year().hour().minute())
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Rectangle()
+                .fill(EndfieldPalette.borderSubtle)
+                .frame(height: 1.0)
+                .padding(.vertical, 2.0)
+
+            HStack(alignment: .firstTextBaseline, spacing: 8.0) {
+                Text(routineName.uppercased())
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+                    .tracking(0.8)
+                    .foregroundStyle(EndfieldPalette.accentCyan)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer(minLength: 4.0)
+
+                Text(sessionDate.formatted(date: .numeric, time: .shortened))
+                    .font(EndfieldFont.label(8.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -129,88 +149,65 @@ struct WorkoutReviewHeaderView: View {
 struct WorkoutReviewMainMetricsView: View {
     let metrics: WorkoutMetrics
 
+    private let columns: [GridItem] = [
+        GridItem(.flexible(), spacing: 8.0),
+        GridItem(.flexible(), spacing: 8.0),
+        GridItem(.flexible(), spacing: 8.0)
+    ]
+
     var body: some View {
-        VStack(spacing: 0) {
-            WorkoutReviewMetricRow(
-                icon: "clock.fill",
-                title: "Tiempo de sesión",
-                value: metrics.durationFormatted
+        LazyVGrid(columns: columns, spacing: 8.0) {
+            telemetryBox(
+                code: "T+",
+                label: "TIEMPO",
+                value: metrics.durationFormatted,
+                tint: EndfieldPalette.textPrimary
             )
 
-            divider
-
-            WorkoutReviewMetricRow(
-                icon: "scalemass.fill",
-                title: "Kg levantados",
-                value: String(format: "%.0f kg", metrics.totalVolumeKg)
+            telemetryBox(
+                code: "VOL",
+                label: "KG TOTAL",
+                value: String(format: "%.0f", metrics.totalVolumeKg),
+                tint: EndfieldPalette.accentYellow
             )
 
-            divider
-
-            WorkoutReviewMetricRow(
-                icon: "timeline.selection",
-                title: "Media entre series",
+            telemetryBox(
+                code: "MEDIA",
+                label: "ENTRE SERIES",
                 value: metrics.averageTimeBetweenSetsFormatted,
-                subtitle: "Tiempo medio entre series"
+                tint: EndfieldPalette.accentCyan
             )
         }
-        .padding(16)
-        .background(Color(.systemGray6).opacity(0.1))
-        .cornerRadius(16)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
     }
 
-    private var divider: some View {
-        Divider()
-            .background(Color.white.opacity(0.08))
-            .padding(.vertical, 10)
-    }
-}
-
-struct WorkoutReviewMetricRow: View {
-    let icon: String
-    let title: String
-    let value: String
-    let subtitle: String?
-
-    init(icon: String, title: String, value: String, subtitle: String? = nil) {
-        self.icon = icon
-        self.title = title
-        self.value = value
-        self.subtitle = subtitle
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.subheadline)
-                .foregroundStyle(.green)
-                .frame(width: 24, alignment: .center)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-
-                if let subtitle: String = subtitle {
-                    Text(subtitle)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary.opacity(0.7))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.75)
-                }
-            }
-
-            Spacer(minLength: 8)
+    private func telemetryBox(code: String, label: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4.0) {
+            Text(code)
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.0)
+                .foregroundStyle(tint)
 
             Text(value)
-                .font(.subheadline.bold())
-                .foregroundStyle(.white)
+                .font(EndfieldFont.mono(17.0, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textPrimary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.5)
+
+            Text(label)
+                .font(EndfieldFont.label(7.0))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
         }
     }
 }
@@ -221,14 +218,14 @@ struct WorkoutReviewHeartRateSectionView: View {
     let metrics: WorkoutMetrics
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionTitle("Frecuencia cardíaca por ejercicio")
+        VStack(alignment: .leading, spacing: 8.0) {
+            EndfieldSectionHeader(code: "HUD.BPM", title: "Frecuencia cardíaca")
 
-            HStack(spacing: 12) {
+            HStack(spacing: 8.0) {
                 WorkoutReviewHeartRateSummaryCard(
-                    title: "BPM máximos",
+                    title: "BPM MÁXIMOS",
                     icon: "heart.fill",
-                    tint: .red,
+                    tint: EndfieldPalette.accentRed,
                     primaryValue: metrics.maxBPMAbsolute > 0 ? "\(metrics.maxBPMAbsolute)" : "—",
                     secondaryValue: metrics.maxBPMAverage > 0
                         ? "Media \(Int(metrics.maxBPMAverage.rounded())) BPM"
@@ -236,9 +233,9 @@ struct WorkoutReviewHeartRateSectionView: View {
                 )
 
                 WorkoutReviewHeartRateSummaryCard(
-                    title: "BPM más bajos",
-                    icon: "heart.slash.fill",
-                    tint: .orange,
+                    title: "BPM MÍNIMOS",
+                    icon: "heart",
+                    tint: EndfieldPalette.accentCyan,
                     primaryValue: metrics.minBPMAbsolute > 0 ? "\(metrics.minBPMAbsolute)" : "—",
                     secondaryValue: metrics.minBPMAverage > 0
                         ? "Media \(Int(metrics.minBPMAverage.rounded())) BPM"
@@ -247,12 +244,13 @@ struct WorkoutReviewHeartRateSectionView: View {
             }
 
             if metrics.exerciseHeartRateRows.isEmpty {
-                Text("Sin muestras de pulso suficientes para desglosar por ejercicio.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text("SIN MUESTRAS SUFICIENTES PARA DESGLOSAR POR EJERCICIO")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.8)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                VStack(spacing: 8) {
+                VStack(spacing: 5.0) {
                     ForEach(metrics.exerciseHeartRateRows) { (row: ExerciseHeartRateRow) in
                         WorkoutReviewExerciseHeartRateRowView(row: row)
                     }
@@ -270,39 +268,42 @@ struct WorkoutReviewHeartRateSummaryCard: View {
     let secondaryValue: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 6.0) {
+            HStack(spacing: 5.0) {
                 Image(systemName: icon)
-                    .font(.caption.bold())
+                    .font(EndfieldFont.mono(9.0, weight: .bold))
                     .foregroundStyle(tint)
 
                 Text(title)
-                    .font(.caption2.bold())
-                    .foregroundStyle(.secondary)
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+                    .minimumScaleFactor(0.65)
             }
 
             Text(primaryValue)
-                .font(.title2.bold())
-                .foregroundStyle(.white)
+                .font(EndfieldFont.mono(26.0, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(tint)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.6)
 
-            Text(secondaryValue)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+            Text(secondaryValue.uppercased())
+                .font(EndfieldFont.label(7.0))
+                .tracking(0.6)
+                .foregroundStyle(EndfieldPalette.textSecondary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.75)
+                .minimumScaleFactor(0.6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(Color(.systemGray6).opacity(0.1))
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
+        .padding(10.0)
+        .background(EndfieldPalette.bgPanel)
+        .clipShape(ChamferedRectangle(cut: 8.0))
+        .overlay {
+            ChamferedRectangle(cut: 8.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
     }
 }
 
@@ -310,27 +311,32 @@ struct WorkoutReviewExerciseHeartRateRowView: View {
     let row: ExerciseHeartRateRow
 
     var body: some View {
-        HStack(spacing: 10) {
-            Text(row.exerciseName)
-                .font(.caption.bold())
-                .foregroundStyle(.white)
+        HStack(spacing: 8.0) {
+            Text(row.exerciseName.uppercased())
+                .font(EndfieldFont.label(8.0))
+                .tracking(0.6)
+                .foregroundStyle(EndfieldPalette.textPrimary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.65)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6.0)
 
-            Text(row.peakBPM > 0 ? "Pico \(row.peakBPM)" : "Pico —")
-                .font(.caption2.bold())
-                .foregroundStyle(.red)
+            Text(row.peakBPM > 0 ? "PICO \(row.peakBPM)" : "PICO —")
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.accentRed)
 
-            Text(row.previousLowBPM > 0 ? "Previo \(row.previousLowBPM)" : "Previo —")
-                .font(.caption2.bold())
-                .foregroundStyle(.orange)
+            Text(row.previousLowBPM > 0 ? "PREV \(row.previousLowBPM)" : "PREV —")
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.accentCyan)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(Color(.systemGray6).opacity(0.08))
-        .cornerRadius(10)
+        .padding(.horizontal, 9.0)
+        .padding(.vertical, 7.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
     }
 }
 
@@ -342,39 +348,51 @@ struct WorkoutReviewQualitySectionView: View {
     @State private var isHelpPresented: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8.0) {
             header
 
             WorkoutReviewQualityCardView(
-                icon: "flame.fill",
+                code: "HYP.01",
+                icon: "flame",
                 title: "Carga de Edwards",
                 value: String(format: "%.0f", metrics.edwardsTrainingLoad),
-                unit: "u.a.",
-                description: "Minutos en cada zona cardíaca ponderados de Z1×1 a Z5×5."
+                unit: "UA",
+                description: "Minutos en cada zona cardíaca ponderados de Z1×1 a Z5×5.",
+                level: level(value: metrics.edwardsTrainingLoad, reference: 200.0),
+                tint: EndfieldPalette.accentYellow
             )
 
             WorkoutReviewQualityCardView(
+                code: "HYP.02",
                 icon: "waveform.path.ecg",
                 title: "TRIMP de Banister",
                 value: String(format: "%.1f", metrics.trimp),
                 unit: "TRIMP",
-                description: "Duración × delta de FC × 0,64 × e^(1,92 × delta)."
+                description: "Duración × delta de FC × 0,64 × e^(1,92 × delta).",
+                level: level(value: metrics.trimp, reference: 150.0),
+                tint: EndfieldPalette.accentCyan
             )
 
             WorkoutReviewQualityCardView(
-                icon: "arrow.down.heart.fill",
+                code: "HYP.03",
+                icon: "arrow.down.heart",
                 title: "Eficiencia de recuperación",
                 value: String(format: "%.1f", metrics.recoveryRate),
-                unit: "BPM/min",
-                description: "Descenso medio de pulsaciones por minuto entre series."
+                unit: "BPM/MIN",
+                description: "Descenso medio de pulsaciones por minuto entre series.",
+                level: level(value: metrics.recoveryRate, reference: 40.0),
+                tint: EndfieldPalette.accentYellow
             )
 
             WorkoutReviewQualityCardView(
-                icon: "scalemass.fill",
+                code: "HYP.04",
+                icon: "scalemass",
                 title: "Densidad cardiovascular",
                 value: String(format: "%.1f", metrics.cardiovascularDensity),
-                unit: "kg/TRIMP",
-                description: "Kg movidos por unidad de impulso cardiovascular."
+                unit: "KG/TRIMP",
+                description: "Kg movidos por unidad de impulso cardiovascular.",
+                level: level(value: metrics.cardiovascularDensity, reference: 150.0),
+                tint: EndfieldPalette.accentRed
             )
         }
         .sheet(isPresented: $isHelpPresented) {
@@ -383,85 +401,75 @@ struct WorkoutReviewQualitySectionView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Text("CALIDAD DE HIPERTROFIA")
-                .font(.caption2.bold())
-                .foregroundStyle(.secondary)
+        HStack(spacing: 8.0) {
+            EndfieldSectionHeader(code: "HYP", title: "Calidad de hipertrofia")
 
             Button {
                 isHelpPresented = true
             } label: {
-                Image(systemName: "questionmark.circle.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.green)
-                    .fixedSize()
+                Image(systemName: "questionmark")
+                    .font(EndfieldFont.mono(10.0, weight: .bold))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentYellow, size: 26.0))
             .accessibilityLabel("Explicación de las métricas de calidad de hipertrofia")
-
-            Spacer(minLength: 0)
         }
+    }
+
+    private func level(value: Double, reference: Double) -> Double {
+        guard reference > 0.0 else { return 0.0 }
+        let ratio: Double = value / reference
+        return min(max(ratio, 0.0), 1.0)
     }
 }
 
 struct WorkoutReviewQualityCardView: View {
+    let code: String
     let icon: String
     let title: String
     let value: String
     let unit: String
     let description: String
+    let level: Double
+    let tint: Color
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.subheadline)
-                .foregroundStyle(.green)
-                .frame(width: 24, alignment: .center)
-                .padding(.top, 2)
+        TacticalPanel(code: code, title: title, contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 7.0) {
+                HStack(alignment: .firstTextBaseline, spacing: 5.0) {
+                    Image(systemName: icon)
+                        .font(EndfieldFont.mono(10.0, weight: .bold))
+                        .foregroundStyle(tint)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
+                    Text(value)
+                        .font(EndfieldFont.mono(20.0, weight: .heavy))
+                        .monospacedDigit()
+                        .foregroundStyle(tint)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+
+                    Text(unit)
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(0.8)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize()
+
+                    Spacer(minLength: 0.0)
+                }
+
+                SegmentedProgressBar(
+                    progress: level,
+                    segments: 16,
+                    tint: tint,
+                    height: 4.0,
+                    spacing: 2.0
+                )
 
                 Text(description)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-
-            Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(value)
-                    .font(.title3.bold())
-                    .foregroundStyle(.green)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-
-                Text(unit)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(minWidth: 64, alignment: .trailing)
         }
-        .padding(14)
-        .background(Color(.systemGray6).opacity(0.1))
-        .cornerRadius(14)
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
     }
 }
 
-// MARK: - Utilidades de sección
-
-@ViewBuilder
-func sectionTitle(_ text: String) -> some View {
-    Text(text.uppercased())
-        .font(.caption2.bold())
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-}

@@ -31,21 +31,28 @@ public struct MinimizedTimerView: View {
     }
 
     public var body: some View {
-        HStack(spacing: 12) {
-            Text(timeFormatted(timeRemaining))
-                .font(.system(.title3, design: .rounded, weight: .bold))
-                .monospacedDigit()
-                .foregroundStyle(.white)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
-                .fixedSize()
-                .allowsHitTesting(false)
+        HStack(spacing: 10.0) {
+            HStack(spacing: 5.0) {
+                Rectangle()
+                    .fill(isPaused ? EndfieldPalette.accentRed : EndfieldPalette.accentYellow)
+                    .frame(width: 3.0, height: 16.0)
 
-            Spacer(minLength: 4)
+                Text(timeFormatted(timeRemaining))
+                    .font(EndfieldFont.mono(19.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .fixedSize()
+                    .allowsHitTesting(false)
+            }
 
-            HStack(spacing: 2) {
+            Spacer(minLength: 4.0)
+
+            HStack(spacing: 4.0) {
                 timerButton(
-                    icon: isPaused ? "play.fill" : "pause.fill",
+                    icon: isPaused ? "play" : "pause",
+                    tint: isPaused ? EndfieldPalette.accentYellow : EndfieldPalette.textPrimary,
                     action: onTogglePause,
                     accessibilityLabel: isPaused ? "Reanudar" : "Pausar"
                 )
@@ -63,65 +70,68 @@ public struct MinimizedTimerView: View {
                 )
 
                 timerButton(
-                    icon: "forward.end.fill",
-                    tint: .white.opacity(0.95),
+                    icon: "forward.end",
+                    tint: EndfieldPalette.accentRed,
                     action: onSkip,
                     accessibilityLabel: "Omitir descanso"
                 )
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12.0)
+        .padding(.vertical, 10.0)
         .background {
             Button(action: onExpand) {
                 Color.clear
-                    .contentShape(Capsule())
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Expandir temporizador")
         }
-        .background(Color.black.opacity(0.8), in: Capsule())
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(EndfieldPalette.bgPanel)
+        .clipShape(ChamferedRectangle(cut: 10.0))
         .overlay(alignment: .bottom) {
             progressBar
         }
-        .overlay(
-            Capsule()
-                .stroke(Color.white.opacity(0.12), lineWidth: 1)
-        )
-        .shadow(color: .black.opacity(0.3), radius: 12, x: 0, y: 6)
+        .overlay {
+            ChamferedRectangle(cut: 10.0)
+                .stroke(EndfieldPalette.borderActive, lineWidth: 1.0)
+        }
+        .overlay {
+            TacticalCornerCrosses(size: 5.0, inset: 3.0)
+        }
+        .shadow(color: Color.black.opacity(0.45), radius: 10.0, x: 0.0, y: 5.0)
     }
 
     private var progressBar: some View {
         GeometryReader { proxy in
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.white.opacity(0.12))
+                Rectangle()
+                    .fill(EndfieldPalette.bgElevated)
 
-                Capsule()
+                Rectangle()
                     .fill(progressTint)
-                    .frame(width: proxy.size.width * progress)
+                    .frame(width: proxy.size.width * CGFloat(progress))
             }
         }
-        .frame(height: 2)
-        .padding(.horizontal, 22)
-        .padding(.bottom, 7)
+        .frame(height: 3.0)
+        .padding(.horizontal, 12.0)
+        .padding(.bottom, 5.0)
         .animation(.linear(duration: 0.25), value: progress)
         .allowsHitTesting(false)
     }
 
     private func timerButton(
         icon: String,
-        tint: Color = .white.opacity(0.85),
+        tint: Color = EndfieldPalette.textSecondary,
         action: @escaping () -> Void,
         accessibilityLabel: String
     ) -> some View {
         Button(action: action) {
             Image(systemName: icon)
                 .renderingMode(.template)
-                .font(.system(size: 15, weight: .semibold))
+                .font(EndfieldFont.mono(12.0, weight: .bold))
                 .foregroundStyle(tint)
-                .frame(width: 30, height: 30)
+                .frame(width: 28.0, height: 28.0)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -135,7 +145,7 @@ public struct MinimizedTimerView: View {
     }
 
     private var progressTint: Color {
-        isPaused ? Color.orange.opacity(0.85) : Color.white.opacity(0.8)
+        isPaused ? EndfieldPalette.accentRed : EndfieldPalette.accentYellow
     }
 
     private func timeFormatted(_ seconds: Int) -> String {

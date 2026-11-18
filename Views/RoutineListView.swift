@@ -18,7 +18,7 @@ public struct RoutineListView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                Color.black.ignoresSafeArea()
+                TechnicalGridBackground()
 
                 List {
                     ForEach(routines) { routine in
@@ -40,26 +40,28 @@ public struct RoutineListView: View {
                         )
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4.0, leading: 16.0, bottom: 4.0, trailing: 16.0))
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
             }
-            .navigationTitle(isEditing ? "Editar rutinas" : "Rutinas")
+            .navigationTitle(isEditing ? "EDITAR RUTINAS" : "RUTINAS")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if isEditing {
                         Button(action: confirmEditMode) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.headline)
-                                .foregroundStyle(.green)
+                            Image(systemName: "checkmark")
+                                .font(EndfieldFont.mono(12.0, weight: .bold))
+                                .foregroundStyle(EndfieldPalette.accentYellow)
                         }
                         .accessibilityLabel("Confirmar cambios")
                     } else {
                         Button(action: createRoutine) {
                             Image(systemName: "plus")
-                                .font(.headline)
-                                .foregroundStyle(.white)
+                                .font(EndfieldFont.mono(12.0, weight: .bold))
+                                .foregroundStyle(EndfieldPalette.accentYellow)
                         }
                         .accessibilityLabel("Nueva rutina")
                     }
@@ -202,7 +204,6 @@ struct RoutineRowView: View {
     @State private var thresholdHapticTriggered = false
 
     private let deleteThreshold: CGFloat = 120
-    private let cardBackground = Color(red: 0.07, green: 0.07, blue: 0.08)
 
     var body: some View {
         ZStack {
@@ -213,7 +214,7 @@ struct RoutineRowView: View {
 
             cardSurface
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cornerCut))
         .id(routine.id)
         .onChange(of: isEditing) { _, editing in
             if !editing {
@@ -224,46 +225,76 @@ struct RoutineRowView: View {
     }
 
     private var cardSurface: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 8.0) {
             routineContent
             trailingControls
         }
-        .background(cardBackground)
+        .background(EndfieldPalette.bgPanel)
         .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            ChamferedRectangle(cut: EndfieldMetrics.cornerCut)
+                .stroke(isEditing ? EndfieldPalette.borderActive : EndfieldPalette.borderSubtle, lineWidth: 1.0)
         )
-        .cornerRadius(16)
         .offset(x: dragOffset)
     }
 
     private var routineContent: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(routine.name)
-                    .font(.title3.bold())
-                    .foregroundStyle(.white)
-                Text("\(routine.exercises.count) ejercicios configurados")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 10.0) {
+            VStack(alignment: .leading, spacing: 5.0) {
+                HStack(spacing: 6.0) {
+                    Text(String(format: "RT-%02d", routine.sortOrder + 1))
+                        .font(EndfieldFont.mono(9.0, weight: .heavy))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.accentYellow)
+                        .padding(.horizontal, 4.0)
+                        .padding(.vertical, 1.0)
+                        .overlay {
+                            ChamferedRectangle(cut: 3.0)
+                                .stroke(EndfieldPalette.accentYellow.opacity(0.45), lineWidth: 1.0)
+                        }
+
+                    Rectangle()
+                        .fill(EndfieldPalette.borderSubtle)
+                        .frame(height: 1.0)
+
+                    Text("\(routine.exercises.count) EX")
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(0.8)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                }
+
+                Text(routine.name.uppercased())
+                    .font(EndfieldFont.mono(15.0, weight: .heavy))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+
+                Text("\(routine.exercises.count) ejercicios configurados".uppercased())
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 6.0)
 
             if !isEditing {
-                HStack(spacing: 4) {
+                HStack(spacing: 5.0) {
                     Image(systemName: "play.fill")
-                    Text("Iniciar")
+                        .font(EndfieldFont.mono(9.0, weight: .bold))
+
+                    Text("INICIAR")
+                        .font(EndfieldFont.mono(10.0, weight: .heavy))
+                        .tracking(1.0)
                 }
-                .font(.subheadline.bold())
-                .foregroundColor(.black)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.white)
-                .cornerRadius(20)
+                .foregroundStyle(EndfieldPalette.bgPrimary)
+                .padding(.horizontal, 10.0)
+                .padding(.vertical, 7.0)
+                .background(EndfieldPalette.accentYellow)
+                .clipShape(ChamferedRectangle(cut: 4.0))
+                .fixedSize()
             }
         }
-        .padding(16)
+        .padding(12.0)
         .contentShape(Rectangle())
         .onTapGesture {
             guard !isEditing, !suppressNextTap else { return }
@@ -298,7 +329,7 @@ struct RoutineRowView: View {
     private var trailingControls: some View {
         if isEditing {
             if canMoveUp || canMoveDown {
-                VStack(spacing: 6) {
+                VStack(spacing: 5.0) {
                     if canMoveUp {
                         moveButton(
                             icon: "chevron.up",
@@ -315,34 +346,33 @@ struct RoutineRowView: View {
                         )
                     }
                 }
-                .padding(.trailing, 12)
+                .padding(.trailing, 10.0)
             }
         } else {
             Button(action: onEdit) {
                 Image(systemName: "pencil")
-                    .font(.subheadline.bold())
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(Color(.systemGray6).opacity(0.3))
-                    .clipShape(Circle())
+                    .font(EndfieldFont.mono(10.0, weight: .bold))
             }
-            .buttonStyle(.borderless)
-            .padding(.trailing, 16)
+            .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.textSecondary, size: 28.0))
+            .padding(.trailing, 12.0)
             .accessibilityLabel("Editar rutina \(routine.name)")
         }
     }
 
     private var deleteBackground: some View {
         ZStack {
-            Color.red
+            EndfieldPalette.accentRed
 
-            HStack(spacing: 8) {
+            HStack(spacing: 8.0) {
                 Image(systemName: "trash.fill")
-                Text("Eliminar")
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                Text("ELIMINAR")
+                    .font(EndfieldFont.mono(11.0, weight: .heavy))
+                    .tracking(1.2)
             }
-            .font(.subheadline.bold())
-            .foregroundStyle(.white)
-            .padding(.horizontal, 20)
+            .foregroundStyle(EndfieldPalette.bgPrimary)
+            .padding(.horizontal, 20.0)
             .frame(
                 maxWidth: .infinity,
                 alignment: dragOffset >= 0 ? .leading : .trailing
@@ -388,13 +418,9 @@ struct RoutineRowView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.caption.bold())
-                .foregroundStyle(.white.opacity(0.8))
-                .frame(width: 28, height: 28)
-                .background(Color(.systemGray6).opacity(0.3))
-                .clipShape(Circle())
+                .font(EndfieldFont.mono(9.0, weight: .bold))
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.textSecondary, size: 26.0))
         .accessibilityLabel(accessibilityLabel)
     }
 }

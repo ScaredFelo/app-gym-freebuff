@@ -34,14 +34,14 @@ public struct CircularTimerView: View {
     }
 
     private var zoneColor: Color {
-        guard healthKitManager.currentBPM > 0 else { return .green }
+        guard healthKitManager.currentBPM > 0 else { return EndfieldPalette.accentYellow }
         switch healthKitManager.currentBPM {
         case ..<90:
-            return .green
+            return EndfieldPalette.accentCyan
         case ..<150:
-            return .orange
+            return EndfieldPalette.accentYellow
         default:
-            return .red
+            return EndfieldPalette.accentRed
         }
     }
 
@@ -66,93 +66,129 @@ public struct CircularTimerView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 14.0) {
+            headerRow
+
             dial
 
-            HStack(spacing: 20) {
-                Button(action: onSub10) {
-                    Image(systemName: "gobackward.10")
-                        .renderingMode(.template)
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(width: 60, height: 40)
-                        .background(Color(.systemGray6).opacity(0.3))
-                        .cornerRadius(20)
-                        .fixedSize()
-                }
-
-                Button(action: onTogglePause) {
-                    Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(isPaused ? .black : .white)
-                        .frame(width: 60, height: 40)
-                        .background(isPaused ? Color.white : Color(.systemGray6).opacity(0.3))
-                        .cornerRadius(20)
-                        .fixedSize()
-                }
-                .accessibilityLabel(isPaused ? "Reanudar descanso" : "Pausar descanso")
-
-                Button(action: onAdd10) {
-                    Image(systemName: "goforward.10")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-                        .frame(width: 60, height: 40)
-                        .background(Color(.systemGray6).opacity(0.3))
-                        .cornerRadius(20)
-                        .fixedSize()
-                }
-            }
+            controlsRow
 
             Button(action: onSkip) {
-                Text("Omitir Descanso")
-                    .font(.subheadline.bold())
-                    .foregroundColor(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.white)
-                    .cornerRadius(12)
+                Text("OMITIR // DESCANSO")
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
+            .buttonStyle(EndfieldPrimaryButtonStyle())
         }
-        .padding(24)
-        .overlay(alignment: .topTrailing) {
+        .padding(.horizontal, 18.0)
+        .padding(.vertical, 16.0)
+        .background(EndfieldPalette.bgPanel)
+        .clipShape(ChamferedRectangle(cut: 14.0))
+        .overlay {
+            ChamferedRectangle(cut: 14.0)
+                .stroke(EndfieldPalette.borderActive, lineWidth: 1.0)
+        }
+        .overlay {
+            TacticalCornerCrosses(size: 6.0, inset: 4.0)
+        }
+        .padding(.horizontal, 20.0)
+    }
+
+    // MARK: Header
+
+    private var headerRow: some View {
+        HStack(spacing: 8.0) {
+            Rectangle()
+                .fill(isPaused ? EndfieldPalette.accentRed : EndfieldPalette.accentYellow)
+                .frame(width: 3.0, height: 12.0)
+
+            Text(isPaused ? "OPS.REST // PAUSA" : "OPS.REST // DESCANSO ACTIVO")
+                .font(EndfieldFont.label(9.0))
+                .tracking(1.2)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Spacer(minLength: 4.0)
+
             Button(action: onMinimize) {
                 Image(systemName: "xmark")
-                    .font(.headline.bold())
-                    .foregroundStyle(.red)
-                    .frame(width: 32, height: 32)
-                    .contentShape(Rectangle())
+                    .font(EndfieldFont.mono(10.0, weight: .bold))
             }
-            .buttonStyle(.plain)
-            .padding()
+            .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentRed, size: 26.0))
             .accessibilityLabel("Minimizar temporizador")
         }
-        .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: 24))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24)
-                .stroke(Color.white.opacity(0.15), lineWidth: 1)
-        )
-        .padding(.horizontal, 20)
     }
+
+    // MARK: Controls
+
+    private var controlsRow: some View {
+        HStack(spacing: 10.0) {
+            controlButton(
+                icon: "gobackward.10",
+                tint: EndfieldPalette.textPrimary,
+                filled: false,
+                accessibilityLabel: "Restar 10 segundos",
+                action: onSub10
+            )
+
+            controlButton(
+                icon: isPaused ? "play" : "pause",
+                tint: EndfieldPalette.accentYellow,
+                filled: !isPaused,
+                accessibilityLabel: isPaused ? "Reanudar descanso" : "Pausar descanso",
+                action: onTogglePause
+            )
+
+            controlButton(
+                icon: "goforward.10",
+                tint: EndfieldPalette.textPrimary,
+                filled: false,
+                accessibilityLabel: "Añadir 10 segundos",
+                action: onAdd10
+            )
+        }
+    }
+
+    private func controlButton(
+        icon: String,
+        tint: Color,
+        filled: Bool,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(EndfieldFont.mono(15.0, weight: .bold))
+        }
+        .buttonStyle(EndfieldSquareButtonStyle(tint: tint, size: 52.0, filled: filled))
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    // MARK: Dial
 
     private var dial: some View {
         ZStack {
+            Rectangle()
+                .fill(EndfieldPalette.bgPrimary.opacity(0.55))
+                .clipShape(Circle())
+
             Circle()
                 .trim(from: 0, to: 0.75)
                 .stroke(
                     Color.white.opacity(0.08),
-                    style: StrokeStyle(lineWidth: outerLineWidth, lineCap: .round)
+                    style: StrokeStyle(lineWidth: outerLineWidth, lineCap: .butt)
                 )
                 .rotationEffect(.degrees(arcStartAngle))
 
             Circle()
                 .trim(from: 0, to: 0.75 * progress)
                 .stroke(
-                    Color.green,
-                    style: StrokeStyle(lineWidth: outerLineWidth, lineCap: .round)
+                    EndfieldPalette.accentYellow,
+                    style: StrokeStyle(lineWidth: outerLineWidth, lineCap: .butt)
                 )
                 .rotationEffect(.degrees(arcStartAngle))
-                .shadow(color: Color.green.opacity(0.35), radius: 6)
+                .shadow(color: EndfieldPalette.accentYellow.opacity(0.30), radius: 5.0)
                 .animation(.linear(duration: 1), value: progress)
 
             Circle()
@@ -160,7 +196,7 @@ public struct CircularTimerView: View {
                 .trim(from: 0, to: 0.75)
                 .stroke(
                     zoneColor.opacity(0.45),
-                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                    style: StrokeStyle(lineWidth: 2.0, lineCap: .butt)
                 )
                 .rotationEffect(.degrees(arcStartAngle))
                 .animation(.easeInOut(duration: 0.4), value: zoneColor)
@@ -178,88 +214,86 @@ public struct CircularTimerView: View {
 
     private var needle: some View {
         ZStack {
-            Capsule()
+            Rectangle()
                 .fill(zoneColor)
-                .frame(width: 3, height: 92)
-                .offset(y: -46)
-                .shadow(color: zoneColor.opacity(0.5), radius: 6)
+                .frame(width: 2.0, height: 92.0)
+                .offset(y: -46.0)
+                .shadow(color: zoneColor.opacity(0.5), radius: 5.0)
 
-            Circle()
+            Rectangle()
                 .fill(zoneColor)
-                .frame(width: 12, height: 12)
-                .overlay(
-                    Circle()
-                        .stroke(Color.black.opacity(0.6), lineWidth: 2)
-                )
+                .frame(width: 9.0, height: 9.0)
+                .overlay {
+                    Rectangle()
+                        .stroke(EndfieldPalette.bgPrimary, lineWidth: 2.0)
+                }
         }
         .frame(width: dialSize, height: dialSize)
         .rotationEffect(.degrees(needleAngle))
-        .opacity(0.85)
+        .opacity(0.9)
         .animation(.spring(response: 0.5, dampingFraction: 0.7), value: healthKitManager.currentBPM)
     }
 
     private var readout: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 2.0) {
             Text(isPaused ? "PAUSADO" : "DESCANSO")
-                .font(.caption2.bold())
-                .tracking(1.5)
-                .foregroundStyle(isPaused ? Color.orange : Color.secondary)
+                .font(EndfieldFont.label(8.0))
+                .tracking(2.0)
+                .foregroundStyle(isPaused ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
 
             Text(timeFormatted(timeRemaining))
-                .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                .font(EndfieldFont.mono(46.0, weight: .heavy))
                 .monospacedDigit()
-                .foregroundStyle(.white)
+                .foregroundStyle(EndfieldPalette.textPrimary)
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.6)
 
             Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM) BPM" : "-- BPM")
-                .font(.caption.bold())
+                .font(EndfieldFont.mono(11.0, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(zoneColor)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.black.opacity(0.72))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
+        .padding(.horizontal, 14.0)
+        .padding(.vertical, 9.0)
+        .background(EndfieldPalette.bgPanel.opacity(0.92))
+        .clipShape(ChamferedRectangle(cut: 6.0))
+        .overlay {
+            ChamferedRectangle(cut: 6.0)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
     }
 
     private func tickMark(for bpm: Int) -> some View {
-        let angle = angleForBPM(bpm)
-        let radians = angle * .pi / 180
-        let center = dialSize / 2
-        let isBoundary = bpm == 50 || bpm == 210
+        let angle: Double = angleForBPM(bpm)
+        let radians: Double = angle * Double.pi / 180.0
+        let center: CGFloat = dialSize / 2.0
+        let isBoundary: Bool = bpm == 50 || bpm == 210
 
         return ZStack {
-            Capsule()
+            Rectangle()
                 .fill(zoneColor.opacity(0.85))
-                .frame(width: 1.5, height: isBoundary ? 12 : 8)
-                .rotationEffect(.degrees(angle + 90))
+                .frame(width: 1.5, height: isBoundary ? 12.0 : 8.0)
+                .rotationEffect(.degrees(angle + 90.0))
                 .position(
-                    x: center + CGFloat(cos(radians)) * 94,
-                    y: center + CGFloat(sin(radians)) * 94
+                    x: center + CGFloat(cos(radians)) * 94.0,
+                    y: center + CGFloat(sin(radians)) * 94.0
                 )
 
             Text("\(bpm)")
-                .font(.system(size: 8, weight: .semibold, design: .rounded))
+                .font(EndfieldFont.label(7.0))
                 .monospacedDigit()
                 .multilineTextAlignment(.center)
                 .foregroundStyle(zoneColor.opacity(0.65))
                 .position(
-                    x: center + CGFloat(cos(radians)) * 78,
-                    y: center + CGFloat(sin(radians)) * 78
+                    x: center + CGFloat(cos(radians)) * 78.0,
+                    y: center + CGFloat(sin(radians)) * 78.0
                 )
         }
     }
 
     private func angleForBPM(_ bpm: Int) -> Double {
-        let clamped = min(max(Double(bpm), bpmRange.lowerBound), bpmRange.upperBound)
-        let fraction = (clamped - bpmRange.lowerBound) / (bpmRange.upperBound - bpmRange.lowerBound)
+        let clamped: Double = min(max(Double(bpm), bpmRange.lowerBound), bpmRange.upperBound)
+        let fraction: Double = (clamped - bpmRange.lowerBound) / (bpmRange.upperBound - bpmRange.lowerBound)
         return arcStartAngle + fraction * arcSpan
     }
 
