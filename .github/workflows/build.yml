@@ -48,26 +48,6 @@ jobs:
             ONLY_ACTIVE_ARCH=YES \
             ARCHS=arm64 2>&1 | tee build.log || (echo "=== DETALLE DE ERRORES ===" && grep -i "error:" build.log && exit 1)
 
-      - name: Publish build errors
-        if: failure()
-        run: |
-          set +e
-          rm -f ci-errors.txt
-          if [ -f build.log ]; then
-            grep -i "error:" build.log | head -200 > ci-errors.txt
-            if [ ! -s ci-errors.txt ]; then
-              echo "Sin lineas 'error:' en build.log. Ultimas 150 lineas:" > ci-errors.txt
-              tail -150 build.log >> ci-errors.txt
-            fi
-          else
-            echo "build.log no existe: el fallo ocurrio antes del paso de compilacion." > ci-errors.txt
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f ci-errors.txt
-          git commit -m "Record CI build errors [skip ci]"
-          git push origin HEAD:main
-
       - name: Package IPA
         run: |
           mkdir -p Payload
@@ -79,3 +59,44 @@ jobs:
         with:
           name: AppGym-Unsigned-IPA
           path: AppGym.ipa
+
+      - name: Publish CI status branch
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          set +e
+          status_file="ci-status.txt"
+
+          {
+            echo "result=$JOB_STATUS"
+            echo "commit=$GITHUB_SHA"
+            echo "run=$GITHUB_RUN_ID"
+            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$status_file"
+
+          if [ "$JOB_STATUS" != "success" ]; then
+            echo "" >> "$status_file"
+            echo "--- errors ---" >> "$status_file"
+            if [ -f build.log ]; then
+              errors="$(grep -i "error:" build.log | head -200)"
+              if [ -n "$errors" ]; then
+                echo "$errors" >> "$status_file"
+              else
+                echo "Sin lineas 'error:' en build.log. Ultimas 150 lineas:" >> "$status_file"
+                tail -150 build.log >> "$status_file"
+              fi
+            else
+              echo "build.log no existe: el fallo ocurrio antes del paso de compilacion." >> "$status_file"
+            fi
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          blob=$(git hash-object -w "$status_file")
+          tree=$(printf '100644 blob %s\t%s\n' "$blob" "$status_file" | git mktree)
+          commit=$(git commit-tree "$tree" -m "CI status: $JOB_STATUS [skip ci]")
+
+          git push -f origin "$commit:refs/heads/ci-status" \
+            || echo "No se pudo publicar la rama ci-status (comprueba los permisos del token)."
