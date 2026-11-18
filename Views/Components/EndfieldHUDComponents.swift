@@ -242,19 +242,18 @@ public struct TacticalPanel<Content: View>: View {
                 .padding(contentPadding)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        // Relleno con la forma angular en lugar de `.clipShape`: el contenido
-        // siempre va dentro del padding, así que recortar solo añadía una
-        // máscara fuera de pantalla por tarjeta (caro al hacer scroll).
-        .background(ChamferedRectangle(cut: EndfieldMetrics.cornerCut).fill(EndfieldPalette.bgPanel))
-        .overlay {
-            ChamferedRectangle(cut: EndfieldMetrics.cornerCut)
-                .stroke(borderColor, lineWidth: EndfieldMetrics.borderWidth)
-        }
-        .overlay {
-            if showsCorners {
-                TacticalCornerCrosses()
-            }
-        }
+        // Relleno, borde y cruces dibujados en una sola capa. Antes eran un
+        // relleno + dos `overlay` (trazo y cruces) por panel, y con varias
+        // tarjetas en pantalla eso pesa al hacer scroll.
+        .background(
+            TacticalPanelChrome(
+                cut: EndfieldMetrics.cornerCut,
+                fill: EndfieldPalette.bgPanel,
+                stroke: borderColor,
+                lineWidth: EndfieldMetrics.borderWidth,
+                showsCorners: showsCorners
+            )
+        )
     }
 
     // MARK: Cabecera
@@ -314,6 +313,104 @@ public struct TacticalPanel<Content: View>: View {
 
     private var borderColor: Color {
         return accentBorder ? EndfieldPalette.borderActive : EndfieldPalette.borderSubtle
+    }
+}
+
+// MARK: - 5b. Cromo del panel en una sola capa
+
+/// Dibuja el relleno angular, el borde y las cuatro cruces de esquina en un
+/// único `Canvas`, en lugar de acumular capas superpuestas por panel.
+public struct TacticalPanelChrome: View {
+    private let cut: CGFloat
+    private let fill: Color
+    private let stroke: Color
+    private let lineWidth: CGFloat
+    private let showsCorners: Bool
+    private let cornerTint: Color
+    private let cornerSize: CGFloat
+    private let cornerInset: CGFloat
+
+    public init(
+        cut: CGFloat = EndfieldMetrics.cornerCut,
+        fill: Color = EndfieldPalette.bgPanel,
+        stroke: Color = EndfieldPalette.borderSubtle,
+        lineWidth: CGFloat = EndfieldMetrics.borderWidth,
+        showsCorners: Bool = true,
+        cornerTint: Color = EndfieldPalette.accentYellow.opacity(0.55),
+        cornerSize: CGFloat = 6.0,
+        cornerInset: CGFloat = 4.0
+    ) {
+        self.cut = cut
+        self.fill = fill
+        self.stroke = stroke
+        self.lineWidth = lineWidth
+        self.showsCorners = showsCorners
+        self.cornerTint = cornerTint
+        self.cornerSize = cornerSize
+        self.cornerInset = cornerInset
+    }
+
+    public var body: some View {
+        let cornerCut: CGFloat = cut
+        let fillColor: Color = fill
+        let strokeColor: Color = stroke
+        let borderWidth: CGFloat = lineWidth
+        let drawCorners: Bool = showsCorners
+        let crossTint: Color = cornerTint
+        let arm: CGFloat = max(cornerSize, 2.0)
+        let inset: CGFloat = cornerInset
+
+        Canvas { context, size in
+            let bounds: CGRect = CGRect(origin: .zero, size: size)
+            let limit: CGFloat = min(bounds.width, bounds.height) * 0.5
+            let corner: CGFloat = min(cornerCut, limit)
+
+            var panel: Path = Path()
+            panel.move(to: CGPoint(x: bounds.minX, y: bounds.minY))
+            panel.addLine(to: CGPoint(x: bounds.maxX - corner, y: bounds.minY))
+            panel.addLine(to: CGPoint(x: bounds.maxX, y: bounds.minY + corner))
+            panel.addLine(to: CGPoint(x: bounds.maxX, y: bounds.maxY))
+            panel.addLine(to: CGPoint(x: bounds.minX + corner, y: bounds.maxY))
+            panel.addLine(to: CGPoint(x: bounds.minX, y: bounds.maxY - corner))
+            panel.closeSubpath()
+
+            context.fill(panel, with: .color(fillColor))
+            context.stroke(panel, with: .color(strokeColor), lineWidth: borderWidth)
+
+            guard drawCorners else { return }
+
+            let thickness: CGFloat = 1.0
+            let centers: [CGPoint] = [
+                CGPoint(x: inset + arm / 2.0, y: inset + arm / 2.0),
+                CGPoint(x: size.width - inset - arm / 2.0, y: inset + arm / 2.0),
+                CGPoint(x: inset + arm / 2.0, y: size.height - inset - arm / 2.0),
+                CGPoint(x: size.width - inset - arm / 2.0, y: size.height - inset - arm / 2.0)
+            ]
+
+            var crosses: Path = Path()
+            for center in centers {
+                crosses.addRect(
+                    CGRect(
+                        x: center.x - arm / 2.0,
+                        y: center.y - thickness / 2.0,
+                        width: arm,
+                        height: thickness
+                    )
+                )
+                crosses.addRect(
+                    CGRect(
+                        x: center.x - thickness / 2.0,
+                        y: center.y - arm / 2.0,
+                        width: thickness,
+                        height: arm
+                    )
+                )
+            }
+
+            context.fill(crosses, with: .color(crossTint))
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
