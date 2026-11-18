@@ -596,6 +596,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 		8B9AED166362064A77B2BB22 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "Widgets/AppGymWidgets.entitlements";
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -627,6 +628,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 		8CD16B2EF96067BC665AA9D9 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "Widgets/AppGymWidgets.entitlements";
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
