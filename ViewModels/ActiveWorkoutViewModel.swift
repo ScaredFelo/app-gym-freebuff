@@ -123,7 +123,10 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         self.isShowingSummary = session.endDate != nil
         setupInitialSets(modelContext: modelContext)
         captureOriginalStructure()
-        HealthKitManager.shared.requestAuthorization()
+        if UserSettingsManager.isHeartRateTrackingEnabled,
+           UserSettingsManager.heartRateDeviceType == .airPods {
+            HealthKitManager.shared.requestAuthorization()
+        }
         let hasStoredStateForSession = ActiveWorkoutStateStore.load()?.activeWorkoutID == session.id
         restorePersistedStateIfNeeded(modelContext: modelContext)
         if !hasStoredStateForSession {
@@ -395,6 +398,11 @@ public final class ActiveWorkoutViewModel: ObservableObject {
                 let condition: RestCondition
                 if case .timer = exercise.defaultRestCondition {
                     condition = .timer(seconds: max(0, routineExercise.restSeconds))
+                } else if case .bpmDrop = exercise.defaultRestCondition,
+                          !UserSettingsManager.isHeartRateTrackingEnabled {
+                    // Sin pulsómetro no hay forma de cerrar un descanso por
+                    // recuperación: usamos el tiempo configurado del ejercicio.
+                    condition = .timer(seconds: max(0, routineExercise.restSeconds))
                 } else {
                     condition = exercise.defaultRestCondition
                 }
@@ -596,6 +604,13 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         bpmObserverTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.isResting, !self.isRestPaused else { return }
+
+                // Si el usuario desactiva la medición, el descanso por BPM no
+                // puede completarse nunca: se cierra para no bloquear la serie.
+                guard UserSettingsManager.isHeartRateTrackingEnabled else {
+                    self.finishRest()
+                    return
+                }
 
                 let currentBPM = BPMManager.shared.currentBPM
                 if currentBPM > 0, currentBPM <= targetBpm {
@@ -1185,7 +1200,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         LiveActivityManager.shared.startActivity(
             workoutName: routine.name,
             snapshot: makeLiveActivitySnapshot(),
-            bpm: HealthKitManager.shared.currentBPM
+            bpm: BPMManager.shared.currentBPM
         )
     }
 
@@ -1537,13 +1552,23 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     /// Inicia la escucha continua de pulsaciones (BLE + HealthKit). Se enlaza
     /// con el ciclo de vida del entrenamiento, no con la vista.
     private func startBPMTracking() {
+        // El callback se registra siempre: si el usuario activa la medición a
+        // mitad del entrenamiento, las lecturas empiezan a llegar sin reiniciar.
         BPMManager.shared.onBPMReceived = { [weak self] bpm in
             guard let self else { return }
             Task { @MainActor in
                 self.onReceiveBPM(Double(bpm))
             }
         }
+
+        // Sincroniza el sensor con los ajustes guardados y arranca el escaneo
+        // (el manager lo ignora si la medición está desactivada).
+        BPMManager.shared.applySettings()
         BPMManager.shared.startScanning()
+
+        // Apple Salud solo se consulta cuando el dispositivo son los AirPods.
+        guard UserSettingsManager.isHeartRateTrackingEnabled,
+              UserSettingsManager.heartRateDeviceType == .airPods else { return }
         HealthKitManager.shared.startHeartRateQuery()
     }
 
@@ -1561,6 +1586,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     /// sin depender de temporizadores.
     public func onReceiveBPM(_ bpm: Double) {
         guard bpm > 0 else { return }
+        guard UserSettingsManager.isHeartRateTrackingEnabled else { return }
         let value: Int = Int(bpm.rounded())
         addBPMPoint(value)
         LiveActivityManager.shared.updateBPM(value)

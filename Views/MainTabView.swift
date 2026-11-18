@@ -63,7 +63,10 @@ public struct MainTabView: View {
             .interactiveDismissDisabled(true)
         }
         .onAppear {
-            HealthKitManager.shared.requestAuthorization()
+            if UserSettingsManager.isHeartRateTrackingEnabled,
+               UserSettingsManager.heartRateDeviceType == .airPods {
+                HealthKitManager.shared.requestAuthorization()
+            }
             scheduleRestoreIfNeeded()
         }
     }

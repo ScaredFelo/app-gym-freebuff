@@ -18,6 +18,8 @@ public struct BigPictureWorkoutView: View {
     @State private var weightInput = ""
     @FocusState private var isWeightFieldFocused: Bool
     @State private var showingCancelConfirmation = false
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
 
     public init(viewModel: ActiveWorkoutViewModel, modelContext: ModelContext, onWorkoutFinished: (() -> Void)? = nil) {
         self._viewModel = ObservedObject(wrappedValue: viewModel)
@@ -55,8 +57,10 @@ public struct BigPictureWorkoutView: View {
                     // MARK: - Temporizador integrado o botón registrar serie
                     restTimerProgressView
 
-                    // MARK: - Gráfica BPM (visible durante todo el entrenamiento)
-                    BPMChartView(feed: viewModel.bpmFeed)
+                    // MARK: - Gráfica BPM (solo si el usuario mide pulsaciones)
+                    if isHeartRateTrackingEnabled {
+                        BPMChartView(feed: viewModel.bpmFeed)
+                    }
 
                     // MARK: - Parrilla de series (historial vs nueva marca)
                     BigPictureSetsGridView(
@@ -493,19 +497,25 @@ struct BigPictureControlsView: View {
 
 // MARK: - Lectura de pulso aislada
 
-/// Única vista de Big Picture que observa `HealthKitManager`: las lecturas del
+/// Única vista de Big Picture que observa `BPMManager`: las lecturas del
 /// sensor (hasta 4 Hz) solo redibujan este indicador y no la pantalla entera.
 struct BigPictureBPMReadout: View {
-    @ObservedObject private var healthKitManager = HealthKitManager.shared
+    @ObservedObject private var bpmManager = BPMManager.shared
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
+
+    private var isReadingPulse: Bool {
+        return isHeartRateTrackingEnabled && bpmManager.currentBPM > 0
+    }
 
     var body: some View {
         HStack(spacing: 4.0) {
             EndfieldLiveDot(size: 5.0)
 
-            Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM)" : "--")
+            Text(isReadingPulse ? "\(bpmManager.currentBPM)" : "--")
                 .font(EndfieldFont.mono(12.0, weight: .bold))
                 .monospacedDigit()
-                .foregroundStyle(healthKitManager.currentBPM > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
+                .foregroundStyle(isReadingPulse ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
 
             Text("BPM")
                 .font(EndfieldFont.label(7.0))

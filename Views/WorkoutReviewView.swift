@@ -14,6 +14,8 @@ public struct WorkoutReviewView: View {
     private let onFinish: (() -> Void)?
 
     @State private var metrics: WorkoutMetrics
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
 
     public init(
         session: WorkoutSession,
@@ -45,7 +47,9 @@ public struct WorkoutReviewView: View {
 
                     WorkoutReviewMainMetricsView(metrics: metrics)
 
-                    WorkoutReviewHeartRateSectionView(metrics: metrics)
+                    if isHeartRateTrackingEnabled {
+                        WorkoutReviewHeartRateSectionView(metrics: metrics)
+                    }
 
                     WorkoutReviewQualitySectionView(metrics: metrics)
                 }

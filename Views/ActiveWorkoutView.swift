@@ -643,29 +643,31 @@ public struct ActiveWorkoutView: View {
     }
 
     /// Célula de pulso aislada: es la única vista del HUD que observa
-    /// `HealthKitManager`. Las lecturas del sensor (hasta 4 Hz) solo redibujan
+    /// `BPMManager`. Las lecturas del sensor (hasta 4 Hz) solo redibujan
     /// este texto, no la lista completa de ejercicios.
     private struct PulseMetricCell: View {
-        @ObservedObject private var healthKitManager = HealthKitManager.shared
+        @ObservedObject private var bpmManager = BPMManager.shared
+        @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+        private var isHeartRateTrackingEnabled: Bool = true
 
         var body: some View {
             VStack(alignment: .leading, spacing: 2.0) {
                 HStack(spacing: 4.0) {
                     EndfieldLiveDot(size: 5.0)
 
-                    Text("LIVE // 4HZ")
+                    Text(isHeartRateTrackingEnabled ? "LIVE // 4HZ" : "BPM OFF")
                         .font(EndfieldFont.label(8.0))
                         .tracking(1.0)
-                        .foregroundStyle(EndfieldPalette.accentRed.opacity(0.9))
+                        .foregroundStyle(isHeartRateTrackingEnabled ? EndfieldPalette.accentRed.opacity(0.9) : EndfieldPalette.textSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.6)
                 }
 
                 HStack(alignment: .firstTextBaseline, spacing: 3.0) {
-                    Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM)" : "--")
+                    Text(isHeartRateTrackingEnabled && bpmManager.currentBPM > 0 ? "\(bpmManager.currentBPM)" : "--")
                         .font(EndfieldFont.mono(19.0, weight: .bold))
                         .monospacedDigit()
-                        .foregroundStyle(healthKitManager.currentBPM > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
+                        .foregroundStyle(isHeartRateTrackingEnabled && bpmManager.currentBPM > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
                         .lineLimit(1)
                         .contentTransition(.numericText())
 
@@ -685,9 +687,12 @@ public struct ActiveWorkoutView: View {
     private struct HealthDiagnosticBanner: View {
         @ObservedObject private var healthKitManager = HealthKitManager.shared
         @ObservedObject private var liveActivityManager = LiveActivityManager.shared
+        @ObservedObject private var bpmManager = BPMManager.shared
+        @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+        private var isHeartRateTrackingEnabled: Bool = true
 
         var body: some View {
-            if healthKitManager.currentBPM == 0 {
+            if isHeartRateTrackingEnabled && bpmManager.currentBPM == 0 {
                 TacticalPanel(code: "SYS.ERR", title: "SENSOR CARDÍACO", accentBorder: false, contentPadding: 12.0) {
                     VStack(alignment: .leading, spacing: 9.0) {
                         HStack(spacing: 7.0) {
@@ -703,11 +708,19 @@ public struct ActiveWorkoutView: View {
                             Spacer(minLength: 0.0)
                         }
 
-                        Text("ESTADO: \(healthKitManager.debugMessage)")
+                        Text("ESTADO: \(bpmManager.statusText)")
                             .font(EndfieldFont.mono(10.0))
                             .foregroundStyle(EndfieldPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                             .multilineTextAlignment(.leading)
+
+                        if bpmManager.deviceType == .airPods {
+                            Text("HEALTHKIT: \(healthKitManager.debugMessage)")
+                                .font(EndfieldFont.mono(10.0))
+                                .foregroundStyle(EndfieldPalette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .multilineTextAlignment(.leading)
+                        }
 
                         Text("LIVE_ACTIVITY: \(liveActivityManager.debugMessage)")
                             .font(EndfieldFont.mono(10.0))
@@ -716,13 +729,13 @@ public struct ActiveWorkoutView: View {
                             .multilineTextAlignment(.leading)
 
                         Button {
-                            HealthKitManager.shared.requestAuthorization()
+                            bpmManager.reconnect()
                         } label: {
                             HStack(spacing: 6.0) {
                                 Image(systemName: "heart")
                                     .font(EndfieldFont.mono(10.0, weight: .bold))
 
-                                Text("CONECTAR APPLE SALUD / AIRPODS")
+                                Text(bpmManager.deviceType == .airPods ? "RECONECTAR AIRPODS" : "RECONECTAR SENSOR BPM")
                                     .font(EndfieldFont.mono(10.0, weight: .bold))
                                     .tracking(0.8)
                                     .lineLimit(1)
@@ -730,7 +743,7 @@ public struct ActiveWorkoutView: View {
                             }
                         }
                         .buttonStyle(EndfieldSecondaryButtonStyle(compact: true, tint: EndfieldPalette.accentRed))
-                        .accessibilityLabel("Conectar Apple Salud o AirPods")
+                        .accessibilityLabel(bpmManager.deviceType == .airPods ? "Reconectar AirPods" : "Reconectar sensor de pulso")
                     }
                 }
             }

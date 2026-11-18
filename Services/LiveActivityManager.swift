@@ -70,7 +70,7 @@ final class LiveActivityManager: ObservableObject {
 
     func startActivity(workoutName: String, snapshot: Snapshot, bpm: Int) {
         self.snapshot = snapshot
-        self.bpm = max(0, bpm)
+        self.bpm = UserSettingsManager.isHeartRateTrackingEnabled ? max(0, bpm) : 0
         self.pendingWorkoutName = workoutName
         self.startAttempts = 0
         self.lastActivityUpdateDate = .distantPast
@@ -223,6 +223,8 @@ final class LiveActivityManager: ObservableObject {
     /// bloqueada. El throttling es por marca de tiempo (una escritura cada
     /// 1,5 s) para no agotar el presupuesto de ActivityKit.
     func updateBPM(_ bpm: Int) {
+        guard UserSettingsManager.isHeartRateTrackingEnabled else { return }
+
         let value: Int = max(0, bpm)
         guard value != self.bpm else { return }
         self.bpm = value
@@ -320,7 +322,7 @@ final class LiveActivityManager: ObservableObject {
         return WorkoutActivityAttributes.ContentState(
             exerciseName: snapshot.exerciseName,
             completedSets: snapshot.completedSets,
-            currentBPM: max(0, bpm),
+            currentBPM: UserSettingsManager.isHeartRateTrackingEnabled ? max(0, bpm) : 0,
             isResting: isResting,
             restStartDate: restStartDate,
             restEndDate: restEndDate

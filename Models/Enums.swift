@@ -58,3 +58,54 @@ public enum RestCondition: Codable, Sendable, Hashable {
     case timer(seconds: Int)
     case bpmDrop(targetBpm: Int)
 }
+
+/// Dispositivo que el usuario usa para medir la frecuencia cardíaca.
+///
+/// - `airPods`: AirPods Pro (o Apple Watch). Las lecturas llegan a través de
+///   Apple Salud / HealthKit.
+/// - `heartRateBand`: pulsera, banda o sensor óptico (Amazfit, Polar, Garmin,
+///   Coospo...) que emite el servicio BLE estándar de pulso (`0x180D`).
+public enum HeartRateDeviceType: String, Codable, CaseIterable, Sendable, Identifiable {
+    case airPods = "airPods"
+    case heartRateBand = "heartRateBand"
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .airPods:
+            return "AirPods Pro 3"
+        case .heartRateBand:
+            return "Pulsera / sensor BPM"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .airPods:
+            return "Pulsaciones vía Apple Salud"
+        case .heartRateBand:
+            return "Bluetooth · servicio HR 0x180D"
+        }
+    }
+
+    public var symbolName: String {
+        switch self {
+        case .airPods:
+            return "airpodspro"
+        case .heartRateBand:
+            return "heart.circle"
+        }
+    }
+
+    /// Los sensores BLE se conectan directamente; los AirPods solo entregan
+    /// datos a través de HealthKit.
+    public var usesBluetoothSensor: Bool {
+        return self == .heartRateBand
+    }
+
+    /// Compatibilidad con valores guardados antiguos o desconocidos.
+    public static func fromStoredRawValue(_ rawValue: String) -> HeartRateDeviceType {
+        return HeartRateDeviceType(rawValue: rawValue) ?? .heartRateBand
+    }
+}

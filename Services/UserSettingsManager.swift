@@ -10,6 +10,11 @@ enum UserSettingsManager {
     static let hrMaxBPMKey = "hrMaxBPM"
     static let hrRestBPMKey = "hrRestBPM"
 
+    // Medición de pulsaciones
+    static let isHeartRateTrackingEnabledKey = "isHeartRateTrackingEnabled"
+    static let heartRateDeviceTypeKey = "heartRateDeviceType"
+    static let heartRateDeviceBrandKey = "heartRateDeviceBrand"
+
     // MARK: - Defaults
 
     /// Peso de barra Multipower por defecto (kg).
@@ -68,6 +73,32 @@ enum UserSettingsManager {
     }
 
     // MARK: - Heart rate
+
+    /// Indica si el usuario quiere medir y registrar pulsaciones. Por defecto
+    /// está activo para no romper las sesiones de quien ya usaba un sensor; al
+    /// desactivarlo no se escanea Bluetooth, no se leen datos de HealthKit y la
+    /// interfaz oculta los BPM.
+    static var isHeartRateTrackingEnabled: Bool {
+        guard UserDefaults.standard.object(forKey: isHeartRateTrackingEnabledKey) != nil else {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: isHeartRateTrackingEnabledKey)
+    }
+
+    /// Tipo de dispositivo configurado para medir pulsaciones.
+    static var heartRateDeviceType: HeartRateDeviceType {
+        guard let raw = UserDefaults.standard.string(forKey: heartRateDeviceTypeKey) else {
+            return .heartRateBand
+        }
+        return HeartRateDeviceType.fromStoredRawValue(raw)
+    }
+
+    /// Marca o modelo de la pulsera configurada (etiqueta de interfaz). Vacío
+    /// cuando el usuario no ha escrito nada.
+    static var heartRateDeviceBrand: String {
+        let stored: String = UserDefaults.standard.string(forKey: heartRateDeviceBrandKey) ?? ""
+        return stored.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     /// Pulsaciones máximas configuradas (190 BPM si no hay valor válido).
     static var hrMax: Double {

@@ -17,6 +17,15 @@ struct SettingsView: View {
     @AppStorage(UserSettingsManager.isBigPictureModeEnabledKey)
     private var isBigPictureModeEnabled: Bool = false
 
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
+
+    @AppStorage(UserSettingsManager.heartRateDeviceTypeKey)
+    private var heartRateDeviceTypeRaw: String = HeartRateDeviceType.heartRateBand.rawValue
+
+    @AppStorage(UserSettingsManager.heartRateDeviceBrandKey)
+    private var heartRateDeviceBrand: String = ""
+
     /// Desplegable de discos: plegado por defecto.
     @State private var arePlatesExpanded: Bool = false
 
@@ -35,6 +44,10 @@ struct SettingsView: View {
         return UserSettingsManager.parsePlates(availablePlatesRaw)
     }
 
+    private var selectedHeartRateDevice: HeartRateDeviceType {
+        return HeartRateDeviceType.fromStoredRawValue(heartRateDeviceTypeRaw)
+    }
+
     var body: some View {
         ZStack {
             TechnicalGridBackground()
@@ -44,6 +57,7 @@ struct SettingsView: View {
                     equipmentPanel
                     platesPanel
                     visualModePanel
+                    heartRatePanel
                     backupPanel
 
                     if !safetyCopies.isEmpty {
@@ -201,6 +215,155 @@ struct SettingsView: View {
                     .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    // MARK: - Pulsaciones
+
+    private var heartRatePanel: some View {
+        TacticalPanel(code: "BPM.04", title: "Pulsaciones", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 12.0) {
+                Toggle(isOn: $isHeartRateTrackingEnabled) {
+                    HStack(spacing: 7.0) {
+                        Image(systemName: "heart.fill")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.accentRed)
+
+                        Text("MEDIR PULSACIONES")
+                            .font(EndfieldFont.label(10.0))
+                            .tracking(1.0)
+                            .foregroundStyle(EndfieldPalette.textPrimary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                }
+                .tint(EndfieldPalette.accentYellow)
+
+                Text(isHeartRateTrackingEnabled
+                     ? "Muestra los BPM durante el entrenamiento, en la Live Activity y en las estadísticas al terminar."
+                     : "Medición desactivada: el entrenamiento funciona igual, pero sin datos de frecuencia cardíaca.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if isHeartRateTrackingEnabled {
+                    Rectangle()
+                        .fill(EndfieldPalette.borderSubtle)
+                        .frame(height: 1.0)
+
+                    Text("DISPOSITIVO DE MEDICIÓN")
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+
+                    VStack(spacing: 6.0) {
+                        ForEach(HeartRateDeviceType.allCases) { (type: HeartRateDeviceType) in
+                            heartRateDeviceRow(type)
+                        }
+                    }
+
+                    if selectedHeartRateDevice == .heartRateBand {
+                        heartRateBrandBlock
+                    }
+
+                    HeartRateSensorStatusView(deviceType: selectedHeartRateDevice)
+                }
+            }
+        }
+        .onChange(of: isHeartRateTrackingEnabled) { _, _ in
+            BPMManager.shared.applySettings()
+        }
+        .onChange(of: heartRateDeviceTypeRaw) { _, _ in
+            BPMManager.shared.applySettings()
+        }
+        .onChange(of: heartRateDeviceBrand) { _, _ in
+            BPMManager.shared.applySettings()
+        }
+    }
+
+    private func heartRateDeviceRow(_ type: HeartRateDeviceType) -> some View {
+        let isSelected: Bool = selectedHeartRateDevice == type
+
+        return Button {
+            heartRateDeviceTypeRaw = type.rawValue
+            BPMManager.shared.applySettings()
+        } label: {
+            HStack(spacing: 9.0) {
+                Image(systemName: type.symbolName)
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+                    .foregroundStyle(isSelected ? EndfieldPalette.accentYellow : EndfieldPalette.textSecondary)
+                    .frame(width: 18.0)
+
+                VStack(alignment: .leading, spacing: 2.0) {
+                    Text(type.title.uppercased())
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(0.9)
+                        .foregroundStyle(EndfieldPalette.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+
+                    Text(type.subtitle)
+                        .font(EndfieldFont.mono(9.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+
+                Spacer(minLength: 4.0)
+
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(isSelected ? EndfieldPalette.accentYellow : EndfieldPalette.textSecondary.opacity(0.6))
+                    .fixedSize()
+            }
+            .padding(9.0)
+            .background(EndfieldPalette.bgElevated)
+            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+            .overlay {
+                ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                    .stroke(
+                        isSelected ? EndfieldPalette.accentYellow.opacity(0.55) : EndfieldPalette.borderSubtle,
+                        lineWidth: 1.0
+                    )
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var heartRateBrandBlock: some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            Text("MARCA / MODELO")
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+
+            TextField(
+                "",
+                text: $heartRateDeviceBrand,
+                prompt: Text("Amazfit, Polar, Garmin...")
+                    .foregroundColor(EndfieldPalette.textSecondary.opacity(0.6))
+            )
+            .textFieldStyle(.plain)
+            .font(EndfieldFont.mono(12.0, weight: .bold))
+            .foregroundStyle(EndfieldPalette.textPrimary)
+            .tint(EndfieldPalette.accentYellow)
+            .autocorrectionDisabled()
+            .textInputAutocapitalization(.words)
+            .padding(.vertical, 8.0)
+            .padding(.horizontal, 8.0)
+            .background(EndfieldPalette.bgElevated)
+            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+            .overlay {
+                ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                    .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+            }
+
+            Text("La conexión usa el servicio BLE estándar de pulso (0x180D). Si la pulsera no aparece, activa la emisión de pulso por Bluetooth en su app (Zepp, Polar Flow, Garmin Connect...).")
+                .font(EndfieldFont.mono(9.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -381,6 +544,94 @@ struct SettingsView: View {
     private func presentBackupResult(message: String) {
         backupResultMessage = message
         showBackupResultAlert = true
+    }
+}
+
+// MARK: - Estado del sensor cardíaco
+
+/// Vista aislada del sensor: las lecturas llegan a varios Hz y así solo se
+/// redibuja este bloque, no toda la pantalla de Ajustes.
+private struct HeartRateSensorStatusView: View {
+    @ObservedObject private var bpmManager = BPMManager.shared
+
+    let deviceType: HeartRateDeviceType
+
+    private var statusTint: Color {
+        return bpmManager.currentBPM > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary
+    }
+
+    private var deviceLabel: String {
+        let name: String = bpmManager.connectedDeviceName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? deviceType.title.uppercased() : name.uppercased()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7.0) {
+            HStack(spacing: 6.0) {
+                EndfieldLiveDot(size: 5.0)
+
+                Text("ESTADO SENSOR")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+
+                Spacer(minLength: 4.0)
+
+                Text(bpmManager.isConnected ? "ENLACE OK" : "SIN ENLACE")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.8)
+                    .foregroundStyle(bpmManager.isConnected ? EndfieldPalette.accentCyan : EndfieldPalette.textSecondary)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 4.0) {
+                Text(bpmManager.currentBPM > 0 ? "\(bpmManager.currentBPM)" : "--")
+                    .font(EndfieldFont.mono(22.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(statusTint)
+
+                Text("BPM")
+                    .font(EndfieldFont.label(8.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize()
+
+                Spacer(minLength: 4.0)
+
+                Text(deviceLabel)
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.6)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+
+            Text(bpmManager.statusText.uppercased())
+                .font(EndfieldFont.mono(9.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button {
+                bpmManager.reconnect()
+            } label: {
+                HStack(spacing: 6.0) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(EndfieldFont.mono(10.0, weight: .bold))
+
+                    Text(deviceType == .airPods ? "RECONECTAR AIRPODS" : "RECONECTAR SENSOR")
+                        .font(EndfieldFont.mono(10.0, weight: .bold))
+                        .tracking(0.8)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+            }
+            .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
+        }
+        .padding(9.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
     }
 }
 

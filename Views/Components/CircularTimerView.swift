@@ -243,14 +243,16 @@ private struct BPMDialLayer: View {
     let arcStartAngle: Double
     let arcSpan: Double
 
-    @ObservedObject private var healthKitManager = HealthKitManager.shared
+    @ObservedObject private var bpmManager = BPMManager.shared
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
 
     private var effectiveBPM: Int {
-        healthKitManager.currentBPM > 0 ? min(max(healthKitManager.currentBPM, 50), 210) : 50
+        bpmManager.currentBPM > 0 ? min(max(bpmManager.currentBPM, 50), 210) : 50
     }
 
     private var zoneColor: Color {
-        BPMZone.color(for: healthKitManager.currentBPM)
+        BPMZone.color(for: bpmManager.currentBPM)
     }
 
     private var needleAngle: Double {
@@ -277,6 +279,7 @@ private struct BPMDialLayer: View {
         }
         .frame(width: dialSize, height: dialSize)
         .allowsHitTesting(false)
+        .opacity(isHeartRateTrackingEnabled ? 1.0 : 0.0)
     }
 
     private var needle: some View {
@@ -298,7 +301,7 @@ private struct BPMDialLayer: View {
         .frame(width: dialSize, height: dialSize)
         .rotationEffect(.degrees(needleAngle))
         .opacity(0.9)
-        .animation(.easeOut(duration: 0.28), value: healthKitManager.currentBPM)
+        .animation(.easeOut(duration: 0.28), value: bpmManager.currentBPM)
     }
 
     private func tickMark(for bpm: Int) -> some View {
@@ -332,12 +335,19 @@ private struct BPMDialLayer: View {
 
 /// Lectura de BPM del bloque central, aislada del resto del temporizador.
 private struct BPMReadoutLabel: View {
-    @ObservedObject private var healthKitManager = HealthKitManager.shared
+    @ObservedObject private var bpmManager = BPMManager.shared
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
+
+    private var bpmText: String {
+        guard isHeartRateTrackingEnabled, bpmManager.currentBPM > 0 else { return "-- BPM" }
+        return "\(bpmManager.currentBPM) BPM"
+    }
 
     var body: some View {
-        Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM) BPM" : "-- BPM")
+        Text(bpmText)
             .font(EndfieldFont.mono(11.0, weight: .bold))
             .monospacedDigit()
-            .foregroundStyle(BPMZone.color(for: healthKitManager.currentBPM))
+            .foregroundStyle(BPMZone.color(for: bpmManager.currentBPM))
     }
 }
