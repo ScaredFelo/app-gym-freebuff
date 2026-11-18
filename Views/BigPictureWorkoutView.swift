@@ -130,19 +130,7 @@ public struct BigPictureWorkoutView: View {
 
             Spacer(minLength: 4.0)
 
-            HStack(spacing: 4.0) {
-                EndfieldLiveDot(size: 5.0)
-
-                Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM)" : "--")
-                    .font(EndfieldFont.mono(12.0, weight: .bold))
-                    .monospacedDigit()
-                    .foregroundStyle(healthKitManager.currentBPM > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
-
-                Text("BPM")
-                    .font(EndfieldFont.label(7.0))
-                    .foregroundStyle(EndfieldPalette.textSecondary)
-            }
-            .fixedSize()
+            BigPictureBPMReadout()
         }
         .padding(.horizontal, 16.0)
         .padding(.top, 8.0)
@@ -500,6 +488,30 @@ struct BigPictureControlsView: View {
             return String(Int(weight))
         }
         return String(format: "%.1f", weight)
+    }
+}
+
+// MARK: - Lectura de pulso aislada
+
+/// Única vista de Big Picture que observa `HealthKitManager`: las lecturas del
+/// sensor (hasta 4 Hz) solo redibujan este indicador y no la pantalla entera.
+struct BigPictureBPMReadout: View {
+    @ObservedObject private var healthKitManager = HealthKitManager.shared
+
+    var body: some View {
+        HStack(spacing: 4.0) {
+            EndfieldLiveDot(size: 5.0)
+
+            Text(healthKitManager.currentBPM > 0 ? "\(healthKitManager.currentBPM)" : "--")
+                .font(EndfieldFont.mono(12.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(healthKitManager.currentBPM > 0 ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
+
+            Text("BPM")
+                .font(EndfieldFont.label(7.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
+        }
+        .fixedSize()
     }
 }
 

@@ -1,0 +1,9 @@
+﻿2026-11-18T14:37:32.8755150Z ##[group]Run sudo rm -rf /Applications/Xcode_15*.app
+2026-11-18T14:37:32.8756600Z [36;1msudo rm -rf /Applications/Xcode_15*.app[0m
+2026-11-18T14:37:32.8757850Z [36;1msudo rm -rf /Applications/Xcode_14*.app[0m
+2026-11-18T14:37:32.8823710Z [36;1msudo rm -rf /usr/local/share/android-sdk[0m
+2026-11-18T14:37:32.8825110Z [36;1msudo rm -rf /usr/local/share/dotnet[0m
+2026-11-18T14:37:32.8826350Z [36;1msudo rm -rf /Library/Developer/CoreSimulator/Caches[0m
+2026-11-18T14:37:32.8827730Z [36;1mrm -rf ~/Library/Caches/com.apple.dt.XCode[0m
+2026-11-18T14:37:32.8878370Z shell: /bin/bash -e {0}
+2026-11-18T14:37:32.8879520Z ##[endgroup]
