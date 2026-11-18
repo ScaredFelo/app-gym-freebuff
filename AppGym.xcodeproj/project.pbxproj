@@ -56,6 +56,7 @@
 		AA5000000000000000000003 /* EndfieldTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000001 /* EndfieldTheme.swift */; };
 		AA5000000000000000000002 /* EndfieldHUDComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA4000000000000000000002 /* EndfieldHUDComponents.swift */; };
 		AB1000000000000000000001 /* WidgetStreakStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000001 /* WidgetStreakStore.swift */; };
+		AB1000000000000000000005 /* WidgetStreakStore+App.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000004 /* WidgetStreakStore+App.swift */; };
 		AB1000000000000000000002 /* WidgetStreakStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000001 /* WidgetStreakStore.swift */; };
 		AB1000000000000000000003 /* WorkoutStreakWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000002 /* WorkoutStreakWidget.swift */; };
 		AB1000000000000000000004 /* WeeklyMuscleVolumeBarChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000003 /* WeeklyMuscleVolumeBarChart.swift */; };
@@ -137,6 +138,7 @@
 AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndfieldTheme.swift; sourceTree = "<group>"; };
 		AA4000000000000000000002 /* EndfieldHUDComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EndfieldHUDComponents.swift; sourceTree = "<group>"; };
 		AB0000000000000000000001 /* WidgetStreakStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetStreakStore.swift; sourceTree = "<group>"; };
+		AB0000000000000000000004 /* WidgetStreakStore+App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WidgetStreakStore+App.swift"; sourceTree = "<group>"; };
 		AB0000000000000000000002 /* WorkoutStreakWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutStreakWidget.swift; sourceTree = "<group>"; };
 		AB0000000000000000000003 /* WeeklyMuscleVolumeBarChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeeklyMuscleVolumeBarChart.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -203,6 +205,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 				AA2000000000000000000021 /* ExerciseKnowledgeService.swift */,
 				AA2000000000000000000024 /* ExerciseDuplicateService.swift */,
 				AB0000000000000000000001 /* WidgetStreakStore.swift */,
+				AB0000000000000000000004 /* WidgetStreakStore+App.swift */,
 			);
 			name = Services;
 			path = Services;
@@ -472,6 +475,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 				AA5000000000000000000001 /* EndfieldTheme.swift in Sources */,
 				AA5000000000000000000002 /* EndfieldHUDComponents.swift in Sources */,
 				AB1000000000000000000001 /* WidgetStreakStore.swift in Sources */,
+				AB1000000000000000000005 /* WidgetStreakStore+App.swift in Sources */,
 				AB1000000000000000000004 /* WeeklyMuscleVolumeBarChart.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -592,10 +596,6 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 		8B9AED166362064A77B2BB22 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = (
-					DEBUG,
-					WIDGET_EXTENSION,
-				);
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -627,7 +627,6 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 		8CD16B2EF96067BC665AA9D9 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = WIDGET_EXTENSION;
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
