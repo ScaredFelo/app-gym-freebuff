@@ -28,6 +28,11 @@ public final class Exercise {
     public var notes: String = ""
     /// `true` cuando el usuario ha decidido manualmente el aviso de straps.
     public var hasCustomRequiresStraps: Bool = false
+    /// `true` cuando el equipamiento lo eligió el usuario: las migraciones del
+    /// catálogo no lo sobrescriben.
+    public var hasCustomEquipment: Bool = false
+    /// `true` cuando el descanso lo configuró el usuario.
+    public var hasCustomRestCondition: Bool = false
 
     @Relationship(deleteRule: .cascade, inverse: \WorkoutSetLog.exercise)
     public var logs: [WorkoutSetLog] = []
@@ -124,7 +129,9 @@ public final class Exercise {
         whenRecommended: String = "",
         whenNotRecommended: String = "",
         notes: String = "",
-        hasCustomRequiresStraps: Bool = false
+        hasCustomRequiresStraps: Bool = false,
+        hasCustomEquipment: Bool = false,
+        hasCustomRestCondition: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -149,6 +156,8 @@ public final class Exercise {
         self.whenNotRecommended = whenNotRecommended
         self.notes = notes
         self.hasCustomRequiresStraps = hasCustomRequiresStraps
+        self.hasCustomEquipment = hasCustomEquipment
+        self.hasCustomRestCondition = hasCustomRestCondition
 
         if let firstMuscle: MuscleGroup = primaryMuscles.first {
             self.muscleGroupRaw = firstMuscle.rawValue

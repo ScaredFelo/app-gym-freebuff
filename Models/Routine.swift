@@ -36,6 +36,9 @@ public final class RoutineExercise {
     public var defaultWeight: Double = 0.0
     public var restSeconds: Int = 90
     public var notes: String = ""
+    /// `true` cuando el descanso lo ajustó el usuario en la rutina: las
+    /// migraciones del catálogo no lo sobrescriben.
+    public var hasCustomRest: Bool = false
 
     @Relationship
     public var exercise: Exercise?
@@ -54,7 +57,8 @@ public final class RoutineExercise {
         sortOrder: Int = 0,
         defaultWeight: Double = 0.0,
         restSeconds: Int? = nil,
-        notes: String = ""
+        notes: String = "",
+        hasCustomRest: Bool = false
     ) {
         self.id = id
         self.exercise = exercise
@@ -65,6 +69,7 @@ public final class RoutineExercise {
         self.sortOrder = sortOrder
         self.defaultWeight = defaultWeight
         self.notes = notes
+        self.hasCustomRest = hasCustomRest
 
         if let restSeconds {
             self.restSeconds = restSeconds

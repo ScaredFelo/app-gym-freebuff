@@ -577,6 +577,10 @@ public enum ExerciseDuplicateService {
             "elevacion lateral en polea", "elevaciones laterales polea", "cable lateral raise",
             "lateral raise cable"
         ],
+        "Elevaciones laterales en máquina": [
+            "elevaciones laterales maquina", "elevacion lateral en maquina",
+            "machine lateral raise", "lateral raise machine"
+        ],
         "Elevaciones frontales": [
             "elevacion frontal", "front raise", "front raises", "elevaciones frontales con mancuernas"
         ],
@@ -625,10 +629,11 @@ public enum ExerciseDuplicateService {
             "press frances", "skull crusher", "skullcrusher", "press frances con barra",
             "extension de triceps tumbado"
         ],
-        "Extension tras nuca": [
+        "Extensión de tríceps sobre la cabeza": [
             "extension tras nuca", "extension sobre la cabeza", "overhead extension",
             "overhead triceps extension", "triceps sobre cabeza",
-            "extension tras nuca con mancuerna"
+            "extension tras nuca con mancuerna", "extension de triceps sobre la cabeza",
+            "extension de triceps por encima de la cabeza", "extension de triceps sobre cabeza"
         ],
         "Curl de muneca": [
             "curl de muneca", "wrist curl", "curl muneca", "curl de munecas"
@@ -654,8 +659,9 @@ public enum ExerciseDuplicateService {
         "Prensa de piernas": [
             "prensa", "leg press", "prensa 45", "prensa inclinada"
         ],
-        "Sentadilla hack": [
-            "hack squat", "hack", "sentadilla hack machine"
+        "Sentadilla en máquina": [
+            "sentadilla hack", "hack squat", "hack", "sentadilla hack machine",
+            "sentadilla maquina", "sentadilla guiada", "sentadilla en multipower"
         ],
         "Zancadas": [
             "zancada", "lunge", "lunges", "zancadas con mancuernas"

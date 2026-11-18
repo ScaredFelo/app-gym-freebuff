@@ -155,7 +155,11 @@ struct ExerciseSettingsView: View {
     private var equipmentBinding: Binding<EquipmentType> {
         Binding(
             get: { exercise.equipmentType },
-            set: { exercise.equipmentType = $0 }
+            set: {
+                exercise.equipmentType = $0
+                // Elección manual: las migraciones del catálogo no la tocan.
+                exercise.hasCustomEquipment = true
+            }
         )
     }
 

@@ -33,6 +33,7 @@ struct AppGymApp: App {
                     ExerciseKnowledgeService.alignStrapsWithKnowledgeIfNeeded(context: context)
                     MockDataGenerator.seedMissingCatalogExercisesIfNeeded(context: context)
                     ExerciseDuplicateService.mergeIfNeeded(context: context)
+                    MockDataGenerator.applyRoutineTableUpdateIfNeeded(context: context)
                 }
         }
         .modelContainer(container)

@@ -202,7 +202,11 @@ private struct RoutineExerciseEditorRow: View {
     private func equipmentBinding(for exercise: Exercise) -> Binding<EquipmentType> {
         return Binding(
             get: { exercise.equipmentType },
-            set: { exercise.equipmentType = $0 }
+            set: {
+                exercise.equipmentType = $0
+                // Elección manual: las migraciones del catálogo no la tocan.
+                exercise.hasCustomEquipment = true
+            }
         )
     }
 
@@ -287,6 +291,9 @@ private struct RoutineExerciseEditorRow: View {
             }
 
             Stepper("Descanso: \(routineExercise.restSeconds)s", value: $routineExercise.restSeconds, in: 0...600, step: 15)
+                .onChange(of: routineExercise.restSeconds) { _, _ in
+                    routineExercise.hasCustomRest = true
+                }
 
             if routineExercise.exercise?.requiresStraps == true {
                 Label("Recoger Straps", systemImage: "exclamationmark.triangle.fill")

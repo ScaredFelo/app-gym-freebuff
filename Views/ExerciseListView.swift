@@ -243,6 +243,9 @@ public struct AddExerciseView: View {
                             isCompound: isCompound,
                             primaryMuscles: [muscleGroup]
                         )
+                        // El equipamiento y el descanso los eligió el usuario.
+                        newExercise.hasCustomEquipment = true
+                        newExercise.hasCustomRestCondition = true
                         if requiresStraps {
                             newExercise.hasCustomRequiresStraps = true
                         } else {

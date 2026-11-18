@@ -423,6 +423,55 @@ public enum ExerciseKnowledgeService {
             bad: "Las cargas son muy ligeras y es fácil compensar con trapecio; si se eleva el codo de más, el rango útil se acorta.",
             when: "Al final del entreno de tirón o de hombro, 3 series de 8-10 repeticiones con pausa en la apertura.",
             whenNot: "Con dolor en la inserción posterior del hombro o cuando la prioridad es el deltoides medio."
+        ),
+        // La versión en máquina se resuelve antes que el patrón genérico de
+        // "elevaciones laterales".
+        make(
+            keywords: [
+                "elevaciones laterales en maquina", "elevaciones laterales maquina",
+                "elevacion lateral en maquina", "machine lateral raise", "lateral raise en maquina"
+            ],
+            primary: [.frontShoulders],
+            secondary: [.upperBack],
+            compound: false,
+            straps: false,
+            good: "La máquina fija la trayectoria y apoya el torso, así que el deltoides medio trabaja sin balanceo y puedes acercarte al fallo con la carga justa en cada serie.",
+            bad: "El recorrido viene impuesto por la máquina y puede no encajar con tu anatomía; al no estabilizar, la carga no se transfiere igual a los ejercicios libres.",
+            when: "Al final del entreno de hombro o de empuje, 2-3 series de 8-10 repeticiones con pausa de un segundo arriba.",
+            whenNot: "Con pinzamiento subacromial activo o si el eje de la máquina te obliga a subir el codo por encima del hombro."
+        ),
+        // La extensión por encima de la cabeza va antes que cualquier
+        // "extension de triceps": el estímulo se concentra en la porción larga.
+        make(
+            keywords: [
+                "extension de triceps sobre la cabeza", "extension de triceps por encima de la cabeza",
+                "extension por encima de la cabeza", "extension tras nuca", "overhead triceps",
+                "triceps sobre la cabeza"
+            ],
+            primary: [.triceps],
+            secondary: [.frontShoulders],
+            compound: false,
+            straps: false,
+            good: "Al llevar el brazo por encima de la cabeza la porción larga del tríceps trabaja en su máxima longitud, un estímulo que el pushdown no alcanza.",
+            bad: "El hombro queda en flexión alta y el codo soporta mucha palanca; con cargas altas o poca movilidad la lumbar arquea para completar el recorrido.",
+            when: "Después del empuje principal o al inicio del bloque de tríceps, en 8-10 repeticiones con el codo apuntando arriba.",
+            whenNot: "Con movilidad torácica limitada, molestia de hombro en flexión alta o dolor de codo en extensión forzada."
+        ),
+        // La sentadilla en máquina y la hack se resuelven antes que el patrón
+        // genérico de sentadilla con barra.
+        make(
+            keywords: [
+                "sentadilla en maquina", "sentadilla maquina", "sentadilla hack",
+                "hack squat", "sentadilla guiada"
+            ],
+            primary: [.quads],
+            secondary: [.glutes, .adductors],
+            compound: true,
+            straps: false,
+            good: "La máquina guía la trayectoria y estabiliza la espalda contra el respaldo, así que puedes cargar el cuádriceps cerca del fallo con la rodilla alineada.",
+            bad: "El soporte reduce el trabajo de estabilizadores y la flexión profunda bajo carga fija puede molestar la rótula; no sustituye a la sentadilla libre.",
+            when: "Como primer o segundo ejercicio de pierna, en 6-8 repeticiones con 3 minutos de descanso.",
+            whenNot: "Con dolor patelofemoral activo o si la máquina te obliga a una profundidad que no controlas."
         )
     ]
 
