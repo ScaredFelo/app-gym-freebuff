@@ -67,13 +67,13 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
             .receive(on: DispatchQueue.main)
             .sink { [weak self] bpm in
                 guard let self, bpm > 0, self.isTrackingEnabled else { return }
-                // Con una pulsera BLE conectada el sensor tiene prioridad; con
-                // AirPods (o sin pulsera) se publica lo que llega de HealthKit.
-                if self.deviceType == .airPods || self.heartRatePeripheral == nil {
-                    let source: String = self.healthKitManager.dataSourceName
-                    let name: String? = source == "Buscando..." ? nil : source
-                    self.publishBPM(bpm, deviceName: name)
-                }
+                // HealthKit solo es la fuente cuando el dispositivo configurado
+                // son los AirPods; con pulsera manda el sensor BLE.
+                guard self.deviceType == .airPods else { return }
+
+                let source: String = self.healthKitManager.dataSourceName
+                let name: String? = source == "Buscando..." ? nil : source
+                self.publishBPM(bpm, deviceName: name)
             }
             .store(in: &cancellables)
 
