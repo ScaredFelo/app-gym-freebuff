@@ -555,35 +555,10 @@ private struct CardioSessionView: View {
                 .frame(height: 100.0)
                 .frame(maxWidth: .infinity)
         } else {
-            Chart(samples) { (sample: BPMSample) in
-                LineMark(
-                    x: .value("Tiempo", sample.timestamp),
-                    y: .value("BPM", sample.bpm)
-                )
-                .foregroundStyle(EndfieldPalette.accentRed)
-                .lineStyle(StrokeStyle(lineWidth: 1.5))
-                .interpolationMethod(.catmullRom)
-
-                PointMark(
-                    x: .value("Tiempo", sample.timestamp),
-                    y: .value("BPM", sample.bpm)
-                )
-                .foregroundStyle(EndfieldPalette.accentRed)
-            }
-            .chartXScale(domain: date.addingTimeInterval(-180.0)...date)
-            .chartYScale(domain: 40...200)
-            .chartXAxis(.hidden)
-            .chartYAxis {
-                AxisMarks(values: .stride(by: 40.0)) { _ in
-                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2.0, 2.0]))
-                        .foregroundStyle(Color.white.opacity(0.10))
-                    AxisValueLabel()
-                        .font(EndfieldFont.label(8.0))
-                        .foregroundStyle(EndfieldPalette.textSecondary)
-                }
-            }
-            .frame(height: 100.0)
-            .frame(maxWidth: .infinity)
+            CardioBPMChart(
+                samples: samples,
+                xDomain: date.addingTimeInterval(-180.0)...date
+            )
         }
     }
 
@@ -638,12 +613,59 @@ private struct CardioSessionView: View {
     }
 }
 
+// MARK: - Gráfica de BPM (reutilizable)
+
+/// Gráfica de línea de BPM con el estilo de la telemetría en vivo. Se usa con
+/// la ventana de 3 minutos durante la sesión y con la sesión completa en el
+/// informe guardado.
+struct CardioBPMChart: View {
+    let samples: [BPMSample]
+    let xDomain: ClosedRange<Date>
+
+    var body: some View {
+        Chart(samples) { (sample: BPMSample) in
+            LineMark(
+                x: .value("Tiempo", sample.timestamp),
+                y: .value("BPM", sample.bpm)
+            )
+            .foregroundStyle(EndfieldPalette.accentRed)
+            .lineStyle(StrokeStyle(lineWidth: 1.5))
+            .interpolationMethod(.catmullRom)
+
+            PointMark(
+                x: .value("Tiempo", sample.timestamp),
+                y: .value("BPM", sample.bpm)
+            )
+            .foregroundStyle(EndfieldPalette.accentRed)
+        }
+        .chartXScale(domain: xDomain)
+        .chartYScale(domain: 40...200)
+        .chartXAxis(.hidden)
+        .chartYAxis {
+            AxisMarks(values: .stride(by: 40.0)) { _ in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2.0, 2.0]))
+                    .foregroundStyle(Color.white.opacity(0.10))
+                AxisValueLabel()
+                    .font(EndfieldFont.label(8.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+            }
+        }
+        .frame(height: 100.0)
+        .frame(maxWidth: .infinity)
+    }
+}
+
 // MARK: - Informe de sesión de cardio (reutilizable)
 
 /// Panel del informe de una sesión de cardio. Se usa al terminar la sesión y
 /// al abrir una sesión de cardio desde el calendario o el historial.
 struct CardioReportPanel: View {
     let report: CardioMetrics
+
+    /// Muestras de toda la sesión para la gráfica del informe guardado. `nil`
+    /// en el informe en vivo, que ya muestra la telemetría de los 3 últimos
+    /// minutos encima del cronómetro.
+    var chartSamples: [BPMSample]? = nil
 
     var body: some View {
         TacticalPanel(
@@ -676,6 +698,20 @@ struct CardioReportPanel: View {
                             tint: EndfieldPalette.accentRed
                         )
                     }
+                }
+
+                if let chartSamples: [BPMSample] = chartSamples,
+                   !chartSamples.isEmpty,
+                   let domain: ClosedRange<Date> = sessionChartDomain(for: chartSamples) {
+                    VStack(alignment: .leading, spacing: 4.0) {
+                        Text("BPM // SESIÓN COMPLETA")
+                            .font(EndfieldFont.label(8.0))
+                            .tracking(1.0)
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+
+                        CardioBPMChart(samples: chartSamples, xDomain: domain)
+                    }
+                    .padding(.top, 2.0)
                 }
 
                 if report.hasHeartRateData {
@@ -711,6 +747,21 @@ struct CardioReportPanel: View {
                 }
             }
         }
+    }
+
+    /// Dominio temporal de la gráfica del informe: de la primera a la última
+    /// muestra guardada, con un mínimo de un minuto si solo hay una lectura.
+    private func sessionChartDomain(for samples: [BPMSample]) -> ClosedRange<Date>? {
+        let timestamps: [Date] = samples.map { (sample: BPMSample) -> Date in
+            return sample.timestamp
+        }
+        guard let first: Date = timestamps.min(),
+              let last: Date = timestamps.max() else { return nil }
+
+        if last <= first {
+            return first...(first.addingTimeInterval(60.0))
+        }
+        return first...last
     }
 
     private func reportBox(code: String, label: String, value: String, tint: Color) -> some View {

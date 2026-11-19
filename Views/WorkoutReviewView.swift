@@ -48,7 +48,10 @@ public struct WorkoutReviewView: View {
                     if session.isCardioSession {
                         // El cardio no tiene series ni kg: reutiliza el mismo
                         // informe que se muestra al terminar la sesión.
-                        CardioReportPanel(report: cardioReport)
+                        CardioReportPanel(
+                            report: cardioReport,
+                            chartSamples: session.bpmSamples
+                        )
                     } else {
                         WorkoutReviewMainMetricsView(metrics: metrics)
 
