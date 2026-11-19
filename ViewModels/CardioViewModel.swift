@@ -20,6 +20,8 @@ public final class CardioViewModel: ObservableObject {
 
     public let type: CardioType
     public let startedAt: Date
+    /// Zona de pulso (1–5) cuyo abandono avisa; `nil` desactiva ese aviso.
+    public let targetZone: Int?
 
     @Published public private(set) var targetDuration: TimeInterval
     @Published public private(set) var phase: Phase = .running
@@ -46,9 +48,23 @@ public final class CardioViewModel: ObservableObject {
     /// lectura del sensor.
     private var lastPersistDate: Date = .distantPast
 
-    public init(type: CardioType, targetMinutes: Int, startedAt: Date = Date()) {
+    // Avisos sonoros: cada hito suena una única vez por sesión.
+    private var didAnnounceHalfway = false
+    private var didAnnounceFinalMinute = false
+    // Salida de la zona objetivo: solo avisa tras un rato fuera y una vez por
+    // salida, para no repetir con cada lectura del sensor.
+    private var zoneLeftSince: Date?
+    private var zoneExitAnnounced = false
+
+    public init(
+        type: CardioType,
+        targetMinutes: Int,
+        startedAt: Date = Date(),
+        targetZone: Int? = nil
+    ) {
         self.type = type
         self.startedAt = startedAt
+        self.targetZone = targetZone
         self.targetDuration = TimeInterval(max(1, targetMinutes) * 60)
         self.segmentStart = startedAt
     }
@@ -61,6 +77,7 @@ public final class CardioViewModel: ObservableObject {
 
         self.type = type
         self.startedAt = snapshot.startedAt
+        self.targetZone = snapshot.targetZone
         self.targetDuration = max(60.0, snapshot.targetDuration)
         self.accumulatedBeforeSegment = max(0.0, snapshot.accumulatedBeforeSegment)
         self.segmentStart = snapshot.isPaused ? nil : (snapshot.segmentStart ?? Date())
@@ -69,6 +86,11 @@ public final class CardioViewModel: ObservableObject {
             return lhs.timestamp < rhs.timestamp
         }
         self.lastBPMSampleDate = self.bpmHistory.last?.timestamp ?? .distantPast
+
+        // Los hitos ya alcanzados no vuelven a sonar al recuperar la sesión.
+        let elapsedSoFar: TimeInterval = self.elapsed(at: Date())
+        self.didAnnounceHalfway = elapsedSoFar >= self.targetDuration / 2.0
+        self.didAnnounceFinalMinute = self.targetDuration - elapsedSoFar <= 60.0
     }
 
     // MARK: - Lecturas temporales
@@ -101,12 +123,37 @@ public final class CardioViewModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 guard let self, !Task.isCancelled, self.phase == .running else { return }
 
-                if self.remaining(at: Date()) <= 0 {
+                let now: Date = Date()
+
+                if self.remaining(at: now) <= 0 {
                     self.terminate(reachedTarget: true)
+                    AudioAlertService.shared.playCardioGoalAlert()
                     return
                 }
+
+                self.announceMilestones(at: now)
             }
         }
+    }
+
+    /// Avisa a la mitad del objetivo y en el último minuto. Si al despertar la
+    /// app ya se ha pasado el último minuto, solo suena ese aviso para no
+    /// encadenar dos pitidos seguidos.
+    private func announceMilestones(at date: Date) {
+        let done: TimeInterval = elapsed(at: date)
+        let left: TimeInterval = remaining(at: date)
+
+        if targetDuration > 90.0, left <= 60.0 {
+            didAnnounceHalfway = true
+            guard !didAnnounceFinalMinute else { return }
+            didAnnounceFinalMinute = true
+            AudioAlertService.shared.playCardioFinalMinuteAlert()
+            return
+        }
+
+        guard !didAnnounceHalfway, done >= targetDuration / 2.0 else { return }
+        didAnnounceHalfway = true
+        AudioAlertService.shared.playCardioHalfwayAlert()
     }
 
     /// Reanuda sensor, muestreo de BPM y Live Activity sin arrancar la cuenta
@@ -146,6 +193,13 @@ public final class CardioViewModel: ObservableObject {
 
         let updated: TimeInterval = targetDuration + TimeInterval(minutes) * 60.0
         targetDuration = min(180.0 * 60.0, max(60.0, updated))
+
+        // Un objetivo nuevo reabre los hitos que queden por delante; los ya
+        // alcanzados siguen sin repetirse.
+        let done: TimeInterval = elapsed(at: Date())
+        didAnnounceHalfway = done >= targetDuration / 2.0
+        didAnnounceFinalMinute = targetDuration - done <= 60.0
+
         updateCardioActivity()
         persistSnapshot()
     }
@@ -229,11 +283,53 @@ public final class CardioViewModel: ObservableObject {
         lastBPMSampleDate = date
         bpmHistory.append(BPMSample(timestamp: date, bpm: Double(bpm)))
         CardioLiveActivityManager.shared.updateBPM(bpm)
+        evaluateZoneTarget(bpm: Double(bpm), at: date)
 
         if date.timeIntervalSince(lastPersistDate) >= 10.0 {
             lastPersistDate = date
             persistSnapshot()
         }
+    }
+
+    /// Aviso opcional cuando el pulso abandona la zona objetivo durante medio
+    /// minuto seguido. En pausa no se evalúa: el pulso baja de forma natural.
+    private func evaluateZoneTarget(bpm: Double, at date: Date) {
+        guard let zoneIndex: Int = targetZone,
+              phase == .running,
+              let bound: (index: Int, lower: Double, upper: Double) = WorkoutMetricsCalculator
+                  .heartRateZoneBounds
+                  .first(where: { (item: (index: Int, lower: Double, upper: Double)) -> Bool in
+                      return item.index == zoneIndex
+                  }) else {
+            zoneLeftSince = nil
+            zoneExitAnnounced = false
+            return
+        }
+
+        let hrMax: Double = UserSettingsManager.hrMax
+        guard hrMax > 0 else { return }
+
+        let ratio: Double = bpm / hrMax
+        let isInside: Bool = ratio >= bound.lower && ratio < bound.upper
+
+        if isInside {
+            zoneLeftSince = nil
+            zoneExitAnnounced = false
+            return
+        }
+
+        guard !zoneExitAnnounced else { return }
+
+        guard let since: Date = zoneLeftSince else {
+            zoneLeftSince = date
+            return
+        }
+
+        guard date.timeIntervalSince(since) >= 30.0 else { return }
+
+        zoneExitAnnounced = true
+        zoneLeftSince = nil
+        AudioAlertService.shared.playCardioZoneExitAlert()
     }
 
     // MARK: - Muestreo continuo
@@ -301,7 +397,8 @@ public final class CardioViewModel: ObservableObject {
                 isPaused: phase == .paused,
                 bpmSamples: bpmHistory,
                 savedAt: Date(),
-                elapsedAtSave: elapsed(at: Date())
+                elapsedAtSave: elapsed(at: Date()),
+                targetZone: targetZone
             )
         )
     }
@@ -322,6 +419,8 @@ struct CardioSessionSnapshot: Codable {
     var savedAt: Date?
     /// Tiempo efectivo acumulado en esa última escritura.
     var elapsedAtSave: TimeInterval?
+    /// Zona de pulso objetivo elegida para los avisos (opcional).
+    var targetZone: Int?
 
     /// Una sesión sin actualizaciones más allá de este tiempo se considera
     /// abandonada: no se reanuda sola, se ofrece guardarla o descartarla.

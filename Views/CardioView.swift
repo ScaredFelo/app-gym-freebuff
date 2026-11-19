@@ -56,10 +56,14 @@ public struct CardioView: View {
         }
     }
 
-    private func startSession(type: CardioType, minutes: Int) {
+    private func startSession(type: CardioType, minutes: Int, targetZone: Int) {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
-        let model = CardioViewModel(type: type, targetMinutes: minutes)
+        let model = CardioViewModel(
+            type: type,
+            targetMinutes: minutes,
+            targetZone: targetZone > 0 ? targetZone : nil
+        )
         viewModel = model
         model.start()
     }
@@ -131,7 +135,10 @@ public struct CardioView: View {
 private struct CardioSetupView: View {
     @Environment(\.dismiss) private var dismiss
 
-    let onStart: (CardioType, Int) -> Void
+    /// Zona de pulso elegida para el aviso opcional de salida (0 = sin aviso).
+    @AppStorage(UserSettingsManager.cardioAlertZoneKey) private var alertZone: Int = 0
+
+    let onStart: (CardioType, Int, Int) -> Void
 
     @State private var selectedType: CardioType = .treadmill
     @State private var targetMinutes: Int = 20
@@ -175,8 +182,25 @@ private struct CardioSetupView: View {
                         }
                     }
 
+                    TacticalPanel(code: "AUD.03", title: "Avisos de pulso", contentPadding: 12.0) {
+                        VStack(alignment: .leading, spacing: 8.0) {
+                            HStack(spacing: 8.0) {
+                                alertZoneOption(title: "OFF", value: 0)
+                                alertZoneOption(title: "Z2", value: 2)
+                                alertZoneOption(title: "Z3", value: 3)
+                                alertZoneOption(title: "Z4", value: 4)
+                            }
+
+                            Text("Z2 60–70% · Z3 70–80% · Z4 80–90% FC MÁX. MITAD, ÚLTIMO MINUTO Y OBJETIVO SUENAN SIEMPRE.")
+                                .font(EndfieldFont.label(7.0, weight: .regular))
+                                .tracking(0.5)
+                                .foregroundStyle(EndfieldPalette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
                     Button {
-                        onStart(selectedType, targetMinutes)
+                        onStart(selectedType, targetMinutes, alertZone)
                     } label: {
                         HStack(spacing: 8.0) {
                             Image(systemName: "play.fill")
@@ -363,6 +387,32 @@ private struct CardioSetupView: View {
             )
         )
         .disabled(!enabled)
+    }
+
+    private func alertZoneOption(title: String, value: Int) -> some View {
+        let isSelected: Bool = alertZone == value
+
+        return Button {
+            UISelectionFeedbackGenerator().selectionChanged()
+            alertZone = value
+        } label: {
+            Text(title)
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .tracking(0.6)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 9.0)
+                .foregroundStyle(isSelected ? EndfieldPalette.bgPrimary : EndfieldPalette.textPrimary)
+                .background(
+                    ChamferedRectangle(cut: 4.0)
+                        .fill(isSelected ? EndfieldPalette.accentCyan : EndfieldPalette.bgElevated)
+                )
+                .overlay(
+                    ChamferedRectangle(cut: 4.0)
+                        .stroke(isSelected ? EndfieldPalette.accentCyan : EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(value == 0 ? "Sin aviso de zona" : "Avisar al salir de la zona Z\(value)")
     }
 
     private func clockString(_ seconds: TimeInterval) -> String {

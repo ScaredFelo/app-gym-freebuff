@@ -89,6 +89,93 @@ public final class AudioAlertService {
         generator.impactOccurred()
     }
 
+    // MARK: - Avisos de cardio
+
+    /// Mitad del objetivo: un pitido medio, breve, para no tapar la música.
+    public func playCardioHalfwayAlert() {
+        playToneAlert(offsets: [0.0], frequency: 880.0, haptic: .medium)
+    }
+
+    /// Último minuto: tres pitidos agudos seguidos.
+    public func playCardioFinalMinuteAlert() {
+        playToneAlert(offsets: [0.0, 0.22, 0.44], frequency: 1318.51, haptic: .medium)
+    }
+
+    /// Objetivo completado: reutiliza la campana de fin de descanso.
+    public func playCardioGoalAlert() {
+        playRestFinishedAlert()
+    }
+
+    /// Salida de la zona de pulso objetivo: doble pitido grave y suave.
+    public func playCardioZoneExitAlert() {
+        playToneAlert(offsets: [0.0, 0.24], frequency: 587.33, haptic: .light)
+    }
+
+    /// Pitidos sintetizados en memoria: no dependen de sonidos del sistema,
+    /// que cambian entre versiones de iOS y no siempre suenan en una sesión
+    /// de audio activa.
+    private func playToneAlert(
+        offsets: [Double],
+        frequency: Double,
+        haptic: UIImpactFeedbackGenerator.FeedbackStyle
+    ) {
+        configureAudioSession(options: [.mixWithOthers])
+
+        if let data: Data = Self.toneWAVData(frequency: frequency, offsets: offsets) {
+            do {
+                let player = try AVAudioPlayer(data: data)
+                player.volume = 0.9
+                player.prepareToPlay()
+                alertPlayer = player
+                player.play()
+            } catch {
+                AudioServicesPlaySystemSound(1057)
+            }
+        } else {
+            AudioServicesPlaySystemSound(1057)
+        }
+
+        UIImpactFeedbackGenerator(style: haptic).impactOccurred()
+    }
+
+    private static func toneWAVData(
+        frequency: Double,
+        offsets: [Double],
+        sampleRate: Int = 22050
+    ) -> Data? {
+        guard !offsets.isEmpty, frequency > 0 else { return nil }
+
+        let beepDuration: Double = 0.16
+        let total: Double = (offsets.last ?? 0.0) + beepDuration + 0.04
+        let sampleCount: Int = Int(total * Double(sampleRate))
+        guard sampleCount > 0 else { return nil }
+
+        var mix = [Double](repeating: 0, count: sampleCount)
+
+        for offset in offsets {
+            let start: Int = Int(offset * Double(sampleRate))
+            let length: Int = Int(beepDuration * Double(sampleRate))
+            guard start >= 0, start < sampleCount else { continue }
+
+            for index in 0..<length {
+                let position: Int = start + index
+                guard position < sampleCount else { break }
+
+                let time: Double = Double(index) / Double(sampleRate)
+                let attack: Double = min(1.0, time / 0.006)
+                let release: Double = min(1.0, max(0.0, (beepDuration - time) / 0.02))
+                mix[position] += sin(2 * Double.pi * frequency * time) * 0.55 * attack * release
+            }
+        }
+
+        let samples = mix.map { (value: Double) -> Int16 in
+            let clamped: Double = max(-1.0, min(1.0, value))
+            return Int16(clamped * Double(Int16.max))
+        }
+
+        return wavData(sampleRate: sampleRate, samples: samples)
+    }
+
     private static func silentWAVData(sampleRate: Int = 8000, duration: Double = 1.0) -> Data {
         let sampleCount = Int(Double(sampleRate) * duration)
         return wavData(sampleRate: sampleRate, samples: [Int16](repeating: 0, count: sampleCount))

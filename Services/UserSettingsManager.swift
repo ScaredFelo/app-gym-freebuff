@@ -15,6 +15,9 @@ enum UserSettingsManager {
 
     // Medición de pulsaciones
     static let isHeartRateTrackingEnabledKey = "isHeartRateTrackingEnabled"
+    /// Zona de pulso (Z1–Z5) para el aviso opcional al salir de ella en cardio.
+    /// `0` desactiva el aviso.
+    static let cardioAlertZoneKey = "cardioAlertZone"
     static let heartRateDeviceTypeKey = "heartRateDeviceType"
     static let heartRateDeviceBrandKey = "heartRateDeviceBrand"
 
