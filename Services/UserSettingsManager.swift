@@ -18,6 +18,9 @@ enum UserSettingsManager {
     /// Zona de pulso (Z1–Z5) para el aviso opcional al salir de ella en cardio.
     /// `0` desactiva el aviso.
     static let cardioAlertZoneKey = "cardioAlertZone"
+    /// Avisos de mitad y último minuto en cardio. La campana del objetivo no
+    /// depende de este ajuste.
+    static let cardioMilestoneAlertsKey = "cardioMilestoneAlerts"
     static let heartRateDeviceTypeKey = "heartRateDeviceType"
     static let heartRateDeviceBrandKey = "heartRateDeviceBrand"
 

@@ -22,6 +22,8 @@ public final class CardioViewModel: ObservableObject {
     public let startedAt: Date
     /// Zona de pulso (1–5) cuyo abandono avisa; `nil` desactiva ese aviso.
     public let targetZone: Int?
+    /// Avisos de mitad y último minuto. La campana del objetivo suena siempre.
+    public let milestoneAlertsEnabled: Bool
 
     @Published public private(set) var targetDuration: TimeInterval
     @Published public private(set) var phase: Phase = .running
@@ -60,11 +62,13 @@ public final class CardioViewModel: ObservableObject {
         type: CardioType,
         targetMinutes: Int,
         startedAt: Date = Date(),
-        targetZone: Int? = nil
+        targetZone: Int? = nil,
+        milestoneAlertsEnabled: Bool = true
     ) {
         self.type = type
         self.startedAt = startedAt
         self.targetZone = targetZone
+        self.milestoneAlertsEnabled = milestoneAlertsEnabled
         self.targetDuration = TimeInterval(max(1, targetMinutes) * 60)
         self.segmentStart = startedAt
     }
@@ -78,6 +82,7 @@ public final class CardioViewModel: ObservableObject {
         self.type = type
         self.startedAt = snapshot.startedAt
         self.targetZone = snapshot.targetZone
+        self.milestoneAlertsEnabled = snapshot.milestoneAlertsEnabled ?? true
         self.targetDuration = max(60.0, snapshot.targetDuration)
         self.accumulatedBeforeSegment = max(0.0, snapshot.accumulatedBeforeSegment)
         self.segmentStart = snapshot.isPaused ? nil : (snapshot.segmentStart ?? Date())
@@ -140,6 +145,8 @@ public final class CardioViewModel: ObservableObject {
     /// app ya se ha pasado el último minuto, solo suena ese aviso para no
     /// encadenar dos pitidos seguidos.
     private func announceMilestones(at date: Date) {
+        guard milestoneAlertsEnabled else { return }
+
         let done: TimeInterval = elapsed(at: date)
         let left: TimeInterval = remaining(at: date)
 
@@ -419,7 +426,8 @@ public final class CardioViewModel: ObservableObject {
                 bpmSamples: bpmHistory,
                 savedAt: Date(),
                 elapsedAtSave: elapsed(at: Date()),
-                targetZone: targetZone
+                targetZone: targetZone,
+                milestoneAlertsEnabled: milestoneAlertsEnabled
             )
         )
     }
@@ -442,6 +450,8 @@ struct CardioSessionSnapshot: Codable {
     var elapsedAtSave: TimeInterval?
     /// Zona de pulso objetivo elegida para los avisos (opcional).
     var targetZone: Int?
+    /// Si estaban activos los avisos de mitad y último minuto.
+    var milestoneAlertsEnabled: Bool?
 
     /// Una sesión sin actualizaciones más allá de este tiempo se considera
     /// abandonada: no se reanuda sola, se ofrece guardarla o descartarla.

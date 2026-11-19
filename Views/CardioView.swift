@@ -56,13 +56,19 @@ public struct CardioView: View {
         }
     }
 
-    private func startSession(type: CardioType, minutes: Int, targetZone: Int) {
+    private func startSession(
+        type: CardioType,
+        minutes: Int,
+        targetZone: Int,
+        milestoneAlerts: Bool
+    ) {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
         let model = CardioViewModel(
             type: type,
             targetMinutes: minutes,
-            targetZone: targetZone > 0 ? targetZone : nil
+            targetZone: targetZone > 0 ? targetZone : nil,
+            milestoneAlertsEnabled: milestoneAlerts
         )
         viewModel = model
         model.start()
@@ -138,7 +144,10 @@ private struct CardioSetupView: View {
     /// Zona de pulso elegida para el aviso opcional de salida (0 = sin aviso).
     @AppStorage(UserSettingsManager.cardioAlertZoneKey) private var alertZone: Int = 0
 
-    let onStart: (CardioType, Int, Int) -> Void
+    /// Avisos de mitad y último minuto; la campana del objetivo no depende de él.
+    @AppStorage(UserSettingsManager.cardioMilestoneAlertsKey) private var milestoneAlerts: Bool = true
+
+    let onStart: (CardioType, Int, Int, Bool) -> Void
 
     @State private var selectedType: CardioType = .treadmill
     @State private var targetMinutes: Int = 20
@@ -201,20 +210,42 @@ private struct CardioSetupView: View {
 
                     TacticalPanel(code: "AUD.04", title: "Sonidos de la sesión", contentPadding: 12.0) {
                         VStack(alignment: .leading, spacing: 6.0) {
+                            Toggle(isOn: $milestoneAlerts) {
+                                Text("AVISOS DE MITAD Y ÚLTIMO MINUTO")
+                                    .font(EndfieldFont.label(9.0))
+                                    .tracking(0.8)
+                                    .foregroundStyle(EndfieldPalette.textPrimary)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+                            }
+                            .tint(EndfieldPalette.accentCyan)
+                            .padding(.bottom, 2.0)
+
                             soundRow(
                                 code: "50%",
-                                text: "Un pitido medio al llegar a la mitad del tiempo objetivo."
+                                text: "Un pitido medio al llegar a la mitad del tiempo objetivo.",
+                                isActive: milestoneAlerts
                             )
 
                             soundRow(
                                 code: "1 MIN",
-                                text: "Tres pitidos agudos al entrar en el último minuto."
+                                text: "Tres pitidos agudos al entrar en el último minuto.",
+                                isActive: milestoneAlerts
                             )
 
                             soundRow(
                                 code: "FIN",
                                 text: "Campana al completar el objetivo."
                             )
+
+                            if !milestoneAlerts {
+                                Text("AVISOS DE TIEMPO DESACTIVADOS: SOLO SONARÁ LA CAMPANA DEL OBJETIVO.")
+                                    .font(EndfieldFont.label(7.0, weight: .regular))
+                                    .tracking(0.5)
+                                    .foregroundStyle(EndfieldPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.top, 2.0)
+                            }
 
                             if alertZone > 0 {
                                 soundRow(
@@ -233,7 +264,7 @@ private struct CardioSetupView: View {
                     }
 
                     Button {
-                        onStart(selectedType, targetMinutes, alertZone)
+                        onStart(selectedType, targetMinutes, alertZone, milestoneAlerts)
                     } label: {
                         HStack(spacing: 8.0) {
                             Image(systemName: "play.fill")
@@ -422,12 +453,12 @@ private struct CardioSetupView: View {
         .disabled(!enabled)
     }
 
-    private func soundRow(code: String, text: String) -> some View {
+    private func soundRow(code: String, text: String, isActive: Bool = true) -> some View {
         HStack(alignment: .top, spacing: 8.0) {
             Text(code)
                 .font(EndfieldFont.label(7.0))
                 .tracking(0.8)
-                .foregroundStyle(EndfieldPalette.accentCyan)
+                .foregroundStyle(isActive ? EndfieldPalette.accentCyan : EndfieldPalette.textSecondary.opacity(0.5))
                 .frame(width: 42.0, alignment: .leading)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -435,7 +466,7 @@ private struct CardioSetupView: View {
             Text(text)
                 .font(EndfieldFont.label(7.5, weight: .regular))
                 .tracking(0.4)
-                .foregroundStyle(EndfieldPalette.textPrimary)
+                .foregroundStyle(isActive ? EndfieldPalette.textPrimary : EndfieldPalette.textSecondary.opacity(0.6))
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
