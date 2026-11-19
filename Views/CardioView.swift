@@ -718,16 +718,44 @@ private struct CardioSessionView: View {
 private struct CardioSensorStatusView: View {
     @ObservedObject private var bpmManager = BPMManager.shared
 
+    /// Solo se avisa en rojo si antes hubo enlace: al empezar la sesión la
+    /// banda todavía se está buscando y eso no es un fallo.
+    @State private var hasBeenConnected = false
+    @State private var didWarnDisconnect = false
+
+    private var isLost: Bool {
+        return hasBeenConnected && !bpmManager.isConnected
+    }
+
+    private var dotTint: Color {
+        if bpmManager.isConnected { return EndfieldPalette.accentCyan }
+        return isLost ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary.opacity(0.7)
+    }
+
+    private var title: String {
+        if bpmManager.isConnected { return "SENSOR DE PULSO ENLAZADO" }
+        return isLost ? "SENSOR DE PULSO DESCONECTADO" : "BUSCANDO SENSOR DE PULSO"
+    }
+
+    private var titleTint: Color {
+        return isLost ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary
+    }
+
+    private var searchText: String {
+        let raw: String = bpmManager.statusText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.isEmpty ? "BUSCANDO..." : raw.uppercased()
+    }
+
     var body: some View {
         HStack(spacing: 8.0) {
             Rectangle()
-                .fill(bpmManager.isConnected ? EndfieldPalette.accentCyan : EndfieldPalette.accentRed)
+                .fill(dotTint)
                 .frame(width: 5.0, height: 5.0)
 
-            Text(bpmManager.isConnected ? "SENSOR DE PULSO ENLAZADO" : "SENSOR DE PULSO DESCONECTADO")
+            Text(title)
                 .font(EndfieldFont.label(8.0))
                 .tracking(0.9)
-                .foregroundStyle(bpmManager.isConnected ? EndfieldPalette.textSecondary : EndfieldPalette.accentRed)
+                .foregroundStyle(titleTint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)
 
@@ -739,7 +767,7 @@ private struct CardioSensorStatusView: View {
                     .monospacedDigit()
                     .foregroundStyle(EndfieldPalette.accentRed)
                     .fixedSize()
-            } else {
+            } else if isLost {
                 Button {
                     bpmManager.reconnect()
                 } label: {
@@ -754,6 +782,13 @@ private struct CardioSensorStatusView: View {
                         tint: EndfieldPalette.accentCyan
                     )
                 )
+            } else {
+                Text(searchText)
+                    .font(EndfieldFont.label(7.5))
+                    .tracking(0.6)
+                    .foregroundStyle(EndfieldPalette.textSecondary.opacity(0.8))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
             }
         }
         .padding(.horizontal, 9.0)
@@ -763,12 +798,26 @@ private struct CardioSensorStatusView: View {
         .overlay {
             ChamferedRectangle(cut: EndfieldMetrics.cellCut)
                 .stroke(
-                    bpmManager.isConnected ? EndfieldPalette.borderSubtle : EndfieldPalette.accentRed.opacity(0.55),
+                    isLost ? EndfieldPalette.accentRed.opacity(0.55) : EndfieldPalette.borderSubtle,
                     lineWidth: 1.0
                 )
         }
+        .onAppear {
+            if bpmManager.isConnected {
+                hasBeenConnected = true
+                didWarnDisconnect = false
+            }
+        }
         .onChange(of: bpmManager.isConnected) { _, isConnected in
-            guard !isConnected else { return }
+            if isConnected {
+                hasBeenConnected = true
+                didWarnDisconnect = false
+                return
+            }
+
+            // Un único aviso por caída: las reconexiones no encadenan hápticos.
+            guard hasBeenConnected, !didWarnDisconnect else { return }
+            didWarnDisconnect = true
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
         }
     }
