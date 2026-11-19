@@ -59,6 +59,50 @@ struct CardioZoneMetrics: Identifiable {
     var percent: Int {
         return Int((fraction * 100.0).rounded())
     }
+
+    /// Porcentajes enteros que suman exactamente 100. Redondear cada zona por
+    /// separado puede dar 99 o 101, así que se reparte la unidad que falta (o
+    /// sobra) entre las zonas con mayor resto, sin tocar los tiempos.
+    static func roundedPercents(for zones: [CardioZoneMetrics]) -> [Int] {
+        guard !zones.isEmpty else { return [] }
+
+        let total: Double = zones.reduce(0.0) { (sum: Double, zone: CardioZoneMetrics) -> Double in
+            return sum + zone.seconds
+        }
+        guard total > 0 else {
+            return zones.map { (zone: CardioZoneMetrics) -> Int in
+                return zone.seconds > 0 ? 1 : 0
+            }
+        }
+
+        let exact: [Double] = zones.map { (zone: CardioZoneMetrics) -> Double in
+            return zone.seconds / total * 100.0
+        }
+        var floors: [Int] = exact.map { (value: Double) -> Int in
+            return Int(value)
+        }
+
+        var pending: Int = 100 - floors.reduce(0, +)
+        guard pending != 0 else { return floors }
+
+        let order: [Int] = exact.indices.sorted { (lhs: Int, rhs: Int) -> Bool in
+            let left: Double = exact[lhs] - Double(floors[lhs])
+            let right: Double = exact[rhs] - Double(floors[rhs])
+            if abs(left - right) > 0.0001 {
+                return left > right
+            }
+            return lhs < rhs
+        }
+
+        var cursor: Int = 0
+        while pending > 0 {
+            floors[order[cursor % order.count]] += 1
+            pending -= 1
+            cursor += 1
+        }
+
+        return floors
+    }
 }
 
 struct ExerciseHeartRateRow: Identifiable {

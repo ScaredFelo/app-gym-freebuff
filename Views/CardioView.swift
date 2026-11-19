@@ -1215,13 +1215,28 @@ struct CardioReportPanel: View {
 
             VStack(spacing: 4.0) {
                 ForEach(report.zones) { (zone: CardioZoneMetrics) in
-                    zoneRow(zone)
+                    zoneRow(zone, percent: zonePercent(for: zone))
                 }
             }
         }
     }
 
-    private func zoneRow(_ zone: CardioZoneMetrics) -> some View {
+    /// Porcentajes ya ajustados para sumar 100 entre todas las filas.
+    private var zonePercents: [Int] {
+        return CardioZoneMetrics.roundedPercents(for: report.zones)
+    }
+
+    private func zonePercent(for zone: CardioZoneMetrics) -> Int {
+        let percents: [Int] = zonePercents
+        guard let index: Int = report.zones.firstIndex(where: { (item: CardioZoneMetrics) -> Bool in
+            return item.id == zone.id
+        }), index < percents.count else {
+            return zone.percent
+        }
+        return percents[index]
+    }
+
+    private func zoneRow(_ zone: CardioZoneMetrics, percent: Int) -> some View {
         HStack(spacing: 6.0) {
             Rectangle()
                 .fill(CardioZoneStyle.tint(for: zone.id))
@@ -1248,7 +1263,7 @@ struct CardioReportPanel: View {
                 .foregroundStyle(zone.seconds > 0 ? EndfieldPalette.textPrimary : EndfieldPalette.textSecondary)
                 .fixedSize()
 
-            Text("\(zone.percent)%")
+            Text("\(percent)%")
                 .font(EndfieldFont.mono(10.0, weight: .bold))
                 .monospacedDigit()
                 .foregroundStyle(EndfieldPalette.textSecondary)
