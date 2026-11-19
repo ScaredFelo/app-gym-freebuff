@@ -1384,7 +1384,12 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             }
 
         copiedExercises.forEach { modelContext.insert($0) }
-        let newRoutine = Routine(name: routineName, isTemplate: true, exercises: copiedExercises)
+        let newRoutine = Routine(
+            name: routineName,
+            isTemplate: true,
+            exercises: copiedExercises,
+            source: .manual
+        )
         modelContext.insert(newRoutine)
         restoreOriginalStructure(modelContext: modelContext)
         session.routineName = newRoutine.name

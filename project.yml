@@ -32,6 +32,7 @@ targets:
       - path: ViewModels
       - path: Views
       - path: Theme
+      - path: Resources
     dependencies:
       - target: AppGymWidgets
     frameworks:
@@ -95,6 +96,22 @@ targets:
         Release:
           CODE_SIGN_ENTITLEMENTS: AppGym/AppGym.entitlements
 
+  AppGymTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    bundleId: com.jordiferres.appgym.tests
+    sources:
+      - path: AppGymTests
+      - path: Resources
+    dependencies:
+      - target: AppGym
+    settings:
+      base:
+        SWIFT_VERSION: "5.0"
+        SWIFT_STRICT_CONCURRENCY: "minimal"
+        GENERATE_INFOPLIST_FILE: "YES"
+
   AppGymWidgets:
     type: app-extension
     platform: iOS
@@ -141,6 +158,11 @@ schemes:
     build:
       targets:
         AppGym: all
+        AppGymTests: [test]
+    test:
+      config: Debug
+      targets:
+        - AppGymTests
     run:
       config: Debug
     profile:

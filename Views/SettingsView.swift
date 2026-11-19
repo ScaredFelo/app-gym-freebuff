@@ -11,6 +11,9 @@ struct SettingsView: View {
     @AppStorage(UserSettingsManager.ezBarWeightKey)
     private var ezBarWeight: Double = UserSettingsManager.defaultEZBarWeight
 
+    @AppStorage(UserSettingsManager.standardBarWeightKey)
+    private var standardBarWeight: Double = UserSettingsManager.defaultStandardBarWeight
+
     @AppStorage(UserSettingsManager.availablePlatesKey)
     private var availablePlatesRaw: String = UserSettingsManager.defaultAvailablePlates
 
@@ -31,6 +34,9 @@ struct SettingsView: View {
 
     /// Desplegable de discos: plegado por defecto.
     @State private var arePlatesExpanded: Bool = false
+
+    /// Flujo Ajustes → Cambiar rutina.
+    @State private var isShowingRoutineFlow: Bool = false
 
     /// Copia de seguridad.
     @State private var showFileExporter: Bool = false
@@ -60,6 +66,7 @@ struct SettingsView: View {
                     equipmentPanel
                     platesPanel
                     weeklyGoalPanel
+                    routineOrganizationPanel
                     visualModePanel
                     heartRatePanel
                     backupPanel
@@ -74,6 +81,11 @@ struct SettingsView: View {
         }
         .onAppear {
             reloadSafetyCopies()
+        }
+        .fullScreenCover(isPresented: $isShowingRoutineFlow) {
+            OnboardingFlowView(context: .changeRoutine) {
+                isShowingRoutineFlow = false
+            }
         }
         .onChange(of: weeklyWorkoutGoal) { (_, newValue: Int) in
             let clamped: Int = min(
@@ -180,7 +192,18 @@ struct SettingsView: View {
                     range: 0...100
                 )
 
-                Text("Estos pesos se usan como base al calcular los discos de Multipower y de barra EZ.")
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
+
+                barWeightBlock(
+                    title: "Peso barra estándar",
+                    value: $standardBarWeight,
+                    stepperLabel: "Ajustar barra estándar: \(UserSettingsManager.formatted(standardBarWeight)) kg",
+                    range: 0...100
+                )
+
+                Text("Estos pesos se usan como base al calcular los discos de Multipower, barra EZ y barra estándar. La barra estándar no tiene un peso universal: ajusta el de tu gimnasio.")
                     .font(EndfieldFont.mono(9.0))
                     .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -253,6 +276,52 @@ struct SettingsView: View {
                 .tint(EndfieldPalette.accentYellow)
 
                 Text("La racha cuenta semanas consecutivas alcanzando el objetivo. La semana en curso no la rompe hasta que termina.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: - Organización del entrenamiento
+
+    private var routineOrganizationPanel: some View {
+        TacticalPanel(code: "RT.06", title: "Organización del entrenamiento", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 9.0) {
+                HStack(spacing: 8.0) {
+                    Text("MODALIDAD ACTUAL")
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(0.8)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+
+                    Spacer(minLength: 4.0)
+
+                    Text(UserSettingsManager.routineOrganizationMode?.title.uppercased() ?? "SIN DEFINIR")
+                        .font(EndfieldFont.mono(10.0, weight: .bold))
+                        .foregroundStyle(EndfieldPalette.accentYellow)
+                        .multilineTextAlignment(.trailing)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.7)
+                }
+
+                Button {
+                    isShowingRoutineFlow = true
+                } label: {
+                    HStack(spacing: 7.0) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                        Text("CAMBIAR RUTINA")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .tracking(1.0)
+                    }
+                }
+                .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
+                .accessibilityHint("Abre la selección de modalidad y el resumen de confirmación")
+
+                Text("Modifica tu organización de entrenamiento o crea un nuevo plan. Las rutinas anteriores se archivan y se conserva todo el historial.")
                     .font(EndfieldFont.mono(9.0))
                     .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

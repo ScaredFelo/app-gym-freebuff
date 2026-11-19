@@ -5,6 +5,7 @@ enum UserSettingsManager {
 
     static let multipowerBarWeightKey = "multipowerBarWeight"
     static let ezBarWeightKey = "ezBarWeight"
+    static let standardBarWeightKey = "standardBarWeight"
     static let availablePlatesKey = "availablePlates"
     static let isBigPictureModeEnabledKey = "isBigPictureModeEnabled"
     static let hrMaxBPMKey = "hrMaxBPM"
@@ -12,6 +13,17 @@ enum UserSettingsManager {
 
     // Objetivo semanal de entrenamiento (días por semana)
     static let weeklyWorkoutGoalKey = "weeklyWorkoutGoal"
+
+    // Onboarding (primera apertura)
+    static let didCompleteOnboardingKey = "didCompleteOnboarding_v1"
+
+    // Organización del entrenamiento
+    static let routineOrganizationModeKey = "routineOrganizationMode"
+    static let ownRoutineCountKey = "ownRoutineCount"
+    static let automaticSplitDaysKey = "automaticSplitDays"
+    static let automaticSplitLegsKey = "automaticSplitLegs"
+    static let automaticSplitUpperKey = "automaticSplitUpper"
+    static let automaticSplitExpressionKey = "automaticSplitExpression"
 
     // Medición de pulsaciones
     static let isHeartRateTrackingEnabledKey = "isHeartRateTrackingEnabled"
@@ -63,6 +75,10 @@ enum UserSettingsManager {
     /// Peso de barra EZ por defecto (kg).
     static let defaultEZBarWeight: Double = 10.0
 
+    /// Valor inicial editable de la barra estándar. No es una propiedad
+    /// universal del tipo: el usuario puede cambiarlo en Ajustes.
+    static let defaultStandardBarWeight: Double = 20.0
+
     /// Todos los discos estándar del gimnasio, de mayor a menor.
     static let plateOptions: [Double] = [
         25.0,
@@ -102,6 +118,15 @@ enum UserSettingsManager {
             return defaultEZBarWeight
         }
         return max(0.0, UserDefaults.standard.double(forKey: ezBarWeightKey))
+    }
+
+    /// Peso real configurado de la barra estándar. El valor inicial es 20 kg,
+    /// pero no se considera universal: cada gimnasio puede tener otra barra.
+    static var standardBarWeight: Double {
+        guard UserDefaults.standard.object(forKey: standardBarWeightKey) != nil else {
+            return defaultStandardBarWeight
+        }
+        return max(0.0, UserDefaults.standard.double(forKey: standardBarWeightKey))
     }
 
     /// Discos disponibles configurados, ordenados de mayor a menor.
@@ -167,6 +192,77 @@ enum UserSettingsManager {
         }
         let stored: Int = UserDefaults.standard.integer(forKey: weeklyWorkoutGoalKey)
         return min(max(stored, weeklyWorkoutGoalRange.lowerBound), weeklyWorkoutGoalRange.upperBound)
+    }
+
+    // MARK: - Onboarding
+
+    /// Valor persistido con el nombre solicitado por el flujo de onboarding.
+    static var didCompleteOnboarding_v1: Bool {
+        return UserDefaults.standard.bool(forKey: didCompleteOnboardingKey)
+    }
+
+    /// Indica si el usuario ya ha terminado la configuración inicial.
+    static var isOnboardingCompleted: Bool {
+        return didCompleteOnboarding_v1
+    }
+
+    /// Marca el onboarding como completado. Solo se llama cuando el plan se ha
+    /// guardado correctamente.
+    static func markOnboardingCompleted() {
+        UserDefaults.standard.set(true, forKey: didCompleteOnboardingKey)
+    }
+
+    // MARK: - Organización de rutinas
+
+    /// Modalidad de organización configurada por el usuario, si existe.
+    static var routineOrganizationMode: RoutineOrganizationMode? {
+        guard let raw: String = UserDefaults.standard.string(forKey: routineOrganizationModeKey) else {
+            return nil
+        }
+        return RoutineOrganizationMode.fromStoredRawValue(raw)
+    }
+
+    /// Número de rutinas propias configuradas, acotado al rango permitido.
+    static var configuredOwnRoutineCount: Int {
+        guard UserDefaults.standard.object(forKey: ownRoutineCountKey) != nil else {
+            return RoutinePlanDraft.defaultRoutineCount
+        }
+        let stored: Int = UserDefaults.standard.integer(forKey: ownRoutineCountKey)
+        return min(max(stored, RoutinePlanDraft.routineCountRange.lowerBound), RoutinePlanDraft.routineCountRange.upperBound)
+    }
+
+    // MARK: - Escritura agrupada (onboarding)
+
+    /// Guarda el equipamiento elegido en el onboarding.
+    static func storeEquipment(
+        multipowerBarWeight: Double,
+        ezBarWeight: Double,
+        plates: Set<Double>,
+        standardBarWeight: Double? = nil
+    ) {
+        let defaults: UserDefaults = UserDefaults.standard
+        defaults.set(clampedBarWeight(multipowerBarWeight), forKey: multipowerBarWeightKey)
+        defaults.set(clampedBarWeight(ezBarWeight), forKey: ezBarWeightKey)
+        if let standardBarWeight {
+            defaults.set(clampedBarWeight(standardBarWeight), forKey: standardBarWeightKey)
+        }
+
+        if !plates.isEmpty {
+            defaults.set(serializePlates(plates), forKey: availablePlatesKey)
+        }
+    }
+
+    /// Guarda la configuración de pulsaciones elegida en el onboarding.
+    static func storeHeartRate(isEnabled: Bool, deviceType: HeartRateDeviceType, brand: String) {
+        let defaults: UserDefaults = UserDefaults.standard
+        defaults.set(isEnabled, forKey: isHeartRateTrackingEnabledKey)
+        defaults.set(deviceType.rawValue, forKey: heartRateDeviceTypeKey)
+        defaults.set(brand, forKey: heartRateDeviceBrandKey)
+    }
+
+    /// Acota el peso de una barra al rango admitido por la interfaz (0–100 kg).
+    static func clampedBarWeight(_ value: Double) -> Double {
+        return min(max(value, OnboardingPreferences.barWeightRange.lowerBound), OnboardingPreferences.barWeightRange.upperBound)
     }
 
     // MARK: - Plate persistence helpers

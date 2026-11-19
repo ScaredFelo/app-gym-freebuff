@@ -1,6 +1,17 @@
 import Foundation
 import SwiftData
 
+/// Identificadores estables de las cinco rutinas personales sembradas. Se
+/// declaran fuera del `@MainActor` para que la transacción de `RoutineService`
+/// pueda protegerlas sin saltar de actor.
+let seededPersonalRoutineIDs: Set<UUID> = [
+    UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!,
+    UUID(uuidString: "6F0E1A10-0002-4000-8000-000000000002")!,
+    UUID(uuidString: "6F0E1A10-0003-4000-8000-000000000003")!,
+    UUID(uuidString: "6F0E1A10-0004-4000-8000-000000000004")!,
+    UUID(uuidString: "6F0E1A10-0005-4000-8000-000000000005")!
+]
+
 // MARK: - Definiciones del catálogo
 
 private struct CatalogExerciseDefinition {
@@ -23,6 +34,9 @@ private struct CatalogRoutineEntry {
 }
 
 private struct CatalogRoutineDefinition {
+    /// Identificador estable de la rutina sembrada. No cambia entre
+    /// instalaciones ni depende del nombre visible.
+    let id: UUID
     let name: String
     let entries: [CatalogRoutineEntry]
 }
@@ -74,10 +88,12 @@ public final class MockDataGenerator {
                 }
 
                 let routine: Routine = Routine(
+                    id: routineDefinition.id,
                     name: routineDefinition.name,
                     isTemplate: true,
                     sortOrder: routineIndex,
-                    exercises: routineExercises
+                    exercises: routineExercises,
+                    source: .automatic
                 )
                 context.insert(routine)
             }
@@ -202,9 +218,88 @@ public final class MockDataGenerator {
         (old: "Sentadilla hack", new: "Sentadilla en máquina", equipment: .plateLoadedMachine)
     ]
 
+    /// Bandera de la alineación del equipamiento con el catálogo vigente.
+    public static let catalogEquipmentAlignmentFlagKey: String = "didAlignCatalogEquipment_v2"
+
+    /// Corrige el equipamiento de los ejercicios que ya existían con las reglas
+    /// antiguas (poleas aproximadas, barras olímpicas genéricas, paralelas como
+    /// barra fija). Solo actúa sobre nombres del catálogo y nunca sobre un
+    /// equipamiento que el usuario haya fijado a mano.
+    @MainActor
+    public static func alignCatalogEquipmentIfNeeded(context: ModelContext) {
+        let defaults: UserDefaults = UserDefaults.standard
+        guard !defaults.bool(forKey: catalogEquipmentAlignmentFlagKey) else { return }
+        guard let catalog: ExerciseCatalogStore = ExerciseCatalogStore.shared else { return }
+
+        let variants: [CatalogRoutineVariant] = catalog.file.levels.single
+            + catalog.file.levels.double
+            + catalog.file.levels.triple
+        var catalogNames: Set<String> = Set(variants.flatMap { (variant: CatalogRoutineVariant) -> [String] in
+            return variant.exercises.map { (record: CatalogExerciseRecord) -> String in
+                return ExerciseRules.normalizedName(record.name)
+            }
+        })
+        for record in catalog.file.uniqueExercises {
+            catalogNames.insert(ExerciseRules.normalizedName(record.name))
+        }
+
+        do {
+            let exercises: [Exercise] = try context.fetch(FetchDescriptor<Exercise>())
+            guard let routines: [Routine] = try? context.fetch(FetchDescriptor<Routine>()) else { return }
+            let protectedExerciseIDs: Set<UUID> = exerciseIDsUsedByProtectedRoutines(routines)
+            for exercise in exercises where !exercise.hasCustomEquipment
+                && !protectedExerciseIDs.contains(exercise.id) {
+                guard catalogNames.contains(ExerciseRules.normalizedName(exercise.name)) else { continue }
+                exercise.equipmentType = ExerciseRules.equipment(for: exercise.name)
+            }
+
+            try context.save()
+            defaults.set(true, forKey: catalogEquipmentAlignmentFlagKey)
+        } catch {
+            print("Error alineando el equipamiento del catálogo: \(error)")
+        }
+    }
+
+    /// Bandera de la clasificación de procedencia de rutinas antiguas.
+    public static let legacyRoutineSourceFlagKey: String = "didClassifyLegacyRoutineSources_v1"
+
+    /// Identificadores estables de las cinco rutinas sembradas. Son la única
+    /// señal inequívoca para reconocerlas: el nombre visible puede coincidir
+    /// con una rutina creada a mano.
+    static var seededRoutineIDs: Set<UUID> {
+        return seededPersonalRoutineIDs
+    }
+
+    /// Las filas anteriores a `sourceRaw` no tienen procedencia. El valor
+    /// seguro es `manual` (nunca se archivan por sorpresa). Solo se marcan como
+    /// automáticas las que conservan el UUID estable de una rutina sembrada;
+    /// las antiguas con UUID aleatorio quedan como manuales.
+    @MainActor
+    public static func classifyLegacyRoutineSourcesIfNeeded(context: ModelContext) {
+        let defaults: UserDefaults = UserDefaults.standard
+        guard !defaults.bool(forKey: legacyRoutineSourceFlagKey) else { return }
+
+        let seededIDs: Set<UUID> = seededRoutineIDs
+
+        do {
+            let stored: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+            for routine in stored where routine.sourceRaw == nil {
+                if seededIDs.contains(routine.id) {
+                    routine.source = .automatic
+                }
+            }
+
+            try context.save()
+            defaults.set(true, forKey: legacyRoutineSourceFlagKey)
+        } catch {
+            print("Error clasificando la procedencia de las rutinas: \(error)")
+        }
+    }
+
     /// Sincroniza una base ya existente con la tabla: renombra los ejercicios
-    /// heredados, crea los que falten, ajusta equipamiento y descanso, y
-    /// reescribe las cinco rutinas con sus series y repeticiones.
+    /// heredados, crea los que falten y ajusta equipamiento y descanso de los
+    /// ejercicios que no pertenecen a las cinco rutinas personales. Esas cinco
+    /// rutinas no se reescriben: su contenido es del usuario.
     public static func applyRoutineTableUpdateIfNeeded(context: ModelContext) {
         let defaults: UserDefaults = UserDefaults.standard
         guard !defaults.bool(forKey: routineTableUpdateFlagKey) else { return }
@@ -215,13 +310,19 @@ public final class MockDataGenerator {
         do {
             let descriptor: FetchDescriptor<Exercise> = FetchDescriptor<Exercise>()
             var exercises: [Exercise] = try context.fetch(descriptor)
+            let existingRoutines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+            let protectedExerciseIDs: Set<UUID> = exerciseIDsUsedByProtectedRoutines(existingRoutines)
 
             for legacy in legacyNames {
-                renameLegacyExercise(legacy, exercises: &exercises)
+                renameLegacyExercise(
+                    legacy,
+                    exercises: &exercises,
+                    protectedExerciseIDs: protectedExerciseIDs
+                )
             }
 
             ensureTableExercisesExist(context: context, exercises: &exercises)
-            applyTableSettings(to: exercises)
+            applyTableSettings(to: exercises, protectedExerciseIDs: protectedExerciseIDs)
             try rewriteRoutines(context: context, exercises: exercises)
 
             try context.save()
@@ -233,13 +334,15 @@ public final class MockDataGenerator {
 
     private static func renameLegacyExercise(
         _ legacy: (old: String, new: String, equipment: EquipmentType),
-        exercises: inout [Exercise]
+        exercises: inout [Exercise],
+        protectedExerciseIDs: Set<UUID>
     ) {
         let oldKey: String = normalize(legacy.old)
         let newKey: String = normalize(legacy.new)
         guard let exercise: Exercise = exercises.first(where: { (candidate: Exercise) -> Bool in
             return normalize(candidate.name) == oldKey
         }) else { return }
+        guard !protectedExerciseIDs.contains(exercise.id) else { return }
 
         let alreadyExists: Bool = exercises.contains { (candidate: Exercise) -> Bool in
             return candidate !== exercise && normalize(candidate.name) == newKey
@@ -272,13 +375,19 @@ public final class MockDataGenerator {
 
     /// Alinea equipamiento y descanso de los ejercicios de la tabla. Un
     /// descanso por bajada de BPM lo eligió el usuario y no se toca.
-    private static func applyTableSettings(to exercises: [Exercise]) {
+    private static func applyTableSettings(
+        to exercises: [Exercise],
+        protectedExerciseIDs: Set<UUID>
+    ) {
         for name in tableExerciseNames {
             guard let definition: CatalogExerciseDefinition = catalogDefinition(for: name),
                   let exercise: Exercise = exercises.first(where: { (candidate: Exercise) -> Bool in
                       return ExerciseDuplicateService.canonicalKey(for: candidate.name)
                           == ExerciseDuplicateService.canonicalKey(for: name)
                   }) else { continue }
+            // Un ejercicio compartido con una rutina personal protegida no se
+            // reconfigura: el usuario manda sobre su equipamiento y descanso.
+            guard !protectedExerciseIDs.contains(exercise.id) else { continue }
 
             if !exercise.hasCustomEquipment {
                 exercise.equipmentType = definition.equipmentType
@@ -291,19 +400,33 @@ public final class MockDataGenerator {
         }
     }
 
-    /// Rehace cada rutina de la tabla conservando las notas y el peso por
-    /// defecto de los ejercicios que ya estaban en ella.
+    /// Rehace las rutinas de la tabla que no sean personales. Las cinco rutinas
+    /// protegidas se excluyen al principio, antes de tocar orden o ejercicios.
     private static func rewriteRoutines(context: ModelContext, exercises: [Exercise]) throws {
         let descriptor: FetchDescriptor<Routine> = FetchDescriptor<Routine>()
         let existingRoutines: [Routine] = try context.fetch(descriptor)
 
         for (routineIndex, definition) in routines.enumerated() {
-            let routineKey: String = normalize(definition.name)
+            // La identidad de una rutina sembrada es su UUID estable, nunca el
+            // nombre visible: el usuario puede renombrarla y puede tener una
+            // rutina manual llamada «PUSH». Buscar por nombre reescribiría esa
+            // rutina personal y borraría sus ejercicios no presentes en la tabla.
             guard let routine: Routine = existingRoutines.first(where: { (candidate: Routine) -> Bool in
-                return normalize(candidate.name) == routineKey
+                return candidate.id == definition.id
             }) else { continue }
 
+            // Las cinco rutinas personales son del usuario. Aunque conserven el
+            // UUID de siembra, su contenido puede haber cambiado y no debe
+            // volver a las definiciones originales de la tabla.
+            guard !seededPersonalRoutineIDs.contains(routine.id) else { continue }
+
             routine.sortOrder = routineIndex
+            // Solo se marca una rutina heredada si conserva el UUID estable
+            // de una rutina sembrada. Nunca por nombre: una rutina manual
+            // llamada «PUSH» debe seguir siendo manual.
+            if routine.sourceRaw == nil, seededRoutineIDs.contains(routine.id) {
+                routine.source = .automatic
+            }
             var pending: [RoutineExercise] = routine.exercises
             var entries: [RoutineExercise] = []
 
@@ -349,6 +472,20 @@ public final class MockDataGenerator {
 
             routine.exercises = entries
         }
+    }
+
+    /// Ejercicios usados por las cinco rutinas protegidas. La sincronización
+    /// del catálogo no los reconfigura ni los renombra por detrás del usuario.
+    private static func exerciseIDsUsedByProtectedRoutines(_ routines: [Routine]) -> Set<UUID> {
+        var ids: Set<UUID> = []
+        for routine in routines where seededPersonalRoutineIDs.contains(routine.id) {
+            for link in routine.exercises {
+                if let exerciseID = link.exercise?.id {
+                    ids.insert(exerciseID)
+                }
+            }
+        }
+        return ids
     }
 
     /// Nombres de ejercicio que aparecen en la tabla, sin repetir.
@@ -579,7 +716,7 @@ public final class MockDataGenerator {
     /// los ejercicios, las series, el rango de repeticiones y el descanso
     /// salen literalmente de la hoja de cálculo del usuario.
     private static let routines: [CatalogRoutineDefinition] = [
-        CatalogRoutineDefinition(name: "PUSH", entries: [
+        CatalogRoutineDefinition(id: UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!, name: "PUSH", entries: [
             CatalogRoutineEntry(exerciseName: "Press banca inclinado", sets: 3, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Elevaciones laterales en máquina", sets: 3, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Extensión de tríceps sobre la cabeza", sets: 3, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
@@ -587,7 +724,7 @@ public final class MockDataGenerator {
             CatalogRoutineEntry(exerciseName: "Press militar", sets: 2, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Extensión de tríceps en polea", sets: 2, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 135)
         ]),
-        CatalogRoutineDefinition(name: "PULL", entries: [
+        CatalogRoutineDefinition(id: UUID(uuidString: "6F0E1A10-0002-4000-8000-000000000002")!, name: "PULL", entries: [
             CatalogRoutineEntry(exerciseName: "Jalon al pecho", sets: 3, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Curl en mancuerna", sets: 3, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Remo en maquina", sets: 2, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
@@ -595,7 +732,7 @@ public final class MockDataGenerator {
             CatalogRoutineEntry(exerciseName: "Remo libre", sets: 2, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Aperturas inversas en polea", sets: 3, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 135)
         ]),
-        CatalogRoutineDefinition(name: "LEGS", entries: [
+        CatalogRoutineDefinition(id: UUID(uuidString: "6F0E1A10-0003-4000-8000-000000000003")!, name: "LEGS", entries: [
             CatalogRoutineEntry(exerciseName: "Hiperextensiones", sets: 2, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 180),
             CatalogRoutineEntry(exerciseName: "Flexion de pierna estirado", sets: 3, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 180),
             CatalogRoutineEntry(exerciseName: "Bulgaras", sets: 2, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 180),
@@ -603,7 +740,7 @@ public final class MockDataGenerator {
             CatalogRoutineEntry(exerciseName: "Peso muerto rumano (RDL)", sets: 2, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 180),
             CatalogRoutineEntry(exerciseName: "Extension de quadriceps", sets: 2, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 180)
         ]),
-        CatalogRoutineDefinition(name: "UPPER", entries: [
+        CatalogRoutineDefinition(id: UUID(uuidString: "6F0E1A10-0004-4000-8000-000000000004")!, name: "UPPER", entries: [
             CatalogRoutineEntry(exerciseName: "Press banca inclinado", sets: 3, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Cruces de polea sentado", sets: 2, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Jalon al pecho", sets: 3, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 135),
@@ -613,7 +750,7 @@ public final class MockDataGenerator {
             CatalogRoutineEntry(exerciseName: "Curl en mancuerna", sets: 2, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 135),
             CatalogRoutineEntry(exerciseName: "Aperturas inversas en polea", sets: 2, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 135)
         ]),
-        CatalogRoutineDefinition(name: "LOWER", entries: [
+        CatalogRoutineDefinition(id: UUID(uuidString: "6F0E1A10-0005-4000-8000-000000000005")!, name: "LOWER", entries: [
             CatalogRoutineEntry(exerciseName: "Hiperextensiones", sets: 2, targetRepsMin: 8, targetRepsMax: 10, restSeconds: 180),
             CatalogRoutineEntry(exerciseName: "Flexion de pierna sentado", sets: 3, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 180),
             CatalogRoutineEntry(exerciseName: "Sentadilla en máquina", sets: 2, targetRepsMin: 6, targetRepsMax: 8, restSeconds: 180),

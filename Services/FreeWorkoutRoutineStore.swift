@@ -37,7 +37,7 @@ enum FreeWorkoutRoutineStore {
         if let existing {
             routine = existing
         } else {
-            let created = Routine(name: routineName, isTemplate: false, exercises: [])
+            let created = Routine(name: routineName, isTemplate: false, exercises: [], source: .manual)
             modelContext.insert(created)
             routine = created
         }

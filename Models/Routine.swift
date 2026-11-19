@@ -5,24 +5,54 @@ import SwiftData
 public final class Routine {
     public var id: UUID
     public var name: String
+    /// Semántica real en la app:
+    /// - `true`: rutina del plan activo, visible en la lista y editable.
+    /// - `false`: rutina temporal del entreno libre, nunca listada.
+    /// No identifica plantillas de un catálogo externo ni la procedencia: para
+    /// eso está `sourceRaw`.
     public var isTemplate: Bool
+    /// Procedencia serializada. Es opcional para que SwiftData pueda añadir la
+    /// columna a bases antiguas sin fallar; `nil` se interpreta como `manual`.
+    public var sourceRaw: String? = nil
     public var sortOrder: Int = 0
+    /// `true` cuando la rutina pertenece a una organización anterior del
+    /// entrenamiento. Se archiva en lugar de borrarse para no romper las
+    /// relaciones con las sesiones históricas.
+    public var isArchived: Bool = false
 
     @Relationship(deleteRule: .cascade)
     public var exercises: [RoutineExercise] = []
+
+    /// `true` solo para las rutinas que forman parte del plan activo visible.
+    public var isActivePlanRoutine: Bool {
+        return isTemplate && !isArchived
+    }
+
+    /// `automatic` para las generadas por el plan W/L/U; `assisted` para las
+    /// creadas por el constructor de siete días; `manual` para las creadas o
+    /// guardadas por el usuario. Los registros anteriores a este campo se
+    /// tratan como manuales para no archivarlos por sorpresa.
+    public var source: RoutineSource {
+        get { sourceRaw.flatMap(RoutineSource.init(rawValue:)) ?? .manual }
+        set { sourceRaw = newValue.rawValue }
+    }
 
     public init(
         id: UUID = UUID(),
         name: String,
         isTemplate: Bool = true,
         sortOrder: Int = 0,
-        exercises: [RoutineExercise] = []
+        exercises: [RoutineExercise] = [],
+        isArchived: Bool = false,
+        source: RoutineSource = .manual
     ) {
         self.id = id
         self.name = name
         self.isTemplate = isTemplate
+        self.sourceRaw = source.rawValue
         self.sortOrder = sortOrder
         self.exercises = exercises
+        self.isArchived = isArchived
     }
 }
 

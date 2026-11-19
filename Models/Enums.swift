@@ -5,20 +5,32 @@ public enum EquipmentType: String, Codable, CaseIterable, Sendable, Identifiable
     case dumbbell = "Mancuernas"
     case fixedBar = "Barra fija"
     case plateLoadedMachine = "Discos para máquina"
+    /// Máquina con pila de discos y pasador, sin discos externos.
+    case selectorizedMachine = "Máquina selectorizada"
     case smithMachine = "Multipower"
     case olympicBar = "Barra olímpica"
+    /// Barra sin especificar en el catálogo; no equivale a una olímpica.
+    case standardBar = "Barra estándar"
     case ezBar = "Barra EZ"
     case bodyweight = "Peso corporal"
     case cardioMachine = "Máquina de cardio"
+    /// El nombre del catálogo no permite decidir entre máquina selectorizada y
+    /// máquina de discos. Se conserva como estado explícito en lugar de
+    /// aproximarlo a un tipo que el dato no respalda.
+    case pendingClassification = "Pendiente de clasificación"
 
     public var id: String { rawValue }
+
+    public var isClassified: Bool {
+        return self != .pendingClassification
+    }
 
     /// Equipamientos que se cargan con discos y necesitan calculadora.
     public var usesPlates: Bool {
         switch self {
-        case .plateLoadedMachine, .smithMachine, .olympicBar, .ezBar:
+        case .plateLoadedMachine, .smithMachine, .olympicBar, .standardBar, .ezBar:
             return true
-        case .cable, .dumbbell, .fixedBar, .bodyweight, .cardioMachine:
+        case .cable, .dumbbell, .selectorizedMachine, .fixedBar, .bodyweight, .cardioMachine, .pendingClassification:
             return false
         }
     }
@@ -30,9 +42,11 @@ public enum EquipmentType: String, Codable, CaseIterable, Sendable, Identifiable
             return UserSettingsManager.multipowerBarWeight
         case .olympicBar:
             return 20.0
+        case .standardBar:
+            return UserSettingsManager.standardBarWeight
         case .ezBar:
             return UserSettingsManager.ezBarWeight
-        case .plateLoadedMachine, .cable, .dumbbell, .fixedBar, .bodyweight, .cardioMachine:
+        case .plateLoadedMachine, .selectorizedMachine, .cable, .dumbbell, .fixedBar, .bodyweight, .cardioMachine, .pendingClassification:
             return 0.0
         }
     }
@@ -51,9 +65,25 @@ public enum EquipmentType: String, Codable, CaseIterable, Sendable, Identifiable
         case "Barra Olímpica":
             return .olympicBar
         default:
-            return .olympicBar
+            // Un valor desconocido no debe convertirse en una barra olímpica
+            // inventada: se deja como pendiente de clasificación.
+            return .pendingClassification
         }
     }
+}
+
+/// Origen de una rutina. `automatic` la crea el generador W/L/U; `assisted` el
+/// constructor de siete días; `manual` la crea o la guarda el usuario y no se
+/// archiva al aplicar un plan nuevo.
+public enum RoutineSource: String, Codable, CaseIterable, Sendable, Identifiable {
+    case automatic
+    /// Rutina creada por el constructor asistido. Se archiva solo cuando se
+    /// aplica otra semana asistida o se cambia de modalidad; nunca se confunde
+    /// con las rutinas manuales ni con las cinco rutinas personales sembradas.
+    case assisted
+    case manual
+
+    public var id: String { rawValue }
 }
 
 public enum RestCondition: Codable, Sendable, Hashable {

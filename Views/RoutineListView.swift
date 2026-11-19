@@ -14,6 +14,8 @@ public struct RoutineListView: View {
     @State private var isCreatingNewRoutine = false
     @State private var isEditing = false
     @State private var routinePendingDeletion: Routine? = nil
+    @State private var pendingDeletionArchives = false
+    @State private var routineNotice: String?
     @State private var isShowingCardio = false
     @State private var saveErrorMessage: String?
 
@@ -26,7 +28,7 @@ public struct RoutineListView: View {
     /// Las rutinas temporales de los entrenamientos libres viven en el mismo
     /// contexto, pero nunca se listan ni se editan desde aquí.
     private var visibleRoutines: [Routine] {
-        return routines.filter { $0.isTemplate }
+        return routines.filter { $0.isActivePlanRoutine }
     }
 
     public var body: some View {
@@ -57,7 +59,7 @@ public struct RoutineListView: View {
                             canMoveDown: canMoveDown(routine),
                             onMoveUp: { moveRoutine(routine, offset: -1) },
                             onMoveDown: { moveRoutine(routine, offset: 1) },
-                            onRequestDelete: { routinePendingDeletion = routine }
+                            onRequestDelete: { requestDeletion(of: routine) }
                         )
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
@@ -126,22 +128,55 @@ public struct RoutineListView: View {
                 }
             }
             .alert(
-                "Eliminar rutina",
+                pendingDeletionArchives ? "Archivar rutina" : "Eliminar rutina",
                 isPresented: Binding(
                     get: { routinePendingDeletion != nil },
-                    set: { if !$0 { routinePendingDeletion = nil } }
+                    set: { isPresented in
+                        if !isPresented {
+                            routinePendingDeletion = nil
+                            pendingDeletionArchives = false
+                        }
+                    }
                 )
             ) {
-                Button("Eliminar", role: .destructive) {
-                    if let routine = routinePendingDeletion {
-                        deleteRoutine(routine)
+                if pendingDeletionArchives {
+                    Button("Archivar") {
+                        if let routine = routinePendingDeletion {
+                            archiveReferencedRoutine(routine)
+                        }
+                    }
+                } else {
+                    Button("Eliminar", role: .destructive) {
+                        if let routine = routinePendingDeletion {
+                            deleteRoutine(routine)
+                        }
                     }
                 }
                 Button("Cancelar", role: .cancel) {
                     routinePendingDeletion = nil
+                    pendingDeletionArchives = false
                 }
             } message: {
-                Text("Se eliminará \"\(routinePendingDeletion?.name ?? "")\". Esta acción no se puede deshacer.")
+                Text(
+                    pendingDeletionArchives
+                        ? "\"\(routinePendingDeletion?.name ?? "")\" está referenciada por un plan asistido. Se archivará para conservar el historial y no se borrará."
+                        : "Se eliminará \"\(routinePendingDeletion?.name ?? "")\". Esta acción no se puede deshacer."
+                )
+            }
+            .alert(
+                "Aviso de rutina",
+                isPresented: Binding(
+                    get: { routineNotice != nil },
+                    set: { isPresented in
+                        if !isPresented { routineNotice = nil }
+                    }
+                )
+            ) {
+                Button("Entendido", role: .cancel) {
+                    routineNotice = nil
+                }
+            } message: {
+                Text(routineNotice ?? "")
             }
             .alert("Modo Big Picture activo", isPresented: $showingFreeWorkoutBigPictureAlert) {
                 Button("Cancelar", role: .cancel) {}
@@ -288,7 +323,13 @@ public struct RoutineListView: View {
         guard !isEditing else { return }
 
         let nextOrder = (visibleRoutines.map(\.sortOrder).max() ?? -1) + 1
-        let routine = Routine(name: "Nueva rutina", isTemplate: true, sortOrder: nextOrder, exercises: [])
+        let routine = Routine(
+            name: "Nueva rutina",
+            isTemplate: true,
+            sortOrder: nextOrder,
+            exercises: [],
+            source: .manual
+        )
         isCreatingNewRoutine = true
         routineToEdit = routine
     }
@@ -333,6 +374,8 @@ public struct RoutineListView: View {
             isEditing = false
         }
         routinePendingDeletion = nil
+        pendingDeletionArchives = false
+        routineNotice = nil
     }
 
     private func confirmEditMode() {
@@ -340,7 +383,56 @@ public struct RoutineListView: View {
         exitEditMode()
     }
 
+    private func requestDeletion(of routine: Routine) {
+        switch RoutineService.deletionPolicy(for: routine, context: modelContext) {
+        case .protectedPersonal:
+            routinePendingDeletion = nil
+            pendingDeletionArchives = false
+            routineNotice = "«\(routine.name)» es una rutina personal protegida y no se puede eliminar. Puedes editar sus ejercicios y su configuración."
+
+        case .archiveReferenced:
+            pendingDeletionArchives = true
+            routinePendingDeletion = routine
+
+        case .delete:
+            pendingDeletionArchives = false
+            routinePendingDeletion = routine
+        }
+    }
+
+    private func archiveReferencedRoutine(_ routine: Routine) {
+        let remaining = visibleRoutines.filter { $0.id != routine.id }
+        routine.isArchived = true
+        for (index, item) in remaining.enumerated() {
+            item.sortOrder = index
+        }
+
+        guard PersistenceService.saveOrRollback(modelContext, operation: "archivar la rutina referenciada") else {
+            saveErrorMessage = "No se ha podido archivar la rutina. Vuelve a intentarlo."
+            return
+        }
+
+        routinePendingDeletion = nil
+        pendingDeletionArchives = false
+        routineNotice = "«\(routine.name)» está referenciada por un plan asistido. Se ha archivado para conservar el historial, sin borrar la rutina ni sus sesiones."
+    }
+
     private func deleteRoutine(_ routine: Routine) {
+        switch RoutineService.deletionPolicy(for: routine, context: modelContext) {
+        case .protectedPersonal:
+            routinePendingDeletion = nil
+            pendingDeletionArchives = false
+            routineNotice = "«\(routine.name)» es una rutina personal protegida y no se puede eliminar. Puedes editar sus ejercicios y su configuración."
+            return
+
+        case .archiveReferenced:
+            archiveReferencedRoutine(routine)
+            return
+
+        case .delete:
+            break
+        }
+
         modelContext.delete(routine)
 
         let remaining = visibleRoutines.filter { $0.id != routine.id }
@@ -354,6 +446,7 @@ public struct RoutineListView: View {
         }
 
         routinePendingDeletion = nil
+        pendingDeletionArchives = false
     }
 }
 

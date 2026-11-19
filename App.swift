@@ -6,8 +6,8 @@ import SwiftData
 /// Versión 1 del esquema de datos.
 ///
 /// Es el ancla para futuras migraciones: cualquier cambio de modelo debe
-/// añadir una `AppSchemaV2` y su `MigrationStage` aquí, en lugar de dejar que
-/// SwiftData intente una migración implícita y acabe bloqueando el arranque.
+/// añadir la siguiente `AppSchemaVN` y su `MigrationStage` aquí, en lugar de
+/// dejar que SwiftData intente una migración implícita y bloquee el arranque.
 enum AppSchemaV1: VersionedSchema {
     static var versionIdentifier: Schema.Version { Schema.Version(1, 0, 0) }
 
@@ -22,104 +22,180 @@ enum AppSchemaV1: VersionedSchema {
     }
 }
 
+/// Versión 2: añade `Routine.isArchived` para archivar las rutinas que dejan de
+/// estar activas sin borrarlas ni tocar el historial de sesiones.
+enum AppSchemaV2: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(2, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Exercise.self,
+            Routine.self,
+            RoutineExercise.self,
+            WorkoutSession.self,
+            WorkoutSetLog.self
+        ]
+    }
+}
+
+/// Versión 3: conserva el texto muscular original del catálogo en cada
+/// ejercicio generado, para no perder tokens sin equivalencia exacta.
+enum AppSchemaV3: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(3, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Exercise.self,
+            Routine.self,
+            RoutineExercise.self,
+            WorkoutSession.self,
+            WorkoutSetLog.self
+        ]
+    }
+}
+
+/// Versión 4: añade la procedencia de la rutina (`automatic` / `manual`) para
+/// archivar solo las rutinas automáticas al aplicar un plan nuevo. El campo es
+/// opcional, así que las filas antiguas quedan con `nil` y se interpretan como
+/// manuales.
+enum AppSchemaV4: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(4, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Exercise.self,
+            Routine.self,
+            RoutineExercise.self,
+            WorkoutSession.self,
+            WorkoutSetLog.self
+        ]
+    }
+}
+
+/// Versión 5: añade la semana del constructor asistido. Se guarda como un
+/// registro con los siete días serializados para no crear relaciones que
+/// puedan afectar a las rutinas personales.
+enum AppSchemaV5: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(5, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Exercise.self,
+            Routine.self,
+            RoutineExercise.self,
+            WorkoutSession.self,
+            WorkoutSetLog.self,
+            AssistedWeekPlan.self
+        ]
+    }
+}
+
 enum AppMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [AppSchemaV1.self] }
-    static var stages: [MigrationStage] { [] }
+    static var schemas: [any VersionedSchema.Type] {
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self]
+    }
+    static var stages: [MigrationStage] {
+        [
+            .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
+            .lightweight(fromVersion: AppSchemaV2.self, toVersion: AppSchemaV3.self),
+            .lightweight(fromVersion: AppSchemaV3.self, toVersion: AppSchemaV4.self),
+            .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self)
+        ]
+    }
 }
 
 // MARK: - Contenedor tolerante a fallos
 
-/// Crea el `ModelContainer` sin `fatalError`.
+/// Abre el contenedor sin apartar, borrar ni sustituir nunca el store original.
 ///
-/// Si el store no se puede abrir (archivo corrupto, disco lleno, migración
-/// imposible) se aparta a una carpeta con fecha y se reintenta con uno nuevo;
-/// si tampoco así, se abre en memoria para que la app siga siendo utilizable y
-/// el usuario pueda exportar su copia de seguridad.
+/// Si SwiftData no puede abrirlo o migrarlo, la app queda en un estado de
+/// recuperación bloqueante: no se crea una base vacía, no se abre en memoria y
+/// no se ejecutan las tareas de arranque. Los archivos originales permanecen en
+/// su sitio para que el usuario pueda reintentar o recuperarlos explícitamente.
 enum StoreBootstrap {
+    struct Failure: Equatable {
+        let message: String
+        let technicalDetails: String
+        let storeWasPresent: Bool
+    }
+
     struct Outcome {
-        let container: ModelContainer
-        /// Mensaje para avisar de que se ha recuperado de un fallo.
-        let recoveryMessage: String?
+        let container: ModelContainer?
+        let failure: Failure?
+
+        var isReady: Bool {
+            return container != nil
+        }
     }
 
-    static func makeContainer() -> Outcome {
-        let schema = Schema(versionedSchema: AppSchemaV1.self)
+    static let lastErrorKey: String = "AppGym.StoreBootstrap.lastOpenError"
+
+    /// `storeURL` existe para las pruebas con un store temporal. En producción
+    /// se usa la configuración por defecto de SwiftData.
+    static func makeContainer(storeURL: URL? = nil) -> Outcome {
+        let schema = Schema(versionedSchema: AppSchemaV5.self)
 
         do {
-            let container = try ModelContainer(
-                for: schema,
-                migrationPlan: AppMigrationPlan.self,
-                configurations: [ModelConfiguration(isStoredInMemoryOnly: false)]
-            )
-            return Outcome(container: container, recoveryMessage: nil)
-        } catch {
-            print("[Store] No se pudo abrir la base de datos: \(error)")
-        }
-
-        if let quarantined = quarantineExistingStore() {
-            do {
-                let container = try ModelContainer(
-                    for: schema,
-                    migrationPlan: AppMigrationPlan.self,
-                    configurations: [ModelConfiguration(isStoredInMemoryOnly: false)]
-                )
-                return Outcome(
-                    container: container,
-                    recoveryMessage: "No se pudo abrir la base de datos anterior. Se ha guardado una copia en «\(quarantined.lastPathComponent)» y se ha empezado con una base nueva."
-                )
-            } catch {
-                print("[Store] La base de datos nueva tampoco se pudo abrir: \(error)")
+            let configuration: ModelConfiguration
+            if let storeURL {
+                configuration = ModelConfiguration(url: storeURL)
+            } else {
+                configuration = ModelConfiguration(isStoredInMemoryOnly: false)
             }
-        }
 
-        do {
             let container = try ModelContainer(
                 for: schema,
                 migrationPlan: AppMigrationPlan.self,
-                configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+                configurations: [configuration]
             )
-            return Outcome(
-                container: container,
-                recoveryMessage: "La base de datos no está disponible. La app funciona en modo temporal: lo que registres ahora no se guardará al cerrar."
-            )
+            return Outcome(container: container, failure: nil)
         } catch {
-            // Sin almacenamiento ni en memoria no hay app posible.
-            fatalError("SwiftData no puede inicializarse ni en memoria: \(error)")
+            let technicalDetails: String = String(describing: error)
+            let existed: Bool = storeExists(at: storeURL)
+            let message: String = existed
+                ? "No se ha podido abrir la base de datos. Tus datos no se han borrado ni se ha creado una base vacía en su lugar."
+                : "No se ha podido crear la base de datos. No se ha abierto una base temporal vacía."
+            let failure: Failure = Failure(
+                message: message,
+                technicalDetails: technicalDetails,
+                storeWasPresent: existed
+            )
+
+            let logLine: String = "\(ISO8601DateFormatter().string(from: Date())) \(technicalDetails)"
+            UserDefaults.standard.set(logLine, forKey: lastErrorKey)
+            print("[Store] \(message) \(technicalDetails)")
+
+            return Outcome(container: nil, failure: failure)
         }
     }
 
-    /// Mueve el store y sus archivos auxiliares a una carpeta con fecha para no
-    /// destruirlos nunca. Devuelve la carpeta si se movió algo.
-    private static func quarantineExistingStore() -> URL? {
+    static var lastError: String? {
+        return UserDefaults.standard.string(forKey: lastErrorKey)
+    }
+
+    static func defaultStoreURL() -> URL? {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return support.appendingPathComponent("default.store")
+    }
+
+    static func storeExists(at customURL: URL? = nil) -> Bool {
+        guard let url: URL = customURL ?? defaultStoreURL() else { return false }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+
+    /// Store principal y auxiliares. Solo se consultan para diagnóstico y para
+    /// mostrar que siguen en disco; nunca se mueven ni se eliminan.
+    static func existingStoreFiles(at customURL: URL? = nil) -> [URL] {
+        guard let url: URL = customURL ?? defaultStoreURL() else { return [] }
         let fileManager = FileManager.default
-        guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            return nil
-        }
-
-        let stamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
-        let directory = support
-            .appendingPathComponent("AppGym", isDirectory: true)
-            .appendingPathComponent("Store-corrupto-\(stamp)", isDirectory: true)
-
-        let storeFiles = ["default.store", "default.store-shm", "default.store-wal"]
-        var movedSomething = false
-
-        do {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-
-            for name in storeFiles {
-                let source = support.appendingPathComponent(name)
-                guard fileManager.fileExists(atPath: source.path) else { continue }
-                try fileManager.moveItem(at: source, to: directory.appendingPathComponent(name))
-                movedSomething = true
-            }
-        } catch {
-            print("[Store] No se pudo apartar el store dañado: \(error)")
-            return nil
-        }
-
-        return movedSomething ? directory : nil
+        let candidates: [URL] = [
+            url,
+            URL(fileURLWithPath: url.path + "-shm"),
+            URL(fileURLWithPath: url.path + "-wal")
+        ]
+        return candidates.filter { fileManager.fileExists(atPath: $0.path) }
     }
 }
 
@@ -127,56 +203,66 @@ enum StoreBootstrap {
 
 @main
 struct AppGymApp: App {
-    let container: ModelContainer
-    private let recoveryMessage: String?
+    @State private var storeOutcome: StoreBootstrap.Outcome
 
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var bpmManager = BPMManager.shared
     @State private var didRunLaunchTasks = false
-    @State private var bannerMessage: String?
+    /// Se lee al arrancar; el flujo de onboarding lo pone a `true` solo cuando
+    /// el guardado final ha terminado correctamente.
+    @State private var isOnboardingCompleted: Bool = UserSettingsManager.isOnboardingCompleted
 
     init() {
-        let outcome = StoreBootstrap.makeContainer()
-        container = outcome.container
-        recoveryMessage = outcome.recoveryMessage
+        _storeOutcome = State(initialValue: StoreBootstrap.makeContainer())
     }
 
     var body: some Scene {
         WindowGroup {
-            ZStack(alignment: .top) {
-                MainTabView()
-                    .environmentObject(bpmManager)
-
-                if let bannerMessage {
-                    StoreRecoveryBanner(message: bannerMessage) {
-                        self.bannerMessage = nil
-                    }
-                    .transition(.move(edge: .top).combined(with: .opacity))
+            if let container = storeOutcome.container {
+                appContent(container: container)
+                    .modelContainer(container)
+            } else {
+                StoreRecoveryView(failure: storeOutcome.failure) {
+                    didRunLaunchTasks = false
+                    storeOutcome = StoreBootstrap.makeContainer()
                 }
             }
-            .onAppear(perform: runLaunchTasksOnce)
-            .onChange(of: scenePhase) { (_, newPhase: ScenePhase) in
-                // Al volver a la app la racha se calculó con las sesiones de la
-                // última vez. El arranque también pasa por `.active`, y ahí ya
-                // ha recalculado `runLaunchTasksOnce`: si el snapshot es de
-                // hace un instante, no se pide otra recarga.
-                guard newPhase == .active,
-                      Date().timeIntervalSince(WidgetStreakStore.load().lastUpdated) > 30.0 else { return }
-                WidgetStreakStore.refresh(modelContext: container.mainContext)
-            }
         }
-        .modelContainer(container)
+    }
+
+    @ViewBuilder
+    private func appContent(container: ModelContainer) -> some View {
+        ZStack(alignment: .top) {
+            Group {
+                if isOnboardingCompleted {
+                    MainTabView()
+                } else {
+                    OnboardingFlowView(context: .initialSetup) {
+                        isOnboardingCompleted = true
+                    }
+                }
+            }
+            .environmentObject(bpmManager)
+        }
+        .onAppear {
+            runLaunchTasksOnce(container: container)
+        }
+        .onChange(of: scenePhase) { (_, newPhase: ScenePhase) in
+            // Al volver a la app la racha se calculó con las sesiones de la
+            // última vez. El arranque también pasa por `.active`, y ahí ya
+            // ha recalculado `runLaunchTasksOnce`: si el snapshot es de
+            // hace un instante, no se pide otra recarga.
+            guard newPhase == .active,
+                  Date().timeIntervalSince(WidgetStreakStore.load().lastUpdated) > 30.0 else { return }
+            WidgetStreakStore.refresh(modelContext: container.mainContext)
+        }
     }
 
     /// Tareas de arranque. Se ejecutan una sola vez por proceso: `.onAppear`
     /// puede dispararse varias veces al volver de una pantalla completa.
-    private func runLaunchTasksOnce() {
+    private func runLaunchTasksOnce(container: ModelContainer) {
         guard !didRunLaunchTasks else { return }
         didRunLaunchTasks = true
-
-        if let recoveryMessage {
-            bannerMessage = recoveryMessage
-        }
 
         let context = container.mainContext
         MockDataGenerator.seedIfNeeded(context: context)
@@ -186,6 +272,10 @@ struct AppGymApp: App {
         MockDataGenerator.seedCardioAndIsometricExercisesIfNeeded(context: context)
         ExerciseDuplicateService.mergeIfNeeded(context: context)
         MockDataGenerator.applyRoutineTableUpdateIfNeeded(context: context)
+        MockDataGenerator.classifyLegacyRoutineSourcesIfNeeded(context: context)
+        // Va después de la tabla base para que sus definiciones antiguas no
+        // vuelvan a pisar la clasificación nueva.
+        MockDataGenerator.alignCatalogEquipmentIfNeeded(context: context)
 
         // Sesiones que quedaron abiertas tras un cierre inesperado. La que se
         // va a reanudar se conserva intacta.
@@ -198,44 +288,96 @@ struct AppGymApp: App {
     }
 }
 
-// MARK: - Aviso de recuperación
+// MARK: - Recuperación bloqueante
 
-private struct StoreRecoveryBanner: View {
-    let message: String
-    let onDismiss: () -> Void
+/// Pantalla sin acceso a SwiftData. No permite crear datos nuevos: solo explica
+/// el problema y reintenta abrir el mismo store. Así un fallo de migración no
+/// puede confundirse con una instalación nueva.
+private struct StoreRecoveryView: View {
+    let failure: StoreBootstrap.Failure?
+    let onRetry: () -> Void
+
+    @State private var showsTechnicalDetails = false
+
+    private var preservedFiles: [URL] {
+        return StoreBootstrap.existingStoreFiles()
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10.0) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(.system(size: 12.0, weight: .bold, design: .monospaced))
-                .foregroundStyle(EndfieldPalette.accentYellow)
-                .fixedSize()
+        ZStack {
+            Color.black.ignoresSafeArea()
 
-            Text(message)
-                .font(.system(size: 10.0, weight: .medium, design: .monospaced))
-                .foregroundStyle(EndfieldPalette.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16.0) {
+                    Image(systemName: "externaldrive.badge.exclamationmark")
+                        .font(.system(size: 30.0, weight: .semibold))
+                        .foregroundStyle(EndfieldPalette.accentYellow)
 
-            Spacer(minLength: 4.0)
+                    Text("BASE DE DATOS NO DISPONIBLE")
+                        .font(EndfieldFont.mono(17.0, weight: .heavy))
+                        .tracking(1.2)
+                        .foregroundStyle(EndfieldPalette.textPrimary)
 
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10.0, weight: .bold, design: .monospaced))
-                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    Text(failure?.message ?? "No se ha podido abrir la base de datos. No se ha abierto una base vacía.")
+                        .font(EndfieldFont.mono(11.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("Los archivos originales se conservan en el dispositivo. No se han movido, borrado ni sustituido. No sigas usando una base nueva: reintenta la apertura o recupera una copia de seguridad cuando el almacenamiento vuelva a estar disponible.")
+                        .font(EndfieldFont.mono(11.0))
+                        .foregroundStyle(EndfieldPalette.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("\(preservedFiles.count) archivo(s) de almacenamiento conservados")
+                        .font(EndfieldFont.mono(9.0, weight: .bold))
+                        .foregroundStyle(EndfieldPalette.accentCyan)
+
+                    if let details = failure?.technicalDetails, !details.isEmpty {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showsTechnicalDetails.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 6.0) {
+                                Image(systemName: showsTechnicalDetails ? "chevron.down" : "chevron.right")
+                                Text("DETALLE TÉCNICO")
+                            }
+                            .font(EndfieldFont.mono(10.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+                        }
+                        .buttonStyle(.plain)
+
+                        if showsTechnicalDetails {
+                            Text(details)
+                                .font(.system(size: 9.0, weight: .regular, design: .monospaced))
+                                .foregroundStyle(EndfieldPalette.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(10.0)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(EndfieldPalette.bgPanel)
+                                .clipShape(RoundedRectangle(cornerRadius: 8.0, style: .continuous))
+                        }
+                    }
+
+                    Button(action: onRetry) {
+                        Text("REINTENTAR APERTURA")
+                            .font(EndfieldFont.mono(11.0, weight: .heavy))
+                            .tracking(1.0)
+                            .foregroundStyle(EndfieldPalette.bgPrimary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12.0)
+                            .background(EndfieldPalette.accentYellow)
+                            .clipShape(RoundedRectangle(cornerRadius: 6.0, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    Text("No desinstales la app ni borres sus datos antes de recuperar una copia. La recuperación debe ser explícita y reversible.")
+                        .font(EndfieldFont.mono(9.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(24.0)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Ocultar aviso")
         }
-        .padding(12.0)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(EndfieldPalette.bgPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 10.0, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10.0, style: .continuous)
-                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
-        }
-        .padding(.horizontal, 16.0)
-        .padding(.top, 8.0)
-        .shadow(color: Color.black.opacity(0.35), radius: 12.0, y: 6.0)
     }
 }

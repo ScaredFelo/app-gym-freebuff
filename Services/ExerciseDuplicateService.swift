@@ -38,7 +38,19 @@ public enum ExerciseDuplicateService {
         let descriptor: FetchDescriptor<Exercise> = FetchDescriptor<Exercise>()
         guard let exercises: [Exercise] = try? context.fetch(descriptor) else { return }
 
-        let plans: [MergePlan] = makePlans(from: exercises)
+        // Una fusión puede borrar o reasignar `RoutineExercise`. Si el ejercicio
+        // participa en una de las cinco rutinas personales, se deja el grupo sin
+        // tocar: la sincronización del catálogo nunca reescribe esas rutinas.
+        guard let protectedExerciseIDs: Set<UUID> = exerciseIDsUsedByProtectedRoutines(context: context) else {
+            // Sin poder leer las rutinas protegidas no se toca ninguna fusión.
+            return
+        }
+        let plans: [MergePlan] = makePlans(from: exercises).filter { (plan: MergePlan) -> Bool in
+            if protectedExerciseIDs.contains(plan.keeper.id) { return false }
+            return !plan.duplicates.contains { (exercise: Exercise) -> Bool in
+                return protectedExerciseIDs.contains(exercise.id)
+            }
+        }
         guard !plans.isEmpty else {
             defaults.set(true, forKey: mergeFlagKey)
             return
@@ -64,6 +76,21 @@ public enum ExerciseDuplicateService {
         } catch {
             print("Error unificando ejercicios duplicados (la copia de seguridad está en \(backupURL.path)): \(error)")
         }
+    }
+
+    private static func exerciseIDsUsedByProtectedRoutines(context: ModelContext) -> Set<UUID>? {
+        let descriptor: FetchDescriptor<Routine> = FetchDescriptor<Routine>()
+        guard let routines: [Routine] = try? context.fetch(descriptor) else { return nil }
+
+        var ids: Set<UUID> = []
+        for routine in routines where seededPersonalRoutineIDs.contains(routine.id) {
+            for link in routine.exercises {
+                if let exerciseID = link.exercise?.id {
+                    ids.insert(exerciseID)
+                }
+            }
+        }
+        return ids
     }
 
     // MARK: Planes de fusión

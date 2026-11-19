@@ -23,6 +23,11 @@ public final class Exercise {
     public var primaryMusclesRaw: String = ""
     /// Músculos secundarios serializados para mantener la migración ligera.
     public var secondaryMusclesRaw: String = ""
+    /// Texto original del catálogo para los músculos principales. Conserva
+    /// tokens sin equivalencia exacta (por ejemplo, «Serrato»).
+    public var catalogPrimaryMusclesText: String = ""
+    /// Texto original del catálogo para los músculos secundarios.
+    public var catalogSecondaryMusclesText: String = ""
     public var whyGoodExercise: String = ""
     public var whyBadExercise: String = ""
     public var whenRecommended: String = ""
@@ -166,7 +171,9 @@ public final class Exercise {
         hasCustomRequiresStraps: Bool = false,
         hasCustomEquipment: Bool = false,
         hasCustomRestCondition: Bool = false,
-        trackingMode: ExerciseTrackingMode = .reps
+        trackingMode: ExerciseTrackingMode = .reps,
+        catalogPrimaryMusclesText: String = "",
+        catalogSecondaryMusclesText: String = ""
     ) {
         self.id = id
         self.name = name
@@ -194,6 +201,8 @@ public final class Exercise {
         self.hasCustomEquipment = hasCustomEquipment
         self.hasCustomRestCondition = hasCustomRestCondition
         self.trackingModeRaw = trackingMode.rawValue
+        self.catalogPrimaryMusclesText = catalogPrimaryMusclesText
+        self.catalogSecondaryMusclesText = catalogSecondaryMusclesText
 
         if let firstMuscle: MuscleGroup = primaryMuscles.first {
             self.muscleGroupRaw = firstMuscle.rawValue

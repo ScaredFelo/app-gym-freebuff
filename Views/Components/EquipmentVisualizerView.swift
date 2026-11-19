@@ -124,6 +124,8 @@ struct EquipmentVisualizerView: View {
             FixedBarEquipmentDrawingView()
         case .plateLoadedMachine:
             PlateLoadedMachineDrawingView(plates: result.platesPerSide)
+        case .selectorizedMachine:
+            SelectorizedMachineDrawingView(weight: weight)
         case .smithMachine:
             LoadedBarDrawingView(
                 plates: result.platesPerSide,
@@ -136,12 +138,20 @@ struct EquipmentVisualizerView: View {
                 barThickness: 8.0,
                 showsStops: false
             )
+        case .standardBar:
+            LoadedBarDrawingView(
+                plates: result.platesPerSide,
+                barThickness: 6.0,
+                showsStops: false
+            )
         case .ezBar:
             EZBarDrawingView(plates: result.platesPerSide)
         case .bodyweight:
             BodyweightDrawingView()
         case .cardioMachine:
             CardioMachineDrawingView()
+        case .pendingClassification:
+            PendingEquipmentDrawingView()
         }
     }
 
@@ -404,6 +414,55 @@ private struct PlateLoadedMachineDrawingView: View {
     }
 }
 
+// MARK: - Selectorized machine
+
+/// Pila de discos con pasador. El peso es total, no por lado: la máquina no
+/// reparte discos externos.
+private struct SelectorizedMachineDrawingView: View {
+    let weight: Double
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 3.0, style: .continuous)
+                .fill(Color.white.opacity(0.05))
+                .frame(width: 54.0, height: 62.0)
+
+            RoundedRectangle(cornerRadius: 3.0, style: .continuous)
+                .stroke(Color.white.opacity(0.35), lineWidth: 1.0)
+                .frame(width: 54.0, height: 62.0)
+
+            VStack(spacing: 3.0) {
+                ForEach(0..<7, id: \.self) { (index: Int) in
+                    RoundedRectangle(cornerRadius: 1.0, style: .continuous)
+                        .fill(index == 3 ? EndfieldPalette.accentYellow.opacity(0.9) : Color.white.opacity(0.30))
+                        .frame(width: 34.0, height: 4.5)
+                }
+            }
+
+            Rectangle()
+                .fill(EndfieldPalette.accentYellow)
+                .frame(width: 46.0, height: 1.6)
+                .offset(y: 1.0)
+
+            VStack {
+                Text("STACK")
+                    .font(EndfieldFont.label(6.5))
+                    .tracking(0.8)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .offset(y: -25.0)
+
+                Spacer()
+
+                Text(weight > 0.0 ? "\(Int(weight.rounded())) KG" : "SEL")
+                    .font(EndfieldFont.label(7.0))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .offset(y: 24.0)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
 // MARK: - Loaded bar (Multipower / Olympic)
 
 private struct LoadedBarDrawingView: View {
@@ -537,6 +596,26 @@ private struct BodyweightDrawingView: View {
     }
 }
 
+// MARK: - Pendiente de clasificación
+
+private struct PendingEquipmentDrawingView: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 3.0)
+                .strokeBorder(
+                    Color.white.opacity(0.35),
+                    style: StrokeStyle(lineWidth: 1.5, dash: [6.0, 4.0])
+                )
+                .frame(width: 110.0, height: 64.0)
+
+            Text("?")
+                .font(.system(size: 26.0, weight: .bold, design: .monospaced))
+                .foregroundStyle(EndfieldPalette.accentYellow.opacity(0.85))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
 // MARK: - Cardio machine
 
 private struct CardioMachineDrawingView: View {
@@ -620,6 +699,22 @@ struct EquipmentSimplifiedIconView: View {
                 context.fill(machine, with: .color(Color.white.opacity(0.10)))
                 context.stroke(machine, with: .color(barColor), lineWidth: 1.0)
 
+            case .selectorizedMachine:
+                var column = Path()
+                column.addRect(CGRect(x: 8.0, y: 3.0, width: 12.0, height: 18.0))
+                context.stroke(column, with: .color(barColor), lineWidth: 1.0)
+                for index in 0..<4 {
+                    self.fillRect(
+                        context: &context,
+                        x: 10.0,
+                        y: 5.0 + CGFloat(index) * 4.0,
+                        width: 8.0,
+                        height: 2.0,
+                        color: index == 2 ? plateColor : barColor.opacity(0.55)
+                    )
+                }
+                self.strokeLine(context: &context, x1: 6.0, y1: 14.0, x2: 22.0, y2: 14.0, color: plateColor, lineWidth: 1.0)
+
             case .smithMachine:
                 self.strokeLine(context: &context, x1: 2.0, y1: middleY, x2: 26.0, y2: middleY, color: barColor, lineWidth: 1.8)
                 self.fillRect(context: &context, x: 5.0, y: middleY - 5.0, width: 2.0, height: 10.0, color: plateColor)
@@ -631,6 +726,11 @@ struct EquipmentSimplifiedIconView: View {
                 self.strokeLine(context: &context, x1: 1.0, y1: middleY, x2: 27.0, y2: middleY, color: barColor, lineWidth: 1.8)
                 self.fillRect(context: &context, x: 5.0, y: middleY - 5.5, width: 2.5, height: 11.0, color: plateColor)
                 self.fillRect(context: &context, x: 20.5, y: middleY - 5.5, width: 2.5, height: 11.0, color: plateColor)
+
+            case .standardBar:
+                self.strokeLine(context: &context, x1: 2.0, y1: middleY, x2: 26.0, y2: middleY, color: barColor, lineWidth: 1.4)
+                self.fillRect(context: &context, x: 6.5, y: middleY - 4.5, width: 2.0, height: 9.0, color: plateColor)
+                self.fillRect(context: &context, x: 19.5, y: middleY - 4.5, width: 2.0, height: 9.0, color: plateColor)
 
             case .ezBar:
                 var path = Path()
@@ -665,6 +765,15 @@ struct EquipmentSimplifiedIconView: View {
                 self.strokeLine(context: &context, x1: 2.0, y1: 21.0, x2: 26.0, y2: 21.0, color: barColor, lineWidth: 1.4)
                 self.strokeLine(context: &context, x1: 10.0, y1: middleY + 8.0, x2: 21.0, y2: 7.0, color: barColor, lineWidth: 1.6)
                 self.fillRect(context: &context, x: 19.0, y: 4.0, width: 6.0, height: 2.0, color: plateColor)
+
+            case .pendingClassification:
+                var box = Path()
+                box.addRect(CGRect(x: 4.0, y: middleY - 7.0, width: 20.0, height: 14.0))
+                context.stroke(
+                    box,
+                    with: .color(barColor),
+                    style: StrokeStyle(lineWidth: 1.0, dash: [2.0, 2.0])
+                )
             }
         }
         .frame(width: 28.0, height: 24.0)

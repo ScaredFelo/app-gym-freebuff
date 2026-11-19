@@ -7,12 +7,16 @@ struct PlateCalculationResult {
     let barWeight: Double
     let achievedTotalWeight: Double
     let isExact: Bool
+    /// `false` en poleas, mancuernas, peso corporal y máquinas selectorizadas:
+    /// el peso es total y no se reparte en discos.
+    let usesPlates: Bool
 
     static let empty = PlateCalculationResult(
         platesPerSide: [],
         barWeight: 0.0,
         achievedTotalWeight: 0.0,
-        isExact: false
+        isExact: false,
+        usesPlates: false
     )
 }
 
@@ -32,6 +36,17 @@ enum PlateCalculatorService {
         availablePlates: [Double] = UserSettingsManager.availablePlates
     ) -> PlateCalculationResult {
         let baseWeight: Double = equipmentType.baseWeight
+
+        guard equipmentType.usesPlates else {
+            return PlateCalculationResult(
+                platesPerSide: [],
+                barWeight: baseWeight,
+                achievedTotalWeight: totalWeight,
+                isExact: true,
+                usesPlates: false
+            )
+        }
+
         let loadToDistribute: Double = max(0.0, totalWeight - baseWeight)
         let targetPerSide: Double = loadToDistribute / 2.0
 
@@ -63,7 +78,8 @@ enum PlateCalculatorService {
             platesPerSide: platesPerSide,
             barWeight: baseWeight,
             achievedTotalWeight: achievedTotalWeight,
-            isExact: isExact
+            isExact: isExact,
+            usesPlates: true
         )
     }
 
@@ -104,6 +120,9 @@ enum PlateCalculatorService {
     }
 
     static func breakdownText(for result: PlateCalculationResult) -> String {
+        guard result.usesPlates else {
+            return "Peso total: \(UserSettingsManager.formatted(result.achievedTotalWeight)) kg"
+        }
         if result.platesPerSide.isEmpty {
             return "Por lado: solo barra"
         }

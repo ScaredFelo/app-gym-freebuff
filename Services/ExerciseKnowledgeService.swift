@@ -321,11 +321,15 @@ public enum ExerciseKnowledgeService {
             return "El recorrido fijo y la carga corporal o prefijada hacen que el ejercicio sea muy repetible, ideal para medir progreso con criterios claros."
         case .plateLoadedMachine, .smithMachine:
             return "La trayectoria guiada reduce la demanda técnica y de estabilidad, así que puedes acercarte al fallo con seguridad y acumular volumen de calidad."
+        case .selectorizedMachine:
+            return "La pila integrada y la trayectoria guiada permiten ajustar la carga con precisión y acercarte al fallo con muy poca demanda técnica o de estabilización."
         case .bodyweight:
             return "Solo necesitas tu peso corporal y una posición estable: puedes trabajar el control del tronco en cualquier sitio, sin cargar las articulaciones y sin interferir con el resto de la sesión."
         case .cardioMachine:
             return "El trabajo continuo en máquina de cardio permite fijar la intensidad minuto a minuto, sostener un pulso objetivo y sumar volumen aerobio con muy poco impacto articular."
-        case .olympicBar, .ezBar:
+        case .pendingClassification:
+            return "El nombre del catálogo no confirma el tipo de equipamiento. La ficha se completará cuando se clasifique la máquina o el implemento."
+        case .standardBar, .olympicBar, .ezBar:
             if compound {
                 return "Permite mover cargas altas con progresión sencilla y un estímulo sistémico fuerte, lo que se traduce en ganancias de fuerza y masa muscular medibles."
             }
@@ -343,11 +347,15 @@ public enum ExerciseKnowledgeService {
             return "El recorrido es tan guiado que el trabajo de estabilizadores es mínimo y la transferencia a patrones libres puede quedarse corta."
         case .plateLoadedMachine, .smithMachine:
             return "La trayectoria fija puede no encajar con tu antropometría y reduce el trabajo de estabilizadores, así que no sustituye a un patrón libre."
+        case .selectorizedMachine:
+            return "El recorrido fijo y la pila limitan el trabajo de estabilizadores; además, los incrementos de carga vienen impuestos por la máquina."
         case .bodyweight:
             return "La carga es tu propio peso y la progresión depende del tiempo o de la palanca, así que el estímulo de fuerza se estanca antes que con una carga externa."
         case .cardioMachine:
             return "No aporta estímulo mecánico para hipertrofia y compite por la recuperación: un exceso de cardio resta calidad a las series de fuerza."
-        case .olympicBar, .ezBar:
+        case .pendingClassification:
+            return "Sin equipamiento confirmado no se puede valorar la curva de resistencia, la estabilidad ni la transferencia real del ejercicio."
+        case .standardBar, .olympicBar, .ezBar:
             if compound {
                 return "La demanda de estabilidad y la fatiga general son altas: cuando la técnica se degrada, la columna y las articulaciones absorben el esfuerzo."
             }
@@ -367,7 +375,7 @@ public enum ExerciseKnowledgeService {
             return "Con fatiga lumbar o técnica inestable, con molestias articulares específicas del patrón o si aún no dominas la ejecución sin carga."
         }
         switch equipment {
-        case .cable, .plateLoadedMachine, .smithMachine:
+        case .cable, .plateLoadedMachine, .selectorizedMachine, .smithMachine:
             return "Si buscas el máximo estímulo de fuerza o necesitas mover cargas absolutas altas; en ese caso prioriza un patrón libre."
         default:
             return "Con dolor articular activo o cuando la fatiga ya impide controlar la fase excéntrica del movimiento."

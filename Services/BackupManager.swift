@@ -66,6 +66,9 @@ struct ExerciseBackupDTO: Codable {
     var hasCustomRequiresStraps: Bool? = nil
     var hasCustomEquipment: Bool? = nil
     var hasCustomRestCondition: Bool? = nil
+    /// Texto muscular original del catálogo (versión 3).
+    var catalogPrimaryMusclesText: String? = nil
+    var catalogSecondaryMusclesText: String? = nil
 }
 
 extension ExerciseBackupDTO {
@@ -97,7 +100,19 @@ struct RoutineBackupDTO: Codable {
     var name: String
     var isTemplate: Bool
     var sortOrder: Int
+    /// Opcional para seguir leyendo copias creadas antes de existir la
+    /// procedencia. Sin valor se restaura como manual (no se archiva sola).
+    var source: String? = nil
     var exercises: [RoutineExerciseBackupDTO]
+}
+
+/// Snapshot de una semana asistida. Es opcional en la raíz para seguir leyendo
+/// copias creadas antes del constructor de siete días.
+struct AssistedWeekPlanBackupDTO: Codable {
+    var id: UUID
+    var createdAt: Date
+    var isActivePlan: Bool
+    var days: [AssistedWeekDayRecord]
 }
 
 // MARK: - DTOs de sesiones
@@ -148,6 +163,9 @@ struct SettingsBackupDTO: Codable {
     var isBigPictureMode: Bool
     var multipowerBarWeight: Double
     var ezBarWeight: Double
+    /// Opcional para seguir leyendo copias anteriores. Si falta, la
+    /// restauración conserva el valor actual del usuario.
+    var standardBarWeight: Double? = nil
     var availablePlates: [Double]
     var hrMax: Double
     var hrRest: Double
@@ -165,6 +183,7 @@ struct AppBackupData: Codable {
     var routines: [RoutineBackupDTO]
     var sessions: [WorkoutSessionBackupDTO]
     var settings: SettingsBackupDTO
+    var assistedWeeks: [AssistedWeekPlanBackupDTO]? = nil
 
     /// Comprobaciones estructurales mínimas antes de sustituir la base de datos.
     /// Un archivo con fechas invertidas o tamaños absurdos se rechaza en lugar
@@ -173,6 +192,10 @@ struct AppBackupData: Codable {
         guard routines.count <= 5_000, sessions.count <= 50_000 else { return false }
 
         for routine in routines where routine.exercises.count > 5_000 {
+            return false
+        }
+
+        for week in assistedWeeks ?? [] where week.days.count > 7 {
             return false
         }
 
@@ -313,6 +336,7 @@ enum BackupManager {
             FetchDescriptor<WorkoutSession>(sortBy: [SortDescriptor(\WorkoutSession.startDate)])
         )
         let exercises: [Exercise] = (try? context.fetch(FetchDescriptor<Exercise>())) ?? []
+        let assistedPlans: [AssistedWeekPlan] = (try? context.fetch(FetchDescriptor<AssistedWeekPlan>())) ?? []
 
         var exerciseSnapshots: [String: ExerciseBackupDTO] = [:]
         for exercise in exercises {
@@ -325,13 +349,22 @@ enum BackupManager {
         let sessionDTOs: [WorkoutSessionBackupDTO] = sessions.map { (session: WorkoutSession) -> WorkoutSessionBackupDTO in
             return makeSessionDTO(session, exerciseSnapshots: exerciseSnapshots)
         }
+        let assistedDTOs: [AssistedWeekPlanBackupDTO] = assistedPlans.map { (plan: AssistedWeekPlan) -> AssistedWeekPlanBackupDTO in
+            return AssistedWeekPlanBackupDTO(
+                id: plan.id,
+                createdAt: plan.createdAt,
+                isActivePlan: plan.isActivePlan,
+                days: plan.days
+            )
+        }
 
         return AppBackupData(
             version: AppBackupData.currentVersion,
             exportDate: exportDate,
             routines: routineDTOs,
             sessions: sessionDTOs,
-            settings: makeSettingsDTO()
+            settings: makeSettingsDTO(),
+            assistedWeeks: assistedDTOs
         )
     }
 
@@ -360,6 +393,7 @@ enum BackupManager {
             name: routine.name,
             isTemplate: routine.isTemplate,
             sortOrder: routine.sortOrder,
+            source: routine.source.rawValue,
             exercises: exercises
         )
     }
@@ -395,7 +429,9 @@ enum BackupManager {
             whenNotRecommended: exercise.whenNotRecommended,
             hasCustomRequiresStraps: exercise.hasCustomRequiresStraps,
             hasCustomEquipment: exercise.hasCustomEquipment,
-            hasCustomRestCondition: exercise.hasCustomRestCondition
+            hasCustomRestCondition: exercise.hasCustomRestCondition,
+            catalogPrimaryMusclesText: exercise.catalogPrimaryMusclesText,
+            catalogSecondaryMusclesText: exercise.catalogSecondaryMusclesText
         )
     }
 
@@ -459,6 +495,7 @@ enum BackupManager {
             isBigPictureMode: UserDefaults.standard.bool(forKey: UserSettingsManager.isBigPictureModeEnabledKey),
             multipowerBarWeight: UserSettingsManager.multipowerBarWeight,
             ezBarWeight: UserSettingsManager.ezBarWeight,
+            standardBarWeight: UserSettingsManager.standardBarWeight,
             availablePlates: UserSettingsManager.availablePlates,
             hrMax: UserSettingsManager.hrMax,
             hrRest: UserSettingsManager.hrRest
@@ -499,6 +536,11 @@ enum BackupManager {
     }
 
     private static func replaceExistingData(with backup: AppBackupData, context: ModelContext) throws {
+        let assistedPlans: [AssistedWeekPlan] = try context.fetch(FetchDescriptor<AssistedWeekPlan>())
+        for plan in assistedPlans {
+            context.delete(plan)
+        }
+
         let sessions: [WorkoutSession] = try context.fetch(FetchDescriptor<WorkoutSession>())
         for session in sessions {
             let logs: [WorkoutSetLog] = session.setsCompleted
@@ -520,7 +562,8 @@ enum BackupManager {
                 id: routineDTO.id,
                 name: routineDTO.name,
                 isTemplate: routineDTO.isTemplate,
-                sortOrder: routineDTO.sortOrder
+                sortOrder: routineDTO.sortOrder,
+                source: routineDTO.source.flatMap(RoutineSource.init(rawValue:)) ?? .manual
             )
             context.insert(routine)
 
@@ -552,6 +595,16 @@ enum BackupManager {
 
         for sessionDTO in backup.sessions {
             insertSession(sessionDTO, cache: &exerciseCache, context: context)
+        }
+
+        for weekDTO in backup.assistedWeeks ?? [] {
+            let plan: AssistedWeekPlan = AssistedWeekPlan(
+                id: weekDTO.id,
+                createdAt: weekDTO.createdAt,
+                isActivePlan: weekDTO.isActivePlan,
+                days: weekDTO.days
+            )
+            context.insert(plan)
         }
     }
 
@@ -603,6 +656,12 @@ enum BackupManager {
         }
         if let secondary = snapshot.secondaryMusclesRaw {
             exercise.secondaryMusclesRaw = secondary
+        }
+        if let text = snapshot.catalogPrimaryMusclesText {
+            exercise.catalogPrimaryMusclesText = text
+        }
+        if let text = snapshot.catalogSecondaryMusclesText {
+            exercise.catalogSecondaryMusclesText = text
         }
         if let notes = snapshot.notes {
             exercise.notes = notes
@@ -714,6 +773,12 @@ enum BackupManager {
         defaults.set(settings.isBigPictureMode, forKey: UserSettingsManager.isBigPictureModeEnabledKey)
         defaults.set(settings.multipowerBarWeight, forKey: UserSettingsManager.multipowerBarWeightKey)
         defaults.set(settings.ezBarWeight, forKey: UserSettingsManager.ezBarWeightKey)
+        if let standardBarWeight = settings.standardBarWeight {
+            defaults.set(
+                UserSettingsManager.clampedBarWeight(standardBarWeight),
+                forKey: UserSettingsManager.standardBarWeightKey
+            )
+        }
         defaults.set(
             UserSettingsManager.serializePlates(Set(settings.availablePlates)),
             forKey: UserSettingsManager.availablePlatesKey
