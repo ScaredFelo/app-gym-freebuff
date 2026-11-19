@@ -161,6 +161,13 @@ public final class CardioViewModel: ObservableObject {
     func resumeMonitoring() {
         guard phase != .finished else { return }
 
+        // Mantiene la app despierta con la pantalla bloqueada para que los
+        // avisos de mitad, último minuto y objetivo lleguen a sonar. En una
+        // sesión recuperada en pausa no hace falta: no hay cuenta atrás.
+        if phase == .running {
+            AudioAlertService.shared.startBackgroundAudio()
+        }
+
         startHeartRateSensing()
         startBPMRecording()
         startCardioActivity()
@@ -174,6 +181,7 @@ public final class CardioViewModel: ObservableObject {
         segmentStart = nil
         phase = .paused
         stopTicking()
+        AudioAlertService.shared.stopBackgroundAudio()
         updateCardioActivity()
         persistSnapshot()
     }
@@ -215,6 +223,7 @@ public final class CardioViewModel: ObservableObject {
         stopTicking()
         stopBPMRecording()
         stopHeartRateSensing()
+        AudioAlertService.shared.stopBackgroundAudio()
         CardioLiveActivityManager.shared.end()
         CardioSessionStore.clear()
     }
@@ -230,6 +239,18 @@ public final class CardioViewModel: ObservableObject {
         stopHeartRateSensing()
         CardioLiveActivityManager.shared.end()
         CardioSessionStore.clear()
+
+        scheduleBackgroundAudioStop()
+    }
+
+    /// Apaga el audio del cardio unos segundos después del cierre: la campana
+    /// del objetivo necesita seguir sonando con el móvil bloqueado.
+    private func scheduleBackgroundAudioStop() {
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard let self, self.phase == .finished else { return }
+            AudioAlertService.shared.stopBackgroundAudio()
+        }
     }
 
     private func stopTicking() {
