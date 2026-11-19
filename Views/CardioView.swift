@@ -1192,7 +1192,7 @@ struct CardioReportPanel: View {
 
                 Spacer(minLength: 4.0)
 
-                Text("\(zoneTime(totalZoneSeconds)) EN ZONA")
+                Text("\(zoneTime(totalZoneSeconds)) MEDIDO")
                     .font(EndfieldFont.label(7.0))
                     .tracking(0.6)
                     .foregroundStyle(EndfieldPalette.textSecondary.opacity(0.8))
@@ -1227,10 +1227,12 @@ struct CardioReportPanel: View {
                 .fill(CardioZoneStyle.tint(for: zone.id))
                 .frame(width: 5.0, height: 5.0)
 
-            Text("Z\(zone.id)")
+            Text(zone.id == 0 ? "FUERA" : "Z\(zone.id)")
                 .font(EndfieldFont.mono(9.0, weight: .bold))
-                .foregroundStyle(EndfieldPalette.textPrimary)
-                .frame(width: 16.0, alignment: .leading)
+                .foregroundStyle(zone.id == 0 ? EndfieldPalette.textSecondary : EndfieldPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .frame(width: 30.0, alignment: .leading)
 
             Text(zoneRangeLabel(zone))
                 .font(EndfieldFont.label(7.5))
@@ -1264,6 +1266,10 @@ struct CardioReportPanel: View {
     }
 
     private func zoneRangeLabel(_ zone: CardioZoneMetrics) -> String {
+        if zone.id == 0 {
+            return "<50%"
+        }
+
         let lower: Int = Int((zone.lowerFraction * 100.0).rounded())
         if zone.id == 5 {
             return "\(lower)% +"

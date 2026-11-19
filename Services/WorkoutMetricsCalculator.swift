@@ -46,7 +46,8 @@ struct CardioMetrics {
     }
 }
 
-/// Tiempo medido dentro de una zona de frecuencia cardíaca.
+/// Tiempo medido dentro de una zona de frecuencia cardíaca. El `id` 0
+/// representa el tiempo por debajo del 50 % de la FC máxima.
 struct CardioZoneMetrics: Identifiable {
     let id: Int
     let lowerFraction: Double
@@ -611,8 +612,12 @@ enum WorkoutMetricsCalculator {
     /// Tiempo medido en cada zona: cada muestra se atribuye a la zona de su
     /// pulso hasta la siguiente lectura. Los huecos de más de cinco minutos
     /// (app suspendida, sensor caído) no cuentan, igual que en Edwards.
+    ///
+    /// El primer elemento (id 0) acumula el tiempo por debajo del 50 % de la
+    /// FC máxima, de modo que la suma de todos los tramos y de sus porcentajes
+    /// coincide con el tiempo medido de la sesión.
     static func zoneDistribution(samples: [BPMSample], hrMax: Double) -> [CardioZoneMetrics] {
-        var seconds: [Double] = [0, 0, 0, 0, 0]
+        var seconds: [Double] = [0, 0, 0, 0, 0, 0]
 
         if samples.count >= 2, hrMax > 0 {
             for index in 0..<(samples.count - 1) {
@@ -622,17 +627,23 @@ enum WorkoutMetricsCalculator {
                 guard gap > 0, gap <= 5 * 60 else { continue }
 
                 let ratio: Double = current.bpm / hrMax
-                guard ratio >= 0.50 else { continue }
-
-                let zone: Int = heartRateZoneIndex(for: ratio)
-                seconds[zone - 1] += gap
+                let zone: Int = ratio >= 0.50 ? heartRateZoneIndex(for: ratio) : 0
+                seconds[zone] += gap
             }
         }
 
         let total: Double = seconds.reduce(0.0, +)
 
-        return heartRateZoneBounds.map { (bound: (index: Int, lower: Double, upper: Double)) -> CardioZoneMetrics in
-            let zoneSeconds: Double = seconds[bound.index - 1]
+        let belowZone: CardioZoneMetrics = CardioZoneMetrics(
+            id: 0,
+            lowerFraction: 0.0,
+            upperFraction: 0.50,
+            seconds: seconds[0],
+            fraction: total > 0 ? seconds[0] / total : 0
+        )
+
+        let zones: [CardioZoneMetrics] = heartRateZoneBounds.map { (bound: (index: Int, lower: Double, upper: Double)) -> CardioZoneMetrics in
+            let zoneSeconds: Double = seconds[bound.index]
             return CardioZoneMetrics(
                 id: bound.index,
                 lowerFraction: bound.lower,
@@ -641,6 +652,8 @@ enum WorkoutMetricsCalculator {
                 fraction: total > 0 ? zoneSeconds / total : 0
             )
         }
+
+        return [belowZone] + zones
     }
 
     private static func heartRateZoneIndex(for ratio: Double) -> Int {
