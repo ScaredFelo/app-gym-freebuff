@@ -174,7 +174,7 @@ struct ExerciseRowView: View {
                 HStack(spacing: 5.0) {
                     TacticalTagBadge(text: exercise.muscleGroup.shortName, tint: EndfieldPalette.textSecondary)
                     TacticalTagBadge(text: exercise.equipmentType.rawValue, tint: EndfieldPalette.accentCyan)
-                    TacticalTagBadge(text: "REPS: \(exercise.targetRepsText)", tint: EndfieldPalette.accentYellow)
+                    TacticalTagBadge(text: exercise.targetRangeLabel, tint: EndfieldPalette.accentYellow)
 
                     if exercise.requiresStraps {
                         TacticalTagBadge(text: "STRAPS", tint: EndfieldPalette.accentRed)

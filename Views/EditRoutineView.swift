@@ -444,7 +444,7 @@ private struct RoutineExerciseEditorRow: View {
     private var repsBlock: some View {
         VStack(alignment: .leading, spacing: 6.0) {
             HStack(spacing: 6.0) {
-                Text("REPS // OBJETIVO")
+                Text((routineExercise.exercise?.targetUnitLabel ?? "REPS") + " // OBJETIVO")
                     .font(EndfieldFont.label(8.0))
                     .tracking(1.2)
                     .foregroundStyle(EndfieldPalette.textSecondary)
@@ -461,9 +461,9 @@ private struct RoutineExerciseEditorRow: View {
 
             TacticalStepperRow(
                 code: "MIN",
-                title: "Repeticiones mínimas",
+                title: (routineExercise.exercise?.trackingMode ?? .reps) == .reps ? "Repeticiones mínimas" : "Valor mínimo",
                 value: $routineExercise.targetRepsMin,
-                range: 1...50
+                range: (routineExercise.exercise?.trackingMode ?? .reps) == .reps ? (1...50) : (1...300)
             )
             .onChange(of: routineExercise.targetRepsMin) { _, newValue in
                 if newValue > routineExercise.targetRepsMax {
@@ -473,9 +473,9 @@ private struct RoutineExerciseEditorRow: View {
 
             TacticalStepperRow(
                 code: "MAX",
-                title: "Repeticiones máximas",
+                title: (routineExercise.exercise?.trackingMode ?? .reps) == .reps ? "Repeticiones máximas" : "Valor máximo",
                 value: $routineExercise.targetRepsMax,
-                range: 1...50
+                range: (routineExercise.exercise?.trackingMode ?? .reps) == .reps ? (1...50) : (1...300)
             )
             .onChange(of: routineExercise.targetRepsMax) { _, newValue in
                 if newValue < routineExercise.targetRepsMin {

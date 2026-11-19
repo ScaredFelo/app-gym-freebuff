@@ -46,6 +46,9 @@ struct ExerciseBackupDTO: Codable {
     var targetRepsMax: Int
     var defaultRestSeconds: Int?
     var defaultRestTargetBPM: Int?
+    /// Unidad de registro (`reps`, `seconds`, `minutes`). Opcional para poder
+    /// leer archivos exportados antes de existir el campo.
+    var trackingModeRaw: String?
 }
 
 extension ExerciseBackupDTO {
@@ -334,7 +337,8 @@ enum BackupManager {
             targetRepsMin: exercise.targetRepsMin,
             targetRepsMax: exercise.targetRepsMax,
             defaultRestSeconds: restSeconds,
-            defaultRestTargetBPM: restTargetBPM
+            defaultRestTargetBPM: restTargetBPM,
+            trackingModeRaw: exercise.trackingModeRaw
         )
     }
 
@@ -528,7 +532,8 @@ enum BackupManager {
             requiresStraps: snapshot.requiresStraps,
             targetRepsMin: snapshot.targetRepsMin,
             targetRepsMax: snapshot.targetRepsMax,
-            defaultRestCondition: snapshot.restCondition
+            defaultRestCondition: snapshot.restCondition,
+            trackingMode: ExerciseTrackingMode.fromStoredRawValue(snapshot.trackingModeRaw ?? "")
         )
         context.insert(exercise)
         cache[key] = exercise

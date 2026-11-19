@@ -8,6 +8,9 @@ public final class Exercise {
     public var muscleGroupRaw: String
     public var equipmentTypeRaw: String
     public var requiresStraps: Bool
+    /// Unidad de registro del objetivo y de cada serie: repeticiones,
+    /// segundos (isométricos) o minutos (cardio).
+    public var trackingModeRaw: String = "reps"
     public var targetRepsMin: Int = 6
     public var targetRepsMax: Int = 8
     public var defaultRestConditionData: Data
@@ -78,6 +81,24 @@ public final class Exercise {
     }
 
     @Transient
+    public var trackingMode: ExerciseTrackingMode {
+        get { ExerciseTrackingMode.fromStoredRawValue(trackingModeRaw) }
+        set { trackingModeRaw = newValue.rawValue }
+    }
+
+    /// Unidad que acompaña al rango objetivo (`REPS`, `SEG` o `MIN`).
+    @Transient
+    public var targetUnitLabel: String {
+        return trackingMode.unitLabel
+    }
+
+    /// Rango objetivo ya formateado con su unidad, p. ej. `SEG: 30-60`.
+    @Transient
+    public var targetRangeLabel: String {
+        return "\(targetUnitLabel): \(targetRepsText)"
+    }
+
+    @Transient
     public var defaultRestCondition: RestCondition {
         get {
             (try? JSONDecoder().decode(RestCondition.self, from: defaultRestConditionData)) ?? .timer(seconds: 90)
@@ -131,7 +152,8 @@ public final class Exercise {
         notes: String = "",
         hasCustomRequiresStraps: Bool = false,
         hasCustomEquipment: Bool = false,
-        hasCustomRestCondition: Bool = false
+        hasCustomRestCondition: Bool = false,
+        trackingMode: ExerciseTrackingMode = .reps
     ) {
         self.id = id
         self.name = name
@@ -158,6 +180,7 @@ public final class Exercise {
         self.hasCustomRequiresStraps = hasCustomRequiresStraps
         self.hasCustomEquipment = hasCustomEquipment
         self.hasCustomRestCondition = hasCustomRestCondition
+        self.trackingModeRaw = trackingMode.rawValue
 
         if let firstMuscle: MuscleGroup = primaryMuscles.first {
             self.muscleGroupRaw = firstMuscle.rawValue

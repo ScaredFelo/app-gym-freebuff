@@ -19,6 +19,7 @@ public enum MuscleGroup: String, Codable, CaseIterable, Sendable, Identifiable {
     case glutes = "Glúteos"
     case adductors = "Aductores"
     case calves = "Gemelos"
+    case cardio = "Cardio"
 
     public var id: String { rawValue }
 
@@ -55,6 +56,8 @@ public enum MuscleGroup: String, Codable, CaseIterable, Sendable, Identifiable {
             return "Aductores"
         case .calves:
             return "Gemelos"
+        case .cardio:
+            return "Cardio"
         }
     }
 

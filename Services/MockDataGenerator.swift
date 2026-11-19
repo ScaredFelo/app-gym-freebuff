@@ -7,6 +7,11 @@ private struct CatalogExerciseDefinition {
     let name: String
     let equipmentType: EquipmentType
     let restSeconds: Int
+    /// Unidad de registro: repeticiones por defecto, o tiempo en isométricos
+    /// y cardio.
+    var trackingMode: ExerciseTrackingMode = .reps
+    /// Rango objetivo propio cuando no se mide en repeticiones.
+    var targetRange: (min: Int, max: Int)? = nil
 }
 
 private struct CatalogRoutineEntry {
@@ -127,6 +132,60 @@ public final class MockDataGenerator {
             defaults.set(true, forKey: extendedCatalogFlagKey)
         } catch {
             print("Error sembrando el catálogo ampliado: \(error)")
+        }
+    }
+
+    /// Bandera del sembrado de cardio y core isométrico en bases ya existentes.
+    public static let cardioAndIsometricCatalogFlagKey: String = "didSeedCardioAndIsometricCatalog_v2"
+
+    /// Añade una sola vez los ejercicios de cardio y de core isométrico a una
+    /// base ya existente, sin tocar rutinas, notas ni historial.
+    public static func seedCardioAndIsometricExercisesIfNeeded(context: ModelContext) {
+        let defaults: UserDefaults = UserDefaults.standard
+        guard !defaults.bool(forKey: cardioAndIsometricCatalogFlagKey) else { return }
+
+        do {
+            let descriptor: FetchDescriptor<Exercise> = FetchDescriptor<Exercise>()
+            let existing: [Exercise] = try context.fetch(descriptor)
+
+            for definition in cardioAndIsometricCatalog {
+                let definitionKey: String = ExerciseDuplicateService.canonicalKey(for: definition.name)
+
+                // Si el usuario ya tenía el ejercicio con otro nombre conocido,
+                // se adopta su unidad y rango en vez de crear un duplicado.
+                if let match: Exercise = existing.first(where: { (candidate: Exercise) -> Bool in
+                    return ExerciseDuplicateService.canonicalKey(for: candidate.name) == definitionKey
+                }) {
+                    applyCardioAndIsometricSettings(definition, to: match)
+                    continue
+                }
+
+                let exercise: Exercise = makeExercise(from: definition)
+                context.insert(exercise)
+            }
+
+            try context.save()
+            defaults.set(true, forKey: cardioAndIsometricCatalogFlagKey)
+        } catch {
+            print("Error sembrando el catálogo de cardio e isométricos: \(error)")
+        }
+    }
+
+    /// Alinea la unidad de registro, el rango objetivo y el descanso de un
+    /// ejercicio de cardio o isométrico ya existente con el catálogo.
+    private static func applyCardioAndIsometricSettings(
+        _ definition: CatalogExerciseDefinition,
+        to exercise: Exercise
+    ) {
+        exercise.trackingMode = definition.trackingMode
+
+        if let range: (min: Int, max: Int) = definition.targetRange {
+            exercise.targetRepsMin = range.min
+            exercise.targetRepsMax = range.max
+        }
+
+        if !exercise.hasCustomRestCondition, case .timer = exercise.defaultRestCondition {
+            exercise.defaultRestCondition = .timer(seconds: definition.restSeconds)
         }
     }
 
@@ -319,7 +378,8 @@ public final class MockDataGenerator {
             equipmentType: definition.equipmentType
         )
         let primary: [MuscleGroup] = info.primaryMuscles
-        let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: info.isCompound)
+        let range: (min: Int, max: Int) = definition.targetRange
+            ?? Exercise.defaultTargetReps(for: info.isCompound)
 
         return Exercise(
             name: definition.name,
@@ -335,7 +395,8 @@ public final class MockDataGenerator {
             whyGoodExercise: info.whyGoodExercise,
             whyBadExercise: info.whyBadExercise,
             whenRecommended: info.whenRecommended,
-            whenNotRecommended: info.whenNotRecommended
+            whenNotRecommended: info.whenNotRecommended,
+            trackingMode: definition.trackingMode
         )
     }
 
@@ -346,7 +407,7 @@ public final class MockDataGenerator {
 
     // MARK: Catálogo
 
-    private static let catalog: [CatalogExerciseDefinition] = [
+    private static let baseCatalog: [CatalogExerciseDefinition] = [
         // Pecho
         CatalogExerciseDefinition(name: "Press banca plano", equipmentType: .olympicBar, restSeconds: 135),
         CatalogExerciseDefinition(name: "Press banca inclinado", equipmentType: .smithMachine, restSeconds: 135),
@@ -434,6 +495,83 @@ public final class MockDataGenerator {
         CatalogExerciseDefinition(name: "Elevacion talones sentado", equipmentType: .plateLoadedMachine, restSeconds: 180),
         CatalogExerciseDefinition(name: "Elevacion de talones de pie", equipmentType: .plateLoadedMachine, restSeconds: 180)
     ]
+
+    // MARK: Catálogo de cardio y core isométrico
+
+    /// Ejercicios medidos en tiempo: el cardio se registra en minutos y los
+    /// isométricos en segundos. Se siembran aparte para que las bases ya
+    /// existentes los reciban sin reescribir sus rutinas.
+    private static let cardioAndIsometricCatalog: [CatalogExerciseDefinition] = [
+        // Cardio
+        CatalogExerciseDefinition(
+            name: "Bicicleta estática",
+            equipmentType: .cardioMachine,
+            restSeconds: 60,
+            trackingMode: .minutes,
+            targetRange: (min: 20, max: 40)
+        ),
+        CatalogExerciseDefinition(
+            name: "Cinta de correr",
+            equipmentType: .cardioMachine,
+            restSeconds: 60,
+            trackingMode: .minutes,
+            targetRange: (min: 20, max: 30)
+        ),
+        CatalogExerciseDefinition(
+            name: "Subir escaleras",
+            equipmentType: .cardioMachine,
+            restSeconds: 90,
+            trackingMode: .minutes,
+            targetRange: (min: 10, max: 20)
+        ),
+        CatalogExerciseDefinition(
+            name: "Máquina de remar",
+            equipmentType: .cardioMachine,
+            restSeconds: 90,
+            trackingMode: .minutes,
+            targetRange: (min: 10, max: 20)
+        ),
+
+        // Core isométrico
+        CatalogExerciseDefinition(
+            name: "Plancha frontal",
+            equipmentType: .bodyweight,
+            restSeconds: 60,
+            trackingMode: .seconds,
+            targetRange: (min: 30, max: 60)
+        ),
+        CatalogExerciseDefinition(
+            name: "Plancha lateral",
+            equipmentType: .bodyweight,
+            restSeconds: 60,
+            trackingMode: .seconds,
+            targetRange: (min: 20, max: 45)
+        ),
+        CatalogExerciseDefinition(
+            name: "Hollow hold",
+            equipmentType: .bodyweight,
+            restSeconds: 60,
+            trackingMode: .seconds,
+            targetRange: (min: 20, max: 40)
+        ),
+        CatalogExerciseDefinition(
+            name: "Dead bug",
+            equipmentType: .bodyweight,
+            restSeconds: 60,
+            targetRange: (min: 8, max: 12)
+        ),
+        CatalogExerciseDefinition(
+            name: "Bird dog",
+            equipmentType: .bodyweight,
+            restSeconds: 60,
+            targetRange: (min: 8, max: 12)
+        )
+    ]
+
+    /// Catálogo completo de la app.
+    private static var catalog: [CatalogExerciseDefinition] {
+        return baseCatalog + cardioAndIsometricCatalog
+    }
 
     // MARK: Rutinas base
 

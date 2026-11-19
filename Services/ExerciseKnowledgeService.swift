@@ -181,9 +181,13 @@ public enum ExerciseKnowledgeService {
             exercise.requiresStraps = info.requiresStraps
         }
 
-        let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: info.isCompound)
-        exercise.targetRepsMin = range.min
-        exercise.targetRepsMax = range.max
+        // Los ejercicios medidos en tiempo (isométricos y cardio) conservan el
+        // rango del catálogo: el objetivo global 6-8 / 8-10 solo aplica a reps.
+        if exercise.trackingMode == .reps {
+            let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: info.isCompound)
+            exercise.targetRepsMin = range.min
+            exercise.targetRepsMax = range.max
+        }
 
         if overwriteTexts || exercise.whyGoodExercise.isEmpty {
             exercise.whyGoodExercise = info.whyGoodExercise
@@ -296,6 +300,8 @@ public enum ExerciseKnowledgeService {
             return [.quads, .glutes]
         case .calves:
             return []
+        case .cardio:
+            return []
         }
     }
 
@@ -315,6 +321,10 @@ public enum ExerciseKnowledgeService {
             return "El recorrido fijo y la carga corporal o prefijada hacen que el ejercicio sea muy repetible, ideal para medir progreso con criterios claros."
         case .plateLoadedMachine, .smithMachine:
             return "La trayectoria guiada reduce la demanda técnica y de estabilidad, así que puedes acercarte al fallo con seguridad y acumular volumen de calidad."
+        case .bodyweight:
+            return "Solo necesitas tu peso corporal y una posición estable: puedes trabajar el control del tronco en cualquier sitio, sin cargar las articulaciones y sin interferir con el resto de la sesión."
+        case .cardioMachine:
+            return "El trabajo continuo en máquina de cardio permite fijar la intensidad minuto a minuto, sostener un pulso objetivo y sumar volumen aerobio con muy poco impacto articular."
         case .olympicBar, .ezBar:
             if compound {
                 return "Permite mover cargas altas con progresión sencilla y un estímulo sistémico fuerte, lo que se traduce en ganancias de fuerza y masa muscular medibles."
@@ -333,6 +343,10 @@ public enum ExerciseKnowledgeService {
             return "El recorrido es tan guiado que el trabajo de estabilizadores es mínimo y la transferencia a patrones libres puede quedarse corta."
         case .plateLoadedMachine, .smithMachine:
             return "La trayectoria fija puede no encajar con tu antropometría y reduce el trabajo de estabilizadores, así que no sustituye a un patrón libre."
+        case .bodyweight:
+            return "La carga es tu propio peso y la progresión depende del tiempo o de la palanca, así que el estímulo de fuerza se estanca antes que con una carga externa."
+        case .cardioMachine:
+            return "No aporta estímulo mecánico para hipertrofia y compite por la recuperación: un exceso de cardio resta calidad a las series de fuerza."
         case .olympicBar, .ezBar:
             if compound {
                 return "La demanda de estabilidad y la fatiga general son altas: cuando la técnica se degrada, la columna y las articulaciones absorben el esfuerzo."
@@ -850,6 +864,108 @@ public enum ExerciseKnowledgeService {
         )
     ]
 
+    private static let cardioAndIsometricProfiles: [ExerciseKnowledgeProfile] = [
+        make(
+            keywords: ["bicicleta", "bici estatica", "spinning", "bike"],
+            primary: [.cardio],
+            secondary: [.quads, .glutes, .calves],
+            compound: false,
+            straps: false,
+            good: "Trabajo aerobio de bajo impacto con la cadera apoyada: permite mantener un pulso estable durante muchos minutos y sumar capacidad cardiovascular sin castigar rodillas ni lumbares.",
+            bad: "El asiento fijo y la postura mantenida pueden cargar la lumbar y el cuádriceps si la altura y la distancia al manillar no están bien ajustadas.",
+            when: "Al final de la sesión o en un día aparte, 20-40 minutos a un pulso constante que te deje hablar con esfuerzo.",
+            whenNot: "Si el objetivo inmediato es la fuerza de pierna: hazlo después de las series pesadas o en otro momento del día."
+        ),
+        make(
+            keywords: ["cinta de correr", "cinta", "treadmill", "correr en cinta"],
+            primary: [.cardio],
+            secondary: [.quads, .hamstrings, .calves],
+            compound: false,
+            straps: false,
+            good: "Permite correr o caminar con inclinación controlada y ritmo fijo, la forma más simple de acumular volumen aerobio y gasto energético medible.",
+            bad: "El impacto repetido sobre el asfalto de la cinta castiga rodilla y tobillo, y correr agarrado a los pasamanos desvirtúa la lectura del esfuerzo.",
+            when: "Como bloque de cardio al final del entreno, 20-30 minutos en zona 2 o con inclinación y caminata rápida para proteger las articulaciones.",
+            whenNot: "Con molestias activas de rodilla, tibia o planta del pie, o justo antes de una sesión de pierna pesada."
+        ),
+        make(
+            keywords: ["escaleras", "escalador", "stair", "stepmill", "subir escaleras"],
+            primary: [.cardio],
+            secondary: [.quads, .glutes, .calves],
+            compound: false,
+            straps: false,
+            good: "Combina demanda cardiovascular y trabajo concéntrico de glúteo y cuádriceps con un impacto mínimo, así que rinde mucho en poco tiempo.",
+            bad: "Es exigente: el pulso sube rápido y con mala postura el peso cae en la lumbar o en el tendón de Aquiles en lugar de en la cadera.",
+            when: "En bloques cortos de 10-20 minutos al final del entreno, con el torso alto y sin apoyarte en los pasamanos.",
+            whenNot: "Con el pulso ya muy alto por la sesión de fuerza, molestia aquílea o si no puedes mantener el torso erguido."
+        ),
+        make(
+            keywords: ["maquina de remar", "remo ergometro", "remo indoor", "ergometro", "rowing machine", "rower"],
+            primary: [.cardio],
+            secondary: [.upperBack, .lats, .quads, .biceps],
+            compound: false,
+            straps: false,
+            good: "El remo ergómetro reparte el esfuerzo entre piernas, tronco y espalda con un patrón completo y bajo impacto, ideal para cardio sin castigar las rodillas.",
+            bad: "La técnica manda: si tiras con los brazos antes de empujar con las piernas, la lumbar absorbe la carga y el rendimiento cae en picado.",
+            when: "En bloques de 10-20 minutos al final de la sesión o como intervalo suave en días de descanso activo.",
+            whenNot: "Con fatiga lumbar acumulada o sin controlar la secuencia piernas-tronco-brazos."
+        ),
+        make(
+            keywords: ["plancha lateral", "side plank"],
+            primary: [.abs],
+            secondary: [.glutes, .upperBack],
+            compound: false,
+            straps: false,
+            good: "Trabaja la anti-flexión lateral del tronco y el cuadrado lumbar con el glúteo medio estabilizando la cadera, un patrón que la plancha frontal no cubre.",
+            bad: "Si la cadera cae o el hombro se hunde, la posición deja de ser isométrica y el estímulo se reparte mal entre lumbar y cuello.",
+            when: "Al final de la sesión de core, 2-3 series de 20-45 segundos por lado con la cadera alta.",
+            whenNot: "Con molestia de hombro en apoyo o de cadera en la posición lateral."
+        ),
+        make(
+            keywords: ["plancha frontal", "plancha abdominal", "plancha isometrica", "front plank", "plancha"],
+            primary: [.abs],
+            secondary: [.frontShoulders, .glutes, .lowerBack],
+            compound: false,
+            straps: false,
+            good: "Isométrico de anti-extensión que enseña al core a mantener la pelvis neutra bajo tensión, justo lo que necesita la lumbar en sentadilla y peso muerto.",
+            bad: "Se convierte en un concurso de aguante: si la cadera sube o se hunde, el abdomen deja de trabajar y la carga pasa a la lumbar y al hombro.",
+            when: "Al final del entreno o como calentamiento, 2-4 series de 30-60 segundos con el glúteo apretado y la respiración controlada.",
+            whenNot: "Con dolor lumbar en extensión o de hombro en apoyo prolongado; en ese caso usa una variante con rodillas apoyadas."
+        ),
+        make(
+            keywords: ["hollow", "hollow hold", "hollow body"],
+            primary: [.abs],
+            secondary: [.lowerBack],
+            compound: false,
+            straps: false,
+            good: "Mantiene el recto abdominal en acortamiento con la pelvis retrovertida, un isométrico que transfiere muy bien a dominadas, fondos y ejercicios gimnásticos.",
+            bad: "Exige mucha conciencia de la pelvis: si la lumbar se arquea, el abdomen deja de trabajar y la carga se concentra en la columna.",
+            when: "Al final del core, 3 series de 20-40 segundos con la lumbar pegada al suelo.",
+            whenNot: "Con dolor lumbar al apoyar la espalda o si aún no puedes mantener la pelvis neutra con las piernas extendidas."
+        ),
+        make(
+            keywords: ["dead bug", "deadbug"],
+            primary: [.abs],
+            secondary: [.lowerBack, .glutes],
+            compound: false,
+            straps: false,
+            good: "Anti-extensión con movimiento de brazos y piernas: entrena al core para estabilizar la pelvis mientras las extremidades se mueven, algo que la plancha estática no cubre.",
+            bad: "Si la lumbar se despega o el ritmo es rápido, el ejercicio pierde sentido y se convierte en un movimiento de cadera sin control abdominal.",
+            when: "Como calentamiento del core o al final de la sesión, 2-3 series de 8-12 repeticiones por lado con tempo lento.",
+            whenNot: "Con dolor lumbar agudo o si no puedes mantener la zona lumbar en contacto con el suelo."
+        ),
+        make(
+            keywords: ["bird dog", "birddog"],
+            primary: [.abs],
+            secondary: [.lowerBack, .glutes, .upperBack],
+            compound: false,
+            straps: false,
+            good: "Coordina extensión de cadera y de hombro contralaterales contra la rotación del tronco, un patrón de estabilidad muy útil para proteger la lumbar.",
+            bad: "Es fácil arquear la lumbar al levantar la pierna o perder la pelvis neutra, y entonces el ejercicio se queda en un movimiento de falso equilibrio.",
+            when: "Como calentamiento o cierre de sesión, 2-3 series de 8-12 repeticiones por lado con pausa de un segundo arriba.",
+            whenNot: "Con dolor lumbar irradiado o si no puedes mantener la pelvis estable al extender la pierna."
+        )
+    ]
+
     private static let coreProfiles: [ExerciseKnowledgeProfile] = [
         make(
             keywords: ["crunch", "abdominales", "plancha", "elevacion de piernas", "rueda abdominal", "ab wheel", "core"],
@@ -865,5 +981,5 @@ public enum ExerciseKnowledgeService {
     ]
 
     private static let allProfiles: [ExerciseKnowledgeProfile] =
-        specificProfiles + pressProfiles + pullProfiles + legProfiles + armProfiles + coreProfiles
+        specificProfiles + cardioAndIsometricProfiles + pressProfiles + pullProfiles + legProfiles + armProfiles + coreProfiles
 }

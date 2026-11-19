@@ -897,14 +897,14 @@ struct ExerciseCardView: View {
 
             HStack(spacing: 5.0) {
                 TacticalTagBadge(
-                    text: "REPS: \(routineExercise.targetRepsMin)-\(routineExercise.targetRepsMax)",
+                    text: "\(exercise.targetUnitLabel): \(routineExercise.targetRepsMin)-\(routineExercise.targetRepsMax)",
                     tint: EndfieldPalette.accentYellow
                 )
 
                 if exercise.isCompound {
                     TacticalTagBadge(text: "COMPLEJO", tint: EndfieldPalette.accentCyan)
                 } else {
-                    TacticalTagBadge(text: "AISLAMIENTO", tint: EndfieldPalette.accentCyan)
+                    TacticalTagBadge(text: exercise.trackingMode == .reps ? "AISLAMIENTO" : "DURACIÓN", tint: EndfieldPalette.accentCyan)
                 }
 
                 if exercise.requiresStraps {
@@ -927,7 +927,7 @@ struct ExerciseCardView: View {
             Text("KG")
                 .frame(width: 62.0, alignment: .center)
 
-            Text("REPS")
+            Text(exercise.trackingMode.unitLabel)
                 .frame(width: 50.0, alignment: .center)
 
             Text("OK")

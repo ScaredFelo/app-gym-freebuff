@@ -133,7 +133,7 @@ struct ExerciseSettingsView: View {
                 tacticalRule
 
                 HStack(spacing: 6.0) {
-                    Text("REPS // OBJETIVO")
+                    Text(exercise.targetUnitLabel + " // OBJETIVO")
                         .font(EndfieldFont.label(8.0))
                         .tracking(1.2)
                         .foregroundStyle(EndfieldPalette.textSecondary)
@@ -150,9 +150,9 @@ struct ExerciseSettingsView: View {
 
                 TacticalStepperRow(
                     code: "MIN",
-                    title: "Repeticiones mínimas",
+                    title: exercise.trackingMode == .reps ? "Repeticiones mínimas" : "Valor mínimo",
                     value: $exercise.targetRepsMin,
-                    range: 1...50
+                    range: exercise.trackingMode == .reps ? (1...50) : (1...300)
                 )
                 .onChange(of: exercise.targetRepsMin) { _, newValue in
                     if newValue > exercise.targetRepsMax {
@@ -162,9 +162,9 @@ struct ExerciseSettingsView: View {
 
                 TacticalStepperRow(
                     code: "MAX",
-                    title: "Repeticiones máximas",
+                    title: exercise.trackingMode == .reps ? "Repeticiones máximas" : "Valor máximo",
                     value: $exercise.targetRepsMax,
-                    range: 1...50
+                    range: exercise.trackingMode == .reps ? (1...50) : (1...300)
                 )
                 .onChange(of: exercise.targetRepsMax) { _, newValue in
                     if newValue < exercise.targetRepsMin {
@@ -449,7 +449,7 @@ struct ExerciseSettingsView: View {
     /// Si el rango actual es uno de los valores por defecto, al cambiar entre
     /// Complejo y Aislamiento se aplica el objetivo global 6-8 / 8-10.
     private func applyDefaultTargetRepsIfNeeded(for isCompound: Bool) {
-        guard exercise.hasDefaultTargetReps else { return }
+        guard exercise.trackingMode == .reps, exercise.hasDefaultTargetReps else { return }
         let range: (min: Int, max: Int) = Exercise.defaultTargetReps(for: isCompound)
         exercise.targetRepsMin = range.min
         exercise.targetRepsMax = range.max

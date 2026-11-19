@@ -138,6 +138,10 @@ struct EquipmentVisualizerView: View {
             )
         case .ezBar:
             EZBarDrawingView(plates: result.platesPerSide)
+        case .bodyweight:
+            BodyweightDrawingView()
+        case .cardioMachine:
+            CardioMachineDrawingView()
         }
     }
 
@@ -502,6 +506,67 @@ private struct EZBarShape: Shape {
     }
 }
 
+// MARK: - Bodyweight
+
+private struct BodyweightDrawingView: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(Color.white.opacity(0.45))
+                .frame(height: 3.0)
+                .padding(.horizontal, 12.0)
+                .offset(y: 28.0)
+
+            HStack(spacing: 0.0) {
+                Rectangle()
+                    .fill(EndfieldPalette.accentYellow.opacity(0.85))
+                    .frame(width: 10.0, height: 10.0)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.6))
+                    .frame(width: 70.0, height: 7.0)
+
+                Rectangle()
+                    .fill(Color.white.opacity(0.55))
+                    .frame(width: 4.0, height: 14.0)
+                    .offset(y: 9.0)
+            }
+            .offset(y: 16.0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+// MARK: - Cardio machine
+
+private struct CardioMachineDrawingView: View {
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(Color.white.opacity(0.55), lineWidth: 3.0)
+                .frame(width: 32.0, height: 32.0)
+                .offset(x: -24.0, y: 16.0)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.5))
+                .frame(width: 66.0, height: 3.0)
+                .rotationEffect(.degrees(-16.0))
+                .offset(x: 6.0, y: -8.0)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.45))
+                .frame(width: 46.0, height: 3.0)
+                .offset(x: 10.0, y: 28.0)
+
+            Rectangle()
+                .fill(EndfieldPalette.accentYellow.opacity(0.85))
+                .frame(width: 10.0, height: 3.0)
+                .offset(x: 34.0, y: -20.0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
 // MARK: - Compact icon
 
 /// Icono compacto (28 x 24 pt) que resume visualmente cada equipamiento.
@@ -587,6 +652,19 @@ struct EquipmentSimplifiedIconView: View {
                 )
                 self.fillRect(context: &context, x: 4.0, y: middleY - 4.0, width: 2.0, height: 8.0, color: plateColor)
                 self.fillRect(context: &context, x: 22.0, y: middleY - 4.0, width: 2.0, height: 8.0, color: plateColor)
+
+            case .bodyweight:
+                self.fillRect(context: &context, x: 3.0, y: height - 5.0, width: 22.0, height: 2.0, color: barColor)
+                self.fillRect(context: &context, x: 5.0, y: height / 2.0 - 6.0, width: 16.0, height: 4.0, color: barColor)
+                self.fillRect(context: &context, x: 19.0, y: height / 2.0 - 2.0, width: 3.0, height: 7.0, color: plateColor)
+
+            case .cardioMachine:
+                var wheel = Path()
+                wheel.addEllipse(in: CGRect(x: 2.0, y: middleY - 2.0, width: 12.0, height: 12.0))
+                context.stroke(wheel, with: .color(barColor), lineWidth: 1.4)
+                self.strokeLine(context: &context, x1: 2.0, y1: 21.0, x2: 26.0, y2: 21.0, color: barColor, lineWidth: 1.4)
+                self.strokeLine(context: &context, x1: 10.0, y1: middleY + 8.0, x2: 21.0, y2: 7.0, color: barColor, lineWidth: 1.6)
+                self.fillRect(context: &context, x: 19.0, y: 4.0, width: 6.0, height: 2.0, color: plateColor)
             }
         }
         .frame(width: 28.0, height: 24.0)

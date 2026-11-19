@@ -44,6 +44,7 @@ public struct BigPictureWorkoutView: View {
                         weightInput: $weightInput,
                         currentWeight: viewModel.bigPictureCurrentWeight,
                         currentReps: viewModel.bigPictureCurrentReps,
+                        targetUnitLabel: viewModel.bigPictureCurrentRoutineExercise?.exercise?.targetUnitLabel ?? "REPS",
                         modelContext: modelContext,
                         onWeightChange: { value in
                             viewModel.bigPictureUpdateWeight(value, modelContext: modelContext)
@@ -176,7 +177,7 @@ public struct BigPictureWorkoutView: View {
                 HStack(spacing: 6.0) {
                     if let routineExercise: RoutineExercise = viewModel.bigPictureCurrentRoutineExercise {
                         TacticalTagBadge(
-                            text: "REPS: \(routineExercise.targetRepsMin)-\(routineExercise.targetRepsMax)",
+                            text: "\(routineExercise.exercise?.targetUnitLabel ?? "REPS"): \(routineExercise.targetRepsMin)-\(routineExercise.targetRepsMax)",
                             tint: EndfieldPalette.accentYellow
                         )
                     }
@@ -365,6 +366,7 @@ struct BigPictureControlsView: View {
     @FocusState private var isWeightFocused: Bool
     var currentWeight: Double
     var currentReps: Int
+    var targetUnitLabel: String = "REPS"
     var modelContext: ModelContext
     var onWeightChange: (Double) -> Void
     var onRepsChange: (Int) -> Void
@@ -464,7 +466,7 @@ struct BigPictureControlsView: View {
                     .minimumScaleFactor(0.6)
                     .contentTransition(.numericText())
 
-                Text("REPS // OBJETIVO")
+                Text(targetUnitLabel + " // OBJETIVO")
                     .font(EndfieldFont.label(8.0))
                     .tracking(1.2)
                     .foregroundStyle(EndfieldPalette.textSecondary)

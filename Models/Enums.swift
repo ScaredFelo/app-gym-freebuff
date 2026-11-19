@@ -8,6 +8,8 @@ public enum EquipmentType: String, Codable, CaseIterable, Sendable, Identifiable
     case smithMachine = "Multipower"
     case olympicBar = "Barra olímpica"
     case ezBar = "Barra EZ"
+    case bodyweight = "Peso corporal"
+    case cardioMachine = "Máquina de cardio"
 
     public var id: String { rawValue }
 
@@ -16,7 +18,7 @@ public enum EquipmentType: String, Codable, CaseIterable, Sendable, Identifiable
         switch self {
         case .plateLoadedMachine, .smithMachine, .olympicBar, .ezBar:
             return true
-        case .cable, .dumbbell, .fixedBar:
+        case .cable, .dumbbell, .fixedBar, .bodyweight, .cardioMachine:
             return false
         }
     }
@@ -30,7 +32,7 @@ public enum EquipmentType: String, Codable, CaseIterable, Sendable, Identifiable
             return 20.0
         case .ezBar:
             return UserSettingsManager.ezBarWeight
-        case .plateLoadedMachine, .cable, .dumbbell, .fixedBar:
+        case .plateLoadedMachine, .cable, .dumbbell, .fixedBar, .bodyweight, .cardioMachine:
             return 0.0
         }
     }
@@ -107,5 +109,51 @@ public enum HeartRateDeviceType: String, Codable, CaseIterable, Sendable, Identi
     /// Compatibilidad con valores guardados antiguos o desconocidos.
     public static func fromStoredRawValue(_ rawValue: String) -> HeartRateDeviceType {
         return HeartRateDeviceType(rawValue: rawValue) ?? .heartRateBand
+    }
+}
+
+/// Unidad con la que se registra el objetivo y cada serie de un ejercicio.
+///
+/// - `reps`: series de fuerza o hipertrofia medidas en repeticiones.
+/// - `seconds`: isométricos mantenidos (plancha, hollow hold...).
+/// - `minutes`: trabajo continuo de cardio (bici, cinta, escaleras, remo).
+public enum ExerciseTrackingMode: String, Codable, CaseIterable, Sendable, Identifiable {
+    case reps = "reps"
+    case seconds = "seconds"
+    case minutes = "minutes"
+
+    public var id: String { rawValue }
+
+    /// Etiqueta corta que acompaña al rango objetivo.
+    public var unitLabel: String {
+        switch self {
+        case .reps:
+            return "REPS"
+        case .seconds:
+            return "SEG"
+        case .minutes:
+            return "MIN"
+        }
+    }
+
+    /// Nombre de la unidad en minúsculas para textos descriptivos.
+    public var unitName: String {
+        switch self {
+        case .reps:
+            return "repeticiones"
+        case .seconds:
+            return "segundos"
+        case .minutes:
+            return "minutos"
+        }
+    }
+
+    public var isTimeBased: Bool {
+        return self != .reps
+    }
+
+    /// Compatibilidad con ejercicios guardados antes de existir este campo.
+    public static func fromStoredRawValue(_ storedRawValue: String) -> ExerciseTrackingMode {
+        return ExerciseTrackingMode(rawValue: storedRawValue) ?? .reps
     }
 }

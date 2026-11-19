@@ -196,9 +196,9 @@ struct ExerciseDetailSheetView: View {
     private var badgesSection: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6.0) {
-                DetailBadge(text: "REPS: \(info.targetRepsText)", tint: EndfieldPalette.accentYellow)
+                DetailBadge(text: "\(exercise.targetUnitLabel): \(info.targetRepsText)", tint: EndfieldPalette.accentYellow)
                 DetailBadge(
-                    text: info.isCompound ? "COMPLEJO" : "AISLAMIENTO",
+                    text: info.isCompound ? "COMPLEJO" : (exercise.trackingMode == .reps ? "AISLAMIENTO" : "DURACIÓN"),
                     tint: EndfieldPalette.accentCyan
                 )
                 DetailBadge(

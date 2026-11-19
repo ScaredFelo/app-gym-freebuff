@@ -701,6 +701,40 @@ public enum ExerciseDuplicateService {
         "Elevacion de talones de pie": [
             "elevacion de talones", "gemelos de pie", "standing calf raise",
             "elevacion de gemelos", "calf raise"
+        ],
+        // Cardio: los alias son nombres completos de máquina, nunca "remo"
+        // suelto, para no fundir el ergómetro con los remos de espalda.
+        "Bicicleta estática": [
+            "bicicleta", "bici", "bici estatica", "bicicleta fija", "spinning",
+            "exercise bike", "static bike", "bicicleta de spinning"
+        ],
+        "Cinta de correr": [
+            "cinta", "treadmill", "cinta de caminar", "correr en cinta", "cinta andadora"
+        ],
+        "Subir escaleras": [
+            "escaleras", "escalador", "maquina de escaleras", "stairmaster",
+            "stair master", "stepmill", "stair climber"
+        ],
+        "Máquina de remar": [
+            "maquina de remo", "remo ergometro", "ergometro", "remo indoor",
+            "rowing machine", "rower"
+        ],
+        // Core isométrico: "plancha" a secas es la frontal, la lateral se
+        // resuelve por su propio nombre.
+        "Plancha frontal": [
+            "plancha", "plancha abdominal", "plancha isometrica", "front plank", "plank"
+        ],
+        "Plancha lateral": [
+            "planchas laterales", "side plank"
+        ],
+        "Hollow hold": [
+            "hollow", "hollow body", "hollow body hold"
+        ],
+        "Dead bug": [
+            "deadbug", "dead-bug", "bicho muerto"
+        ],
+        "Bird dog": [
+            "birddog", "perro pajaro"
         ]
     ]
 

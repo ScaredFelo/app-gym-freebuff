@@ -32,6 +32,7 @@ struct AppGymApp: App {
                     ExerciseKnowledgeService.migrateExistingExercisesIfNeeded(context: context)
                     ExerciseKnowledgeService.alignStrapsWithKnowledgeIfNeeded(context: context)
                     MockDataGenerator.seedMissingCatalogExercisesIfNeeded(context: context)
+                    MockDataGenerator.seedCardioAndIsometricExercisesIfNeeded(context: context)
                     ExerciseDuplicateService.mergeIfNeeded(context: context)
                     MockDataGenerator.applyRoutineTableUpdateIfNeeded(context: context)
                     WidgetStreakStore.refresh(modelContext: context)
