@@ -36,9 +36,27 @@ struct CardioMetrics {
     let minBPM: Int
     let edwardsTrainingLoad: Double
     let trimp: Double
+    /// FC máxima con la que se han calculado las zonas y la carga.
+    let hrMax: Double
+    /// Tiempo medido en cada zona Z1–Z5.
+    let zones: [CardioZoneMetrics]
 
     var hasHeartRateData: Bool {
         return maxBPM > 0 || averageBPM > 0
+    }
+}
+
+/// Tiempo medido dentro de una zona de frecuencia cardíaca.
+struct CardioZoneMetrics: Identifiable {
+    let id: Int
+    let lowerFraction: Double
+    let upperFraction: Double
+    let seconds: TimeInterval
+    /// Parte del tiempo en zona que corresponde a esta zona (0...1).
+    let fraction: Double
+
+    var percent: Int {
+        return Int((fraction * 100.0).rounded())
     }
 }
 
@@ -124,6 +142,7 @@ enum WorkoutMetricsCalculator {
         }.filter { (value: Int) -> Bool in
             return value > 0
         }
+        let zones: [CardioZoneMetrics] = zoneDistribution(samples: sorted, hrMax: hrMax)
 
         return CardioMetrics(
             duration: duration,
@@ -132,7 +151,9 @@ enum WorkoutMetricsCalculator {
             maxBPM: values.max() ?? 0,
             minBPM: values.min() ?? 0,
             edwardsTrainingLoad: edwards,
-            trimp: trimpValue
+            trimp: trimpValue,
+            hrMax: hrMax,
+            zones: zones
         )
     }
 
@@ -437,6 +458,68 @@ enum WorkoutMetricsCalculator {
             return 4.0
         }
         return 5.0
+    }
+
+    // MARK: Distribución por zonas de FC
+
+    /// Cortes de zona como fracción de la FC máxima. Coinciden con los pesos
+    /// de Edwards para que ambos cálculos cuenten el mismo esfuerzo.
+    static let heartRateZoneBounds: [(index: Int, lower: Double, upper: Double)] = [
+        (1, 0.50, 0.60),
+        (2, 0.60, 0.70),
+        (3, 0.70, 0.80),
+        (4, 0.80, 0.90),
+        (5, 0.90, 1.10)
+    ]
+
+    /// Tiempo medido en cada zona: cada muestra se atribuye a la zona de su
+    /// pulso hasta la siguiente lectura. Los huecos de más de cinco minutos
+    /// (app suspendida, sensor caído) no cuentan, igual que en Edwards.
+    static func zoneDistribution(samples: [BPMSample], hrMax: Double) -> [CardioZoneMetrics] {
+        var seconds: [Double] = [0, 0, 0, 0, 0]
+
+        if samples.count >= 2, hrMax > 0 {
+            for index in 0..<(samples.count - 1) {
+                let current: BPMSample = samples[index]
+                let next: BPMSample = samples[index + 1]
+                let gap: TimeInterval = next.timestamp.timeIntervalSince(current.timestamp)
+                guard gap > 0, gap <= 5 * 60 else { continue }
+
+                let ratio: Double = current.bpm / hrMax
+                guard ratio >= 0.50 else { continue }
+
+                let zone: Int = heartRateZoneIndex(for: ratio)
+                seconds[zone - 1] += gap
+            }
+        }
+
+        let total: Double = seconds.reduce(0.0, +)
+
+        return heartRateZoneBounds.map { (bound: (index: Int, lower: Double, upper: Double)) -> CardioZoneMetrics in
+            let zoneSeconds: Double = seconds[bound.index - 1]
+            return CardioZoneMetrics(
+                id: bound.index,
+                lowerFraction: bound.lower,
+                upperFraction: bound.upper,
+                seconds: zoneSeconds,
+                fraction: total > 0 ? zoneSeconds / total : 0
+            )
+        }
+    }
+
+    private static func heartRateZoneIndex(for ratio: Double) -> Int {
+        switch ratio {
+        case ..<0.60:
+            return 1
+        case ..<0.70:
+            return 2
+        case ..<0.80:
+            return 3
+        case ..<0.90:
+            return 4
+        default:
+            return 5
+        }
     }
 
     // MARK: TRIMP de Banister

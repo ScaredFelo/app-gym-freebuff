@@ -837,6 +837,10 @@ struct CardioBPMChart: View {
     /// 3 minutos y el cronómetro ya marca el tiempo.
     var showsTimeAxis: Bool = false
 
+    /// FC máxima del usuario. El informe guardado la pasa para sombrear las
+    /// zonas Z1–Z5 detrás de la curva; la telemetría en vivo no las dibuja.
+    var hrMax: Double? = nil
+
     var body: some View {
         if showsTimeAxis {
             chart
@@ -864,21 +868,40 @@ struct CardioBPMChart: View {
         }
     }
 
-    private var chart: some View {
-        Chart(samples) { (sample: BPMSample) in
-            LineMark(
-                x: .value("Tiempo", sample.timestamp),
-                y: .value("BPM", sample.bpm)
-            )
-            .foregroundStyle(EndfieldPalette.accentRed)
-            .lineStyle(StrokeStyle(lineWidth: 1.5))
-            .interpolationMethod(.catmullRom)
+    /// Bandas de zona calculadas sobre la FC máxima. Vacías en la telemetría
+    /// en vivo, que no dibuja zonas.
+    private var zoneBands: [CardioZoneStyle.Band] {
+        guard let hrMax: Double = hrMax, hrMax > 0 else { return [] }
+        return CardioZoneStyle.bands(hrMax: hrMax)
+    }
 
-            PointMark(
-                x: .value("Tiempo", sample.timestamp),
-                y: .value("BPM", sample.bpm)
-            )
-            .foregroundStyle(EndfieldPalette.accentRed)
+    private var chart: some View {
+        Chart {
+            ForEach(zoneBands) { (band: CardioZoneStyle.Band) in
+                RectangleMark(
+                    xStart: .value("Inicio", xDomain.lowerBound),
+                    xEnd: .value("Fin", xDomain.upperBound),
+                    yStart: .value("Zona", band.lowerBPM),
+                    yEnd: .value("Zona", band.upperBPM)
+                )
+                .foregroundStyle(CardioZoneStyle.bandTint(for: band.id))
+            }
+
+            ForEach(samples) { (sample: BPMSample) in
+                LineMark(
+                    x: .value("Tiempo", sample.timestamp),
+                    y: .value("BPM", sample.bpm)
+                )
+                .foregroundStyle(EndfieldPalette.accentRed)
+                .lineStyle(StrokeStyle(lineWidth: 1.5))
+                .interpolationMethod(.catmullRom)
+
+                PointMark(
+                    x: .value("Tiempo", sample.timestamp),
+                    y: .value("BPM", sample.bpm)
+                )
+                .foregroundStyle(EndfieldPalette.accentRed)
+            }
         }
         .chartXScale(domain: xDomain)
         .chartYScale(domain: 40...200)
@@ -925,6 +948,64 @@ struct CardioBPMChart: View {
         let minutes: Int = totalSeconds / 60
         let seconds: Int = totalSeconds % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+}
+
+// MARK: - Estilo de zonas de FC
+
+/// Colores y cortes de las zonas de frecuencia cardíaca. Se comparten entre la
+/// gráfica (bandas sombreadas) y las filas del informe.
+enum CardioZoneStyle {
+    struct Band: Identifiable {
+        let id: Int
+        let lowerBPM: Double
+        let upperBPM: Double
+    }
+
+    /// Cortes sobre la FC máxima, alineados con los pesos de la carga de
+    /// Edwards: 50–60–70–80–90 %.
+    static func bands(hrMax: Double) -> [Band] {
+        return [
+            Band(id: 1, lowerBPM: hrMax * 0.50, upperBPM: hrMax * 0.60),
+            Band(id: 2, lowerBPM: hrMax * 0.60, upperBPM: hrMax * 0.70),
+            Band(id: 3, lowerBPM: hrMax * 0.70, upperBPM: hrMax * 0.80),
+            Band(id: 4, lowerBPM: hrMax * 0.80, upperBPM: hrMax * 0.90),
+            Band(id: 5, lowerBPM: hrMax * 0.90, upperBPM: hrMax * 1.10)
+        ]
+    }
+
+    static func tint(for zone: Int) -> Color {
+        switch zone {
+        case 1:
+            return EndfieldPalette.accentCyan.opacity(0.55)
+        case 2:
+            return EndfieldPalette.accentCyan
+        case 3:
+            return EndfieldPalette.accentYellow.opacity(0.7)
+        case 4:
+            return EndfieldPalette.accentYellow
+        case 5:
+            return EndfieldPalette.accentRed
+        default:
+            return EndfieldPalette.textSecondary
+        }
+    }
+
+    static func bandTint(for zone: Int) -> Color {
+        switch zone {
+        case 1:
+            return EndfieldPalette.accentCyan.opacity(0.05)
+        case 2:
+            return EndfieldPalette.accentCyan.opacity(0.09)
+        case 3:
+            return EndfieldPalette.accentYellow.opacity(0.05)
+        case 4:
+            return EndfieldPalette.accentYellow.opacity(0.09)
+        case 5:
+            return EndfieldPalette.accentRed.opacity(0.08)
+        default:
+            return Color.clear
+        }
     }
 }
 
@@ -991,7 +1072,8 @@ struct CardioReportPanel: View {
                         CardioBPMChart(
                             samples: chartSamples,
                             xDomain: domain,
-                            showsTimeAxis: true
+                            showsTimeAxis: true,
+                            hrMax: report.hrMax
                         )
                     }
                     .padding(.top, 2.0)
@@ -1021,6 +1103,10 @@ struct CardioReportPanel: View {
                         unit: "TRIMP",
                         tint: EndfieldPalette.accentCyan
                     )
+
+                    if hasZoneData {
+                        zoneSection
+                    }
                 } else {
                     Text("SIN TELEMETRÍA CARDÍACA: SOLO SE REGISTRA EL TIEMPO DE LA SESIÓN.")
                         .font(EndfieldFont.label(7.5, weight: .regular))
@@ -1030,6 +1116,117 @@ struct CardioReportPanel: View {
                 }
             }
         }
+    }
+
+    // MARK: Zonas de FC
+
+    private var hasZoneData: Bool {
+        return report.zones.contains { (zone: CardioZoneMetrics) -> Bool in
+            return zone.seconds > 0
+        }
+    }
+
+    private var totalZoneSeconds: TimeInterval {
+        return report.zones.reduce(0.0) { (sum: TimeInterval, zone: CardioZoneMetrics) -> TimeInterval in
+            return sum + zone.seconds
+        }
+    }
+
+    private var zoneSection: some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            HStack(spacing: 6.0) {
+                Text("ZONAS DE FC // % FC MÁX")
+                    .font(EndfieldFont.label(7.5))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+
+                Spacer(minLength: 4.0)
+
+                Text("\(zoneTime(totalZoneSeconds)) EN ZONA")
+                    .font(EndfieldFont.label(7.0))
+                    .tracking(0.6)
+                    .foregroundStyle(EndfieldPalette.textSecondary.opacity(0.8))
+                    .fixedSize()
+            }
+            .padding(.top, 2.0)
+
+            GeometryReader { (proxy: GeometryProxy) in
+                HStack(spacing: 0.0) {
+                    ForEach(report.zones) { (zone: CardioZoneMetrics) in
+                        Rectangle()
+                            .fill(CardioZoneStyle.tint(for: zone.id).opacity(zone.seconds > 0 ? 0.85 : 0.18))
+                            .frame(width: CGFloat(max(0.0, zone.fraction)) * proxy.size.width)
+                    }
+                }
+                .frame(width: proxy.size.width, height: 6.0, alignment: .leading)
+            }
+            .frame(height: 6.0)
+            .clipShape(ChamferedRectangle(cut: 2.0))
+
+            VStack(spacing: 4.0) {
+                ForEach(report.zones) { (zone: CardioZoneMetrics) in
+                    zoneRow(zone)
+                }
+            }
+        }
+    }
+
+    private func zoneRow(_ zone: CardioZoneMetrics) -> some View {
+        HStack(spacing: 6.0) {
+            Rectangle()
+                .fill(CardioZoneStyle.tint(for: zone.id))
+                .frame(width: 5.0, height: 5.0)
+
+            Text("Z\(zone.id)")
+                .font(EndfieldFont.mono(9.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .frame(width: 16.0, alignment: .leading)
+
+            Text(zoneRangeLabel(zone))
+                .font(EndfieldFont.label(7.5))
+                .tracking(0.4)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Text(zoneTime(zone.seconds))
+                .font(EndfieldFont.mono(10.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(zone.seconds > 0 ? EndfieldPalette.textPrimary : EndfieldPalette.textSecondary)
+                .fixedSize()
+
+            Text("\(zone.percent)%")
+                .font(EndfieldFont.mono(10.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .frame(width: 38.0, alignment: .trailing)
+                .fixedSize()
+        }
+        .padding(.horizontal, 9.0)
+        .padding(.vertical, 6.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+    }
+
+    private func zoneRangeLabel(_ zone: CardioZoneMetrics) -> String {
+        let lower: Int = Int((zone.lowerFraction * 100.0).rounded())
+        if zone.id == 5 {
+            return "\(lower)% +"
+        }
+        let upper: Int = Int((zone.upperFraction * 100.0).rounded())
+        return "\(lower)–\(upper)%"
+    }
+
+    private func zoneTime(_ seconds: TimeInterval) -> String {
+        let total: Int = max(0, Int(seconds.rounded()))
+        let minutes: Int = total / 60
+        let remainder: Int = total % 60
+        return String(format: "%02d:%02d", minutes, remainder)
     }
 
     /// Dominio temporal de la gráfica del informe: de la primera a la última
