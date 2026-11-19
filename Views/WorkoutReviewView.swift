@@ -14,6 +14,8 @@ public struct WorkoutReviewView: View {
     private let onFinish: (() -> Void)?
 
     @State private var metrics: WorkoutMetrics
+    @State private var cardioComparison: CardioComparison?
+    @State private var didLoadComparison: Bool = false
     @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
     private var isHeartRateTrackingEnabled: Bool = true
 
@@ -54,6 +56,15 @@ public struct WorkoutReviewView: View {
                             chartStart: session.startDate,
                             chartEnd: session.endDate
                         )
+
+                        // Comparativa con la última sesión de la misma
+                        // modalidad, una vez resuelta contra el historial.
+                        if didLoadComparison {
+                            CardioComparisonView(
+                                comparison: cardioComparison,
+                                typeTitle: session.cardioType?.title
+                            )
+                        }
                     } else {
                         WorkoutReviewMainMetricsView(metrics: metrics)
 
@@ -74,6 +85,9 @@ public struct WorkoutReviewView: View {
         }
         .interactiveDismissDisabled(isPostWorkout)
         .preferredColorScheme(.dark)
+        .onAppear {
+            loadCardioComparisonIfNeeded()
+        }
     }
 
     private var routineName: String {
@@ -86,6 +100,44 @@ public struct WorkoutReviewView: View {
             return "INFORME DE CARDIO"
         }
         return isPostWorkout ? "OPERACIÓN COMPLETADA" : "REVIEW DE MISIÓN"
+    }
+
+    /// Busca la última sesión de cardio del mismo tipo anterior a la revisada
+    /// y compara sus estadísticas con las de esta.
+    private func loadCardioComparisonIfNeeded() {
+        guard session.isCardioSession, !didLoadComparison else { return }
+
+        let routineName: String = session.routineName
+        let startedAt: Date = session.startDate
+
+        var descriptor: FetchDescriptor<WorkoutSession> = FetchDescriptor<WorkoutSession>(
+            predicate: #Predicate<WorkoutSession> { (candidate: WorkoutSession) -> Bool in
+                return candidate.routineName == routineName &&
+                    candidate.startDate < startedAt
+            },
+            sortBy: [SortDescriptor(\WorkoutSession.startDate, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+
+        defer { didLoadComparison = true }
+
+        guard let previous: WorkoutSession = try? modelContext.fetch(descriptor).first else {
+            cardioComparison = nil
+            return
+        }
+
+        let previousEnd: Date = previous.endDate ?? previous.startDate
+        let previousDuration: TimeInterval = max(0.0, previousEnd.timeIntervalSince(previous.startDate))
+        let previousMetrics: CardioMetrics = WorkoutMetricsCalculator.calculateCardio(
+            duration: previousDuration,
+            samples: previous.bpmSamples
+        )
+
+        cardioComparison = WorkoutMetricsCalculator.compareCardio(
+            current: cardioReport,
+            previous: previousMetrics,
+            previousDate: previous.startDate
+        )
     }
 
     /// Métricas calculables de una sesión de cardio guardada: tiempo y
@@ -502,6 +554,130 @@ struct WorkoutReviewQualityCardView: View {
                     .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+}
+
+// MARK: - Comparativa con la última sesión de cardio
+
+/// Panel que enfrenta las estadísticas de la sesión revisada con las de la
+/// última sesión de la misma modalidad. Si no hay sesión anterior, lo indica
+/// en lugar de mostrar una comparativa vacía.
+struct CardioComparisonView: View {
+    let comparison: CardioComparison?
+    let typeTitle: String?
+
+    private var modalityName: String {
+        let trimmed: String = (typeTitle ?? "CARDIO").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "CARDIO" : trimmed
+    }
+
+    var body: some View {
+        TacticalPanel(code: "CMP.01", title: "VS última sesión", contentPadding: 12.0) {
+            if let comparison: CardioComparison = comparison {
+                content(comparison)
+            } else {
+                Text("SIN SESIÓN ANTERIOR DE \(modalityName) PARA COMPARAR.")
+                    .font(EndfieldFont.label(7.5, weight: .regular))
+                    .tracking(0.5)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func content(_ comparison: CardioComparison) -> some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            HStack(spacing: 6.0) {
+                Text("\(modalityName) // \(comparison.previousDate.formatted(date: .abbreviated, time: .omitted).uppercased())")
+                    .font(EndfieldFont.label(7.5))
+                    .tracking(0.9)
+                    .foregroundStyle(EndfieldPalette.accentCyan)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+
+                Spacer(minLength: 4.0)
+
+                Text("\u{394} ACTUAL VS ANTERIOR")
+                    .font(EndfieldFont.label(7.0))
+                    .tracking(0.6)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize()
+            }
+
+            VStack(spacing: 5.0) {
+                ForEach(comparison.rows) { (row: CardioComparisonRow) in
+                    CardioComparisonRowView(row: row)
+                }
+            }
+        }
+    }
+}
+
+struct CardioComparisonRowView: View {
+    let row: CardioComparisonRow
+
+    private var deltaTint: Color {
+        switch row.direction {
+        case 1:
+            return EndfieldPalette.accentCyan
+        case -1:
+            return EndfieldPalette.accentRed
+        default:
+            return EndfieldPalette.textSecondary
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: 8.0) {
+            VStack(alignment: .leading, spacing: 3.0) {
+                HStack(spacing: 5.0) {
+                    Text(row.code)
+                        .font(EndfieldFont.label(7.0))
+                        .tracking(0.9)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize()
+
+                    Text(row.title)
+                        .font(EndfieldFont.mono(10.0, weight: .semibold))
+                        .foregroundStyle(EndfieldPalette.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.65)
+                }
+
+                Text("ANT \(row.previousValue.uppercased())")
+                    .font(EndfieldFont.label(7.0))
+                    .tracking(0.5)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+
+            Spacer(minLength: 6.0)
+
+            VStack(alignment: .trailing, spacing: 3.0) {
+                Text(row.currentValue.uppercased())
+                    .font(EndfieldFont.mono(14.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+
+                Text(row.deltaText)
+                    .font(EndfieldFont.mono(9.5, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(deltaTint)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+        }
+        .padding(.horizontal, 9.0)
+        .padding(.vertical, 6.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
         }
     }
 }

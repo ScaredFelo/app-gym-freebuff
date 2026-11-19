@@ -67,6 +67,34 @@ struct ExerciseHeartRateRow: Identifiable {
     let previousLowBPM: Int
 }
 
+// MARK: - Comparativa con la última sesión
+
+/// Fila de la comparativa entre la sesión de cardio revisada y la última del
+/// mismo tipo: valor actual, valor anterior y diferencia entre ambos.
+struct CardioComparisonRow: Identifiable {
+    let id: String
+    let code: String
+    let title: String
+    let currentValue: String
+    let previousValue: String
+    let delta: Double
+    let deltaText: String
+
+    /// Signo de la diferencia: 1 sube, -1 baja, 0 se mantiene. La vista lo usa
+    /// solo para elegir el color, no para valorar si es mejor o peor.
+    var direction: Int {
+        if delta > 0.0 { return 1 }
+        if delta < 0.0 { return -1 }
+        return 0
+    }
+}
+
+/// Estadísticas de una sesión de cardio frente a las de la anterior.
+struct CardioComparison {
+    let previousDate: Date
+    let rows: [CardioComparisonRow]
+}
+
 // MARK: - Motor de cálculo
 
 /// Cálculos fisiológicos y de carga de la sesión. Se mantiene fuera de
@@ -155,6 +183,114 @@ enum WorkoutMetricsCalculator {
             hrMax: hrMax,
             zones: zones
         )
+    }
+
+    /// Compara la sesión de cardio revisada con la última del mismo tipo. Las
+    /// filas siguen el orden del informe: tiempo, pulsaciones y carga. Cuando
+    /// alguna de las dos sesiones no tiene telemetría cardíaca, las métricas
+    /// que dependen de ella se marcan sin comparación.
+    static func compareCardio(
+        current: CardioMetrics,
+        previous: CardioMetrics,
+        previousDate: Date
+    ) -> CardioComparison {
+        let hasHeartRate: Bool = current.hasHeartRateData && previous.hasHeartRateData
+        let durationDelta: TimeInterval = current.duration - previous.duration
+        let averageDelta: Double = hasHeartRate ? current.averageBPM - previous.averageBPM : 0.0
+        let maxDelta: Double = hasHeartRate ? Double(current.maxBPM - previous.maxBPM) : 0.0
+        let edwardsDelta: Double = hasHeartRate ? current.edwardsTrainingLoad - previous.edwardsTrainingLoad : 0.0
+        let trimpDelta: Double = hasHeartRate ? current.trimp - previous.trimp : 0.0
+
+        func row(
+            id: String,
+            code: String,
+            title: String,
+            currentValue: String,
+            previousValue: String,
+            delta: Double,
+            deltaText: String
+        ) -> CardioComparisonRow {
+            return CardioComparisonRow(
+                id: id,
+                code: code,
+                title: title,
+                currentValue: currentValue,
+                previousValue: previousValue,
+                delta: delta,
+                deltaText: deltaText
+            )
+        }
+
+        let rows: [CardioComparisonRow] = [
+            row(
+                id: "duration",
+                code: "T+",
+                title: "TIEMPO",
+                currentValue: current.durationFormatted,
+                previousValue: previous.durationFormatted,
+                delta: durationDelta,
+                deltaText: signedDuration(durationDelta)
+            ),
+            row(
+                id: "averageBPM",
+                code: "MEDIA",
+                title: "BPM MEDIOS",
+                currentValue: hasHeartRate ? "\(Int(current.averageBPM.rounded()))" : "—",
+                previousValue: hasHeartRate ? "\(Int(previous.averageBPM.rounded()))" : "—",
+                delta: averageDelta,
+                deltaText: signedInteger(averageDelta)
+            ),
+            row(
+                id: "maxBPM",
+                code: "PICO",
+                title: "BPM MÁX",
+                currentValue: hasHeartRate ? "\(current.maxBPM)" : "—",
+                previousValue: hasHeartRate ? "\(previous.maxBPM)" : "—",
+                delta: maxDelta,
+                deltaText: signedInteger(maxDelta)
+            ),
+            row(
+                id: "edwards",
+                code: "EDW",
+                title: "CARGA EDWARDS",
+                currentValue: hasHeartRate ? String(format: "%.0f", current.edwardsTrainingLoad) : "—",
+                previousValue: hasHeartRate ? String(format: "%.0f", previous.edwardsTrainingLoad) : "—",
+                delta: edwardsDelta,
+                deltaText: signedInteger(edwardsDelta)
+            ),
+            row(
+                id: "trimp",
+                code: "TRIMP",
+                title: "TRIMP BANISTER",
+                currentValue: hasHeartRate ? String(format: "%.1f", current.trimp) : "—",
+                previousValue: hasHeartRate ? String(format: "%.1f", previous.trimp) : "—",
+                delta: trimpDelta,
+                deltaText: signedDecimal(trimpDelta)
+            )
+        ]
+
+        return CardioComparison(previousDate: previousDate, rows: rows)
+    }
+
+    /// Diferencia de tiempo con signo, en el mismo formato que el informe.
+    private static func signedDuration(_ delta: TimeInterval) -> String {
+        let rounded: Int = Int(delta.rounded())
+        guard rounded != 0 else { return "0" }
+        return (rounded > 0 ? "+" : "\u{2212}") + formatDuration(TimeInterval(abs(rounded)))
+    }
+
+    /// Diferencia entera con signo (BPM, carga de Edwards).
+    private static func signedInteger(_ delta: Double) -> String {
+        let rounded: Int = Int(delta.rounded())
+        guard rounded != 0 else { return "0" }
+        return (rounded > 0 ? "+" : "\u{2212}") + "\(abs(rounded))"
+    }
+
+    /// Diferencia con un decimal y signo (TRIMP).
+    private static func signedDecimal(_ delta: Double) -> String {
+        let rounded: Double = (delta * 10.0).rounded() / 10.0
+        guard rounded != 0 else { return "0" }
+        return (rounded > 0 ? "+" : "\u{2212}") + String(format: "%.1f", abs(rounded))
     }
 
     /// Construye los registros detallados de ejercicios y series a partir de
