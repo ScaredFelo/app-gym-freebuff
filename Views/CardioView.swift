@@ -622,7 +622,39 @@ struct CardioBPMChart: View {
     let samples: [BPMSample]
     let xDomain: ClosedRange<Date>
 
+    /// El informe guardado dibuja referencias temporales en el eje X. La
+    /// telemetría en vivo las mantiene ocultas porque su ventana es fija de
+    /// 3 minutos y el cronómetro ya marca el tiempo.
+    var showsTimeAxis: Bool = false
+
     var body: some View {
+        if showsTimeAxis {
+            chart
+                .chartXAxis {
+                    AxisMarks(values: timeTicks()) { (value: AxisValue) in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2.0, 2.0]))
+                            .foregroundStyle(Color.white.opacity(0.08))
+
+                        AxisTick(length: 3.0)
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+
+                        AxisValueLabel {
+                            if let date: Date = value.as(Date.self) {
+                                Text(elapsedLabel(for: date))
+                                    .font(EndfieldFont.label(7.5))
+                                    .tracking(0.6)
+                                    .foregroundStyle(EndfieldPalette.textSecondary)
+                            }
+                        }
+                    }
+                }
+        } else {
+            chart
+                .chartXAxis(.hidden)
+        }
+    }
+
+    private var chart: some View {
         Chart(samples) { (sample: BPMSample) in
             LineMark(
                 x: .value("Tiempo", sample.timestamp),
@@ -640,7 +672,6 @@ struct CardioBPMChart: View {
         }
         .chartXScale(domain: xDomain)
         .chartYScale(domain: 40...200)
-        .chartXAxis(.hidden)
         .chartYAxis {
             AxisMarks(values: .stride(by: 40.0)) { _ in
                 AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2.0, 2.0]))
@@ -652,6 +683,38 @@ struct CardioBPMChart: View {
         }
         .frame(height: 100.0)
         .frame(maxWidth: .infinity)
+    }
+
+    // MARK: - Referencias de tiempo
+
+    /// Marcas de inicio, fin e intervalos regulares de 5, 10 o 15 minutos
+    /// según la duración de la sesión.
+    private func timeTicks() -> [Date] {
+        let start: Date = xDomain.lowerBound
+        let total: TimeInterval = max(0.0, xDomain.upperBound.timeIntervalSince(start))
+        guard total > 0 else { return [start] }
+
+        let minimumStep: TimeInterval = 300.0
+        let rawStep: TimeInterval = total / 5.0
+        let step: TimeInterval = max(minimumStep, (rawStep / minimumStep).rounded(.up) * minimumStep)
+
+        var ticks: [Date] = [start]
+        var offset: TimeInterval = step
+        while offset < total - 1.0 {
+            ticks.append(start.addingTimeInterval(offset))
+            offset += step
+        }
+        ticks.append(xDomain.upperBound)
+        return ticks
+    }
+
+    /// Tiempo transcurrido desde el inicio de la sesión en formato `mm:ss`.
+    private func elapsedLabel(for date: Date) -> String {
+        let elapsed: TimeInterval = max(0.0, date.timeIntervalSince(xDomain.lowerBound))
+        let totalSeconds: Int = Int(elapsed.rounded())
+        let minutes: Int = totalSeconds / 60
+        let seconds: Int = totalSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }
 
@@ -709,7 +772,11 @@ struct CardioReportPanel: View {
                             .tracking(1.0)
                             .foregroundStyle(EndfieldPalette.textSecondary)
 
-                        CardioBPMChart(samples: chartSamples, xDomain: domain)
+                        CardioBPMChart(
+                            samples: chartSamples,
+                            xDomain: domain,
+                            showsTimeAxis: true
+                        )
                     }
                     .padding(.top, 2.0)
                 }
