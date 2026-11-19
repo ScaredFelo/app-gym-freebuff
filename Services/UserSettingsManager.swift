@@ -21,6 +21,37 @@ enum UserSettingsManager {
     /// Avisos de mitad y último minuto en cardio. La campana del objetivo no
     /// depende de este ajuste.
     static let cardioMilestoneAlertsKey = "cardioMilestoneAlerts"
+    /// Último tipo de cardio y minutos usados, para prellenar la preparación.
+    static let cardioLastTypeKey = "cardioLastType"
+    static let cardioLastMinutesKey = "cardioLastMinutes"
+
+    // MARK: - Cardio
+
+    /// Rango de minutos que ofrece la pantalla de preparación.
+    static let cardioMinutesRange: ClosedRange<Int> = 5...180
+
+    static var lastCardioType: CardioType {
+        guard let raw: String = UserDefaults.standard.string(forKey: cardioLastTypeKey),
+              let type: CardioType = CardioType(rawValue: raw) else {
+            return .treadmill
+        }
+        return type
+    }
+
+    static var lastCardioMinutes: Int {
+        guard UserDefaults.standard.object(forKey: cardioLastMinutesKey) != nil else {
+            return 20
+        }
+        let stored: Int = UserDefaults.standard.integer(forKey: cardioLastMinutesKey)
+        return min(max(stored, cardioMinutesRange.lowerBound), cardioMinutesRange.upperBound)
+    }
+
+    /// Guarda la configuración con la que arrancó la última sesión.
+    static func storeCardioDefaults(type: CardioType, minutes: Int) {
+        UserDefaults.standard.set(type.rawValue, forKey: cardioLastTypeKey)
+        let clamped: Int = min(max(minutes, cardioMinutesRange.lowerBound), cardioMinutesRange.upperBound)
+        UserDefaults.standard.set(clamped, forKey: cardioLastMinutesKey)
+    }
     static let heartRateDeviceTypeKey = "heartRateDeviceType"
     static let heartRateDeviceBrandKey = "heartRateDeviceBrand"
 

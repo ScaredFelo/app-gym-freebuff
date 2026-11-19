@@ -64,6 +64,9 @@ public struct CardioView: View {
     ) {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
 
+        // La próxima preparación arranca con esta misma configuración.
+        UserSettingsManager.storeCardioDefaults(type: type, minutes: minutes)
+
         let model = CardioViewModel(
             type: type,
             targetMinutes: minutes,
@@ -149,10 +152,17 @@ private struct CardioSetupView: View {
 
     let onStart: (CardioType, Int, Int, Bool) -> Void
 
-    @State private var selectedType: CardioType = .treadmill
-    @State private var targetMinutes: Int = 20
+    @State private var selectedType: CardioType
+    @State private var targetMinutes: Int
 
     private let minutePresets: [Int] = [10, 15, 20, 30, 45, 60]
+
+    /// La preparación abre con lo último que se usó en vez de resetear.
+    init(onStart: @escaping (CardioType, Int, Int, Bool) -> Void) {
+        self.onStart = onStart
+        _selectedType = State(initialValue: UserSettingsManager.lastCardioType)
+        _targetMinutes = State(initialValue: UserSettingsManager.lastCardioMinutes)
+    }
     private let minuteStep: Int = 5
     private let minimumMinutes: Int = 5
     private let maximumMinutes: Int = 180
