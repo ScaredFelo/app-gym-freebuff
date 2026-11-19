@@ -8,12 +8,12 @@ on:
 permissions:
   contents: write
 
+# Un solo job: el mismo runner de macOS compila, empaqueta y publica el estado.
+# No hay artefactos intermedios, asi que el resumen del run y la rama
+# ci-status se escriben siempre que el workflow llegue a este runner.
 jobs:
   build:
     runs-on: macos-15
-    # Vacio si el job no llega a arrancar: distingue build de empaquetado.
-    outputs:
-      build_step: ${{ steps.build.outcome }}
 
     steps:
       - name: Checkout repo
@@ -53,6 +53,7 @@ jobs:
             ARCHS=arm64 2>&1 | tee build.log || (echo "=== DETALLE DE ERRORES ===" && grep -i "error:" build.log && exit 1)
 
       - name: Package IPA
+        id: package
         run: |
           mkdir -p Payload
           cp -R /tmp/DerivedData/Build/Products/Release-iphoneos/AppGym.app Payload/
@@ -64,44 +65,28 @@ jobs:
           name: AppGym-Unsigned-IPA
           path: AppGym.ipa
 
-      - name: Upload build log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
-          if-no-files-found: ignore
-
-  # Job barato en Linux: arranca aunque el de macOS no llegue a empezar, asi que
-  # distingue "el run no corre" de "el token no puede escribir".
-  report:
-    needs: build
-    if: always()
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Download build log
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          name: build-log
-
+      # Se ejecuta aunque el build falle: el estado queda en el resumen del run
+      # y, si el token puede escribir, en la rama ci-status.
       - name: Publish status
+        if: always()
         continue-on-error: true
         env:
-          BUILD_RESULT: ${{ needs.build.result }}
-          BUILD_STEP: ${{ needs.build.outputs.build_step }}
+          BUILD_STEP: ${{ steps.build.outcome }}
+          PACKAGE_STEP: ${{ steps.package.outcome }}
           CI_STATUS_TOKEN: ${{ secrets.CI_STATUS_TOKEN }}
         run: |
           set +e
           status_file="$RUNNER_TEMP/ci-status.txt"
           date_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+          if [ "$BUILD_STEP" = "success" ] && [ "$PACKAGE_STEP" = "success" ]; then
+            result="success"
+          else
+            result="failure"
+          fi
+
           {
-            echo "result=$BUILD_RESULT"
+            echo "result=$result"
             echo "build=$BUILD_STEP"
             echo "commit=$GITHUB_SHA"
             echo "run=$GITHUB_RUN_ID"
@@ -109,14 +94,14 @@ jobs:
           } > "$status_file"
 
           errors=""
-          if [ "$BUILD_RESULT" != "success" ]; then
+          if [ "$result" != "success" ]; then
             if [ -f build.log ]; then
               errors="$(grep -i "error:" build.log | head -200)"
               if [ -z "$errors" ]; then
                 errors="$(tail -100 build.log)"
               fi
             else
-              errors="Sin build.log: el job de macOS no llego a ejecutar ni el checkout (minutos macOS del plan, Actions deshabilitado o limite de gasto)."
+              errors="Sin build.log: el workflow no llego a compilar (checkout, XcodeGen o pasos previos fallidos)."
             fi
           fi
 
@@ -125,10 +110,11 @@ jobs:
             echo ""
             echo "| campo | valor |"
             echo "| --- | --- |"
-            echo "| job | \`$BUILD_RESULT\` |"
-            echo "| paso build | \`$BUILD_STEP\` |"
-            echo "| commit | \`$GITHUB_SHA\` |"
-            echo "| run | \`$GITHUB_RUN_ID\` |"
+            echo "| job | $result |"
+            echo "| paso build | $BUILD_STEP |"
+            echo "| paso empaquetado | $PACKAGE_STEP |"
+            echo "| commit | $GITHUB_SHA |"
+            echo "| run | $GITHUB_RUN_ID |"
             echo "| fecha | $date_utc |"
             echo ""
             if [ -n "$errors" ]; then
@@ -152,7 +138,7 @@ jobs:
           if [ -n "$blob" ]; then
             tree="$(printf '100644 blob %s\tci-status.txt\n' "$blob" | git mktree)"
             if [ -n "$tree" ]; then
-              commit="$(git commit-tree "$tree" -m "CI status: $BUILD_RESULT [skip ci]")"
+              commit="$(git commit-tree "$tree" -m "CI status: $result [skip ci]")"
             fi
           fi
 
