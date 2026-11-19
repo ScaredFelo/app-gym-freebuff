@@ -44,6 +44,12 @@ struct PersistedWorkoutState: Codable, Hashable {
     var restingSetNumber: Int
     var restingTotalSets: Int
 
+    /// Cronómetro por serie que estaba en marcha. Opcionales para poder leer
+    /// estados guardados antes de existir este campo.
+    var stopwatchRoutineExerciseID: UUID? = nil
+    var stopwatchSetIndex: Int? = nil
+    var stopwatchStartDate: Date? = nil
+
     var updatedAt: Date
 }
 

@@ -595,6 +595,9 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         stopwatchRoutineExerciseID = routineExerciseID
         stopwatchSetIndex = setIndex
         stopwatchStartDate = Date()
+
+        // El cronómetro tiene que sobrevivir a un cierre de la app.
+        persistState()
     }
 
     /// Segundos transcurridos del cronómetro activo.
@@ -642,15 +645,16 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     /// Convierte el tiempo medido a la unidad del ejercicio. En cardio se
     /// redondea al minuto más cercano y nunca se registra 0 si hubo trabajo.
     private func recordedValue(elapsed: TimeInterval, mode: ExerciseTrackingMode) -> Int {
-        guard elapsed > 0 else { return 0 }
+        let capped: TimeInterval = min(max(0, elapsed), Self.maxStopwatchElapsed)
+        guard capped > 0 else { return 0 }
 
         switch mode {
         case .reps:
             return 0
         case .seconds:
-            return max(1, Int(elapsed.rounded()))
+            return max(1, Int(capped.rounded()))
         case .minutes:
-            return max(1, Int((elapsed / 60.0).rounded()))
+            return max(1, Int((capped / 60.0).rounded()))
         }
     }
 
@@ -1035,6 +1039,9 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             currentRestModeTitle: currentRestModeTitle,
             restingSetNumber: restingSetNumber,
             restingTotalSets: restingTotalSets,
+            stopwatchRoutineExerciseID: stopwatchRoutineExerciseID,
+            stopwatchSetIndex: stopwatchSetIndex,
+            stopwatchStartDate: stopwatchStartDate,
             updatedAt: Date()
         )
 
@@ -1051,6 +1058,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         // independientemente de que hubiera un descanso en curso.
         restoreBPMHistory(from: state)
         restoreCompletedSets(from: state.completedSets, modelContext: modelContext)
+        restoreStopwatch(from: state)
 
         guard state.isResting else { return }
 
@@ -1107,6 +1115,28 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         NotificationManager.shared.scheduleRestFinishedNotification(endingAt: endDate)
         AudioAlertService.shared.startBackgroundAudio()
         startTimerCountdown()
+    }
+
+    /// Tiempo máximo que se acepta de un cronómetro restaurado. Evita registrar
+    /// un bloque enorme si la app estuvo cerrada con el cronómetro en marcha.
+    private static let maxStopwatchElapsed: TimeInterval = 4 * 3600
+
+    /// Reanuda el cronómetro que quedó en marcha al cerrar la app, manteniendo
+    /// su hora de inicio para que el tiempo medido siga siendo real.
+    private func restoreStopwatch(from state: PersistedWorkoutState) {
+        guard let id: UUID = state.stopwatchRoutineExerciseID,
+              let index: Int = state.stopwatchSetIndex,
+              let start: Date = state.stopwatchStartDate else { return }
+
+        guard let sets = activeSets[id],
+              sets.indices.contains(index),
+              !sets[index].isCompleted else { return }
+
+        guard Date().timeIntervalSince(start) <= Self.maxStopwatchElapsed else { return }
+
+        stopwatchRoutineExerciseID = id
+        stopwatchSetIndex = index
+        stopwatchStartDate = start
     }
 
     /// Restaura las lecturas de pulso guardadas para que la gráfica de Big

@@ -1000,20 +1000,24 @@ struct ExerciseCardView: View {
     // MARK: Serie extra
 
     /// Permite añadir series al ejercicio en pleno entrenamiento, sin pasar
-    /// por la edición de la rutina.
+    /// por la edición de la rutina. El cardio es un único bloque cronometrado,
+    /// así que no admite series extra.
+    @ViewBuilder
     private var addSetButton: some View {
-        Button(action: onAddSet) {
-            HStack(spacing: 6.0) {
-                Image(systemName: "plus")
-                    .font(EndfieldFont.mono(9.0, weight: .bold))
+        if exercise.trackingMode != .minutes {
+            Button(action: onAddSet) {
+                HStack(spacing: 6.0) {
+                    Image(systemName: "plus")
+                        .font(EndfieldFont.mono(9.0, weight: .bold))
 
-                Text("AÑADIR SERIE")
-                    .font(EndfieldFont.mono(9.0, weight: .bold))
-                    .tracking(1.0)
+                    Text("AÑADIR SERIE")
+                        .font(EndfieldFont.mono(9.0, weight: .bold))
+                        .tracking(1.0)
+                }
             }
+            .buttonStyle(EndfieldSecondaryButtonStyle(compact: true, tint: EndfieldPalette.accentCyan))
+            .accessibilityLabel("Añadir serie a \(exercise.name)")
         }
-        .buttonStyle(EndfieldSecondaryButtonStyle(compact: true, tint: EndfieldPalette.accentCyan))
-        .accessibilityLabel("Añadir serie a \(exercise.name)")
     }
 
     // MARK: Notas
