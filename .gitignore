@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+
+# Xcode / artefactos de compilación
+DerivedData/
+build/
+*.ipa
+*.dSYM
+*.dSYM.zip
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Registros locales
+*.log
+
+# Variables de entorno y ficheros de herramientas
+.env
+.env.*
+!.env.example
+.freebuff/
+.cloud-attachments/

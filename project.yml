@@ -55,8 +55,22 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # Modos que la app usa de verdad: audio (campana de descanso y avisos
+        # con la pantalla bloqueada) y bluetooth-central (banda de pulso BLE
+        # durante la sesion).
+        #
+        # `workout-processing`: Apple lo documenta SOLO para watchOS, asi que en
+        # iOS no se aplica. No hay evidencia de fallo (el build compila y no hay
+        # ruta de codigo que dependa de el), y la ruta de HKWorkoutSession de
+        # iOS 26 se apoya en el entitlement de HealthKit, no en este modo. Se
+        # mantiene tal cual hasta revisarlo con un dispositivo y el perfil de
+        # aprovisionamiento reales; quitarlo no aporta nada hoy y no se puede
+        # validar aqui.
+        #
+        # `processing` se retiro: no hay BGTaskScheduler ni BGProcessingTask en
+        # el proyecto, y declarar modos en segundo plano sin uso es un motivo
+        # habitual de rechazo (guia 2.5.4).
         UIBackgroundModes:
-          - processing
           - audio
           - bluetooth-central
           - workout-processing

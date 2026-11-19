@@ -247,7 +247,10 @@ public struct RoutineListView: View {
         }
 
         routineToEdit = nil
-        let routine = FreeWorkoutRoutineStore.prepare(modelContext: modelContext)
+        guard let routine = FreeWorkoutRoutineStore.prepare(modelContext: modelContext) else {
+            saveErrorMessage = "No se ha podido preparar el entreno libre. Vuelve a intentarlo."
+            return
+        }
 
         let session = WorkoutSession(startDate: Date(), totalVolumeKg: 0.0, routineName: routine.name)
         modelContext.insert(session)

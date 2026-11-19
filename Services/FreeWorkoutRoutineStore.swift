@@ -15,9 +15,20 @@ enum FreeWorkoutRoutineStore {
         return !routine.isTemplate
     }
 
-    /// Devuelve la rutina contenedora vacía y lista para recibir ejercicios.
-    static func prepare(modelContext: ModelContext) -> Routine {
-        let allRoutines: [Routine] = (try? modelContext.fetch(FetchDescriptor<Routine>())) ?? []
+    /// Devuelve la rutina contenedora vacía y lista para recibir ejercicios, o
+    /// `nil` si no se pudo leer la base de datos.
+    ///
+    /// Antes el fallo de lectura se convertía en un array vacío: la app no
+    /// encontraba la contenedora y creaba una segunda "ENTRENO LIBRE", con los
+    /// ejercicios repartidos entre las dos. Ahora el fallo se trata como tal.
+    static func prepare(modelContext: ModelContext) -> Routine? {
+        let allRoutines: [Routine]
+        do {
+            allRoutines = try modelContext.fetch(FetchDescriptor<Routine>())
+        } catch {
+            print("[Persistence] No se pudieron leer las rutinas para el entreno libre: \(error)")
+            return nil
+        }
         let existing: Routine? = allRoutines.first { (routine: Routine) -> Bool in
             return !routine.isTemplate
         }

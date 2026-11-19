@@ -46,6 +46,13 @@ final class NotificationManager {
         content.title = "¡Tiempo de descanso finalizado!"
         content.body = "Prepara la siguiente serie"
         content.sound = UNNotificationSound.default
+        // `.timeSensitive` necesita la capability "Time Sensitive
+        // Notifications" (com.apple.developer.usernotifications.time-sensitive),
+        // que hoy NO esta en AppGym.entitlements. Sin ella iOS entrega el aviso
+        // como `.active`: no lanza error ni rompe el build, solo deja de saltar
+        // los controles de Enfoque y el resumen de notificaciones. Anadir la
+        // capability obliga a regenerar el perfil de aprovisionamiento, asi que
+        // se deja documentado en lugar de cambiarlo a ciegas.
         content.interruptionLevel = .timeSensitive
 
         let trigger = UNTimeIntervalNotificationTrigger(

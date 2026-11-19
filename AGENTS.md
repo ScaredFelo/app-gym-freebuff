@@ -27,3 +27,10 @@ Eres un desarrollador experto en iOS y SwiftUI encargado del desarrollo, manteni
 4. **Precisión y Ejecución:**
    - Implementa **únicamente** lo que se te solicite en cada prompt. No añadas botones de ajustes globales, menús adicionales o animaciones complejas a menos que hayan sido pedidos explícitamente.
    - Cuando modifiques código existente, especifica el archivo exacto (`Views/...`, `ViewModels/...`) y entrega código completo y listo para compilar.
+
+#### GitHub Actions & CI/CD Execution Guardrail
+
+- **NO automatic compiles or pushes:** Never run `git push` (to branches or tags that trigger GitHub Actions), `gh workflow run`, or any command/script that triggers a remote CI/CD build or compilation unless the user **explicitly requests** it in the current message.
+- **Local work is allowed:** Editing files, running local tests/linters, and making local `git commit`s are allowed when asked, as long as nothing is pushed or dispatched to GitHub Actions without explicit permission.
+- **Ask first if needed:** If you think a build or push to GitHub is needed, stop and ask for confirmation first instead of executing it.
+- **Trigger phrases:** Only push/trigger builds when the user explicitly asks to push, compile on GitHub, run the workflow, or deploy (e.g., *"haz push"*, *"compílalo en GitHub"*, *"lanza el workflow"*).

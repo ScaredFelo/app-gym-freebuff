@@ -488,16 +488,25 @@ enum CardioSessionStore {
     private static let key: String = "activeCardioSessionSnapshot"
 
     static func save(_ snapshot: CardioSessionSnapshot) {
-        guard let data: Data = try? JSONEncoder().encode(snapshot) else { return }
+        guard let data: Data = try? JSONEncoder().encode(snapshot) else {
+            // No se pisa el snapshot anterior con un contenido invalido.
+            print("[Persistence] No se pudo codificar la sesion de cardio; se conserva la anterior.")
+            return
+        }
         UserDefaults.standard.set(data, forKey: key)
     }
 
     static func load() -> CardioSessionSnapshot? {
-        guard let data: Data = UserDefaults.standard.data(forKey: key),
-              let snapshot: CardioSessionSnapshot = try? JSONDecoder().decode(CardioSessionSnapshot.self, from: data) else {
+        guard let data: Data = UserDefaults.standard.data(forKey: key) else { return nil }
+
+        do {
+            return try JSONDecoder().decode(CardioSessionSnapshot.self, from: data)
+        } catch {
+            // Se conserva el dato corrupto para diagnostico; la vista decide
+            // entre ofrecer guardarlo o descartarlo.
+            print("[Persistence] No se pudo leer la sesion de cardio guardada: \(error)")
             return nil
         }
-        return snapshot
     }
 
     static func clear() {
