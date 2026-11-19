@@ -39,12 +39,33 @@ public final class CardioViewModel: ObservableObject {
     /// gráfica sin acumular lecturas redundantes del sensor.
     private let bpmSampleInterval: TimeInterval = 2.0
     private var lastBPMSampleDate: Date = .distantPast
+    /// Último volcado del estado a disco; se limita para no escribir en cada
+    /// lectura del sensor.
+    private var lastPersistDate: Date = .distantPast
 
     public init(type: CardioType, targetMinutes: Int, startedAt: Date = Date()) {
         self.type = type
         self.startedAt = startedAt
         self.targetDuration = TimeInterval(max(1, targetMinutes) * 60)
         self.segmentStart = startedAt
+    }
+
+    /// Reconstruye la sesión guardada cuando iOS suspende o cierra la app con
+    /// el cardio en marcha (pantalla bloqueada, cambio de app, presión de
+    /// memoria). El tiempo sigue anclado al reloj, así que no se pierde nada.
+    init?(snapshot: CardioSessionSnapshot) {
+        guard let type: CardioType = CardioType(rawValue: snapshot.typeRaw) else { return nil }
+
+        self.type = type
+        self.startedAt = snapshot.startedAt
+        self.targetDuration = max(60.0, snapshot.targetDuration)
+        self.accumulatedBeforeSegment = max(0.0, snapshot.accumulatedBeforeSegment)
+        self.segmentStart = snapshot.isPaused ? nil : (snapshot.segmentStart ?? Date())
+        self.phase = snapshot.isPaused ? .paused : .running
+        self.bpmHistory = snapshot.bpmSamples.sorted { (lhs: BPMSample, rhs: BPMSample) -> Bool in
+            return lhs.timestamp < rhs.timestamp
+        }
+        self.lastBPMSampleDate = self.bpmHistory.last?.timestamp ?? .distantPast
     }
 
     // MARK: - Lecturas temporales
@@ -71,6 +92,7 @@ public final class CardioViewModel: ObservableObject {
         guard phase == .running, tickTask == nil else { return }
 
         startHeartRateSensing()
+        persistSnapshot()
 
         tickTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
@@ -95,6 +117,7 @@ public final class CardioViewModel: ObservableObject {
         segmentStart = nil
         phase = .paused
         stopTicking()
+        persistSnapshot()
     }
 
     public func resume() {
@@ -103,6 +126,7 @@ public final class CardioViewModel: ObservableObject {
         segmentStart = Date()
         phase = .running
         start()
+        persistSnapshot()
     }
 
     /// Suma o resta minutos al objetivo sin detener la cuenta atrás.
@@ -111,6 +135,7 @@ public final class CardioViewModel: ObservableObject {
 
         let updated: TimeInterval = targetDuration + TimeInterval(minutes) * 60.0
         targetDuration = min(180.0 * 60.0, max(60.0, updated))
+        persistSnapshot()
     }
 
     /// Cierra la sesión antes de tiempo conservando el tiempo ya realizado.
@@ -123,6 +148,7 @@ public final class CardioViewModel: ObservableObject {
     public func cancelSession() {
         stopTicking()
         stopHeartRateSensing()
+        CardioSessionStore.clear()
     }
 
     private func terminate(reachedTarget: Bool) {
@@ -133,6 +159,7 @@ public final class CardioViewModel: ObservableObject {
         self.reachedTarget = reachedTarget
         stopTicking()
         stopHeartRateSensing()
+        CardioSessionStore.clear()
     }
 
     private func stopTicking() {
@@ -185,5 +212,65 @@ public final class CardioViewModel: ObservableObject {
 
         lastBPMSampleDate = date
         bpmHistory.append(BPMSample(timestamp: date, bpm: Double(bpm)))
+
+        if date.timeIntervalSince(lastPersistDate) >= 10.0 {
+            lastPersistDate = date
+            persistSnapshot()
+        }
+    }
+
+    // MARK: - Persistencia
+
+    /// Guarda el estado de la sesión para poder reanudarla si iOS cierra la
+    /// app mientras el cardio sigue activo.
+    private func persistSnapshot() {
+        CardioSessionStore.save(
+            CardioSessionSnapshot(
+                typeRaw: type.rawValue,
+                startedAt: startedAt,
+                targetDuration: targetDuration,
+                accumulatedBeforeSegment: accumulatedBeforeSegment,
+                segmentStart: segmentStart,
+                isPaused: phase == .paused,
+                bpmSamples: bpmHistory
+            )
+        )
+    }
+}
+
+// MARK: - Persistencia de la sesión activa
+
+/// Estado serializable de una sesión de cardio en curso.
+struct CardioSessionSnapshot: Codable {
+    var typeRaw: String
+    var startedAt: Date
+    var targetDuration: TimeInterval
+    var accumulatedBeforeSegment: TimeInterval
+    var segmentStart: Date?
+    var isPaused: Bool
+    var bpmSamples: [BPMSample]
+}
+
+/// Guarda la sesión de cardio activa en `UserDefaults`. Es deliberadamente
+/// pequeño: una única entrada que se sobrescribe y se borra al terminar o
+/// descartar la sesión.
+enum CardioSessionStore {
+    private static let key: String = "activeCardioSessionSnapshot"
+
+    static func save(_ snapshot: CardioSessionSnapshot) {
+        guard let data: Data = try? JSONEncoder().encode(snapshot) else { return }
+        UserDefaults.standard.set(data, forKey: key)
+    }
+
+    static func load() -> CardioSessionSnapshot? {
+        guard let data: Data = UserDefaults.standard.data(forKey: key),
+              let snapshot: CardioSessionSnapshot = try? JSONDecoder().decode(CardioSessionSnapshot.self, from: data) else {
+            return nil
+        }
+        return snapshot
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
     }
 }

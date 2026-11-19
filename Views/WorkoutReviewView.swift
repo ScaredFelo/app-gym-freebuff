@@ -50,7 +50,9 @@ public struct WorkoutReviewView: View {
                         // informe que se muestra al terminar la sesión.
                         CardioReportPanel(
                             report: cardioReport,
-                            chartSamples: session.bpmSamples
+                            chartSamples: session.bpmSamples,
+                            chartStart: session.startDate,
+                            chartEnd: session.endDate
                         )
                     } else {
                         WorkoutReviewMainMetricsView(metrics: metrics)

@@ -24,6 +24,9 @@ public struct CardioView: View {
         }
         .preferredColorScheme(.dark)
         .interactiveDismissDisabled(viewModel != nil)
+        .onAppear {
+            restoreSessionIfNeeded()
+        }
     }
 
     private func startSession(type: CardioType, minutes: Int) {
@@ -32,6 +35,27 @@ public struct CardioView: View {
         let model = CardioViewModel(type: type, targetMinutes: minutes)
         viewModel = model
         model.start()
+    }
+
+    /// Recupera la sesión que seguía activa cuando iOS suspendió o cerró la
+    /// app, en lugar de volver a la pantalla de selección de tiempo.
+    private func restoreSessionIfNeeded() {
+        guard viewModel == nil else { return }
+        guard let snapshot: CardioSessionSnapshot = CardioSessionStore.load() else { return }
+        guard let restored: CardioViewModel = CardioViewModel(snapshot: snapshot) else {
+            CardioSessionStore.clear()
+            return
+        }
+
+        viewModel = restored
+
+        // Si el objetivo se cumplió mientras la app estaba cerrada, la sesión
+        // se muestra ya terminada con su informe.
+        if restored.phase == .running, restored.remaining(at: Date()) <= 0 {
+            restored.finishEarly()
+        } else {
+            restored.start()
+        }
     }
 }
 
@@ -326,6 +350,12 @@ private struct CardioSessionView: View {
             guard newPhase == .finished else { return }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             persistSession()
+        }
+        .onAppear {
+            // Sesión restaurada que ya había cumplido su objetivo.
+            if viewModel.phase == .finished {
+                persistSession()
+            }
         }
         .alert("¿Abortar sesión de cardio?", isPresented: $showingAbortConfirmation) {
             Button("Descartar", role: .destructive) {
@@ -730,6 +760,12 @@ struct CardioReportPanel: View {
     /// minutos encima del cronómetro.
     var chartSamples: [BPMSample]? = nil
 
+    /// Inicio y fin reales de la sesión para que el eje temporal cubra toda la
+    /// duración del informe aunque el sensor conectara tarde o perdiera
+    /// lecturas.
+    var chartStart: Date? = nil
+    var chartEnd: Date? = nil
+
     var body: some View {
         TacticalPanel(
             code: "RPT.01",
@@ -822,13 +858,19 @@ struct CardioReportPanel: View {
         let timestamps: [Date] = samples.map { (sample: BPMSample) -> Date in
             return sample.timestamp
         }
-        guard let first: Date = timestamps.min(),
-              let last: Date = timestamps.max() else { return nil }
+        guard let firstSample: Date = timestamps.min(),
+              let lastSample: Date = timestamps.max() else { return nil }
 
-        if last <= first {
-            return first...(first.addingTimeInterval(60.0))
+        let start: Date = chartStart ?? firstSample
+        let end: Date = chartEnd ?? lastSample
+
+        if end <= start {
+            return firstSample...(firstSample.addingTimeInterval(60.0))
         }
-        return first...last
+
+        // Si alguna muestra cae fuera del rango nominal, se amplía el eje para
+        // no recortarla.
+        return min(start, firstSample)...max(end, lastSample)
     }
 
     private func reportBox(code: String, label: String, value: String, tint: Color) -> some View {
