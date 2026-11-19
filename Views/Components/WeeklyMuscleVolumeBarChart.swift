@@ -14,10 +14,9 @@ struct WeeklyMuscleVolumeBarChart: View {
 
     var body: some View {
         let items: [WeeklyMuscleVolumeItem] = computeItems()
-        let scale: Int = maxScale(for: items)
 
         VStack(alignment: .leading, spacing: 8.0) {
-            Text("VOLUMEN DE SERIES SEMANALES (ÚLTIMOS 7 DÍAS)")
+            Text("VOLUMEN SEMANAL // SERIES Y MINUTOS DE CARDIO")
                 .font(EndfieldFont.label(9.0, weight: .bold))
                 .tracking(1.0)
                 .foregroundStyle(EndfieldPalette.accentYellow)
@@ -28,7 +27,6 @@ struct WeeklyMuscleVolumeBarChart: View {
                 ForEach(items) { (item: WeeklyMuscleVolumeItem) in
                     WeeklyMuscleVolumeRow(
                         item: item,
-                        maxScale: scale,
                         labelWidth: Self.labelWidth,
                         barHeight: Self.barHeight
                     )
@@ -40,12 +38,14 @@ struct WeeklyMuscleVolumeBarChart: View {
     // MARK: Cálculo
 
     /// Suma las series completadas de los últimos 7 días por grupo muscular
-    /// principal. Devuelve siempre todos los grupos, incluidos los que van a 0.
+    /// principal y los minutos de cardio por separado. Devuelve siempre todos
+    /// los grupos, incluidos los que van a 0.
     private func computeItems() -> [WeeklyMuscleVolumeItem] {
         let now: Date = Date()
         let windowStart: Date = now.addingTimeInterval(-7.0 * 86400.0)
 
         var totals: [MuscleGroup: Int] = [:]
+        var cardioMinutes: Int = 0
         for group in MuscleGroup.allCases {
             totals[group] = 0
         }
@@ -62,27 +62,41 @@ struct WeeklyMuscleVolumeBarChart: View {
                     ? [exercise.muscleGroup]
                     : exercise.primaryMuscles
 
+                // El cardio no se mide en series: se suman los minutos
+                // registrados por el cronómetro de cada bloque.
+                if exercise.trackingMode == .minutes || groups.contains(.cardio) {
+                    cardioMinutes += max(0, log.reps)
+                    continue
+                }
+
                 for group in groups {
                     totals[group, default: 0] += 1
                 }
             }
         }
 
+        // Series y minutos viven en escalas distintas: cada unidad se compara
+        // con su propio máximo para que la fila de cardio siga siendo legible.
+        let setsScale: Int = max(12, totals.values.max() ?? 0)
+        let minutesScale: Int = max(60, cardioMinutes)
+
         return MuscleGroup.allCases.map { (group: MuscleGroup) -> WeeklyMuscleVolumeItem in
+            if group == .cardio {
+                return WeeklyMuscleVolumeItem(
+                    group: group,
+                    value: cardioMinutes,
+                    unitSuffix: " min",
+                    scale: minutesScale
+                )
+            }
+
             return WeeklyMuscleVolumeItem(
                 group: group,
-                setsCount: totals[group] ?? 0
+                value: totals[group] ?? 0,
+                unitSuffix: "",
+                scale: setsScale
             )
         }
-    }
-
-    /// Escala mínima de 12 series para que las barras no saturen el ancho con
-    /// volúmenes pequeños.
-    private func maxScale(for items: [WeeklyMuscleVolumeItem]) -> Int {
-        let maximum: Int = items.reduce(0) { (result: Int, item: WeeklyMuscleVolumeItem) -> Int in
-            return max(result, item.setsCount)
-        }
-        return max(12, maximum)
     }
 }
 
@@ -90,7 +104,12 @@ struct WeeklyMuscleVolumeBarChart: View {
 
 struct WeeklyMuscleVolumeItem: Identifiable {
     let group: MuscleGroup
-    let setsCount: Int
+    /// Series completadas o, en cardio, minutos acumulados.
+    let value: Int
+    /// Sufijo de la unidad cuando el valor no son series (` min`).
+    let unitSuffix: String
+    /// Escala propia de la unidad de la fila.
+    let scale: Int
 
     var id: String {
         return group.rawValue
@@ -101,7 +120,6 @@ struct WeeklyMuscleVolumeItem: Identifiable {
 
 struct WeeklyMuscleVolumeRow: View {
     let item: WeeklyMuscleVolumeItem
-    let maxScale: Int
     let labelWidth: CGFloat
     let barHeight: CGFloat
 
@@ -116,8 +134,8 @@ struct WeeklyMuscleVolumeRow: View {
 
             GeometryReader { (proxy: GeometryProxy) in
                 let available: CGFloat = max(proxy.size.width, 0.0)
-                let scale: CGFloat = CGFloat(max(maxScale, 1))
-                let ratio: CGFloat = min(max(CGFloat(item.setsCount) / scale, 0.0), 1.0)
+                let scale: CGFloat = CGFloat(max(item.scale, 1))
+                let ratio: CGFloat = min(max(CGFloat(item.value) / scale, 0.0), 1.0)
                 let fillWidth: CGFloat = available * ratio
 
                 ZStack(alignment: .leading) {
@@ -133,7 +151,7 @@ struct WeeklyMuscleVolumeRow: View {
                     ChamferedRectangle(cut: 2.0)
                         .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
 
-                    Text("\(item.setsCount)")
+                    Text("\(item.value)\(item.unitSuffix)")
                         .font(EndfieldFont.mono(11.0, weight: .bold))
                         .monospacedDigit()
                         .foregroundStyle(numberColor(fillWidth: fillWidth))
@@ -149,7 +167,7 @@ struct WeeklyMuscleVolumeRow: View {
     /// Negro sobre el relleno amarillo cuando la barra cubre el número; blanco
     /// cuando no hay relleno suficiente (o el valor es 0).
     private func numberColor(fillWidth: CGFloat) -> Color {
-        if item.setsCount <= 0 {
+        if item.value <= 0 {
             return EndfieldPalette.textPrimary
         }
         return fillWidth >= 24.0 ? EndfieldPalette.bgPrimary : EndfieldPalette.textPrimary

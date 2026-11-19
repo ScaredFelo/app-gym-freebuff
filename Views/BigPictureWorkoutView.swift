@@ -45,6 +45,12 @@ public struct BigPictureWorkoutView: View {
                         currentWeight: viewModel.bigPictureCurrentWeight,
                         currentReps: viewModel.bigPictureCurrentReps,
                         targetUnitLabel: viewModel.bigPictureCurrentRoutineExercise?.exercise?.targetUnitLabel ?? "REPS",
+                        trackingMode: viewModel.bigPictureCurrentRoutineExercise?.exercise?.trackingMode ?? .reps,
+                        isStopwatchRunning: viewModel.bigPictureIsStopwatchRunning,
+                        stopwatchStartDate: viewModel.bigPictureStopwatchStartDate,
+                        onToggleStopwatch: {
+                            viewModel.toggleBigPictureStopwatch(modelContext: modelContext)
+                        },
                         modelContext: modelContext,
                         onWeightChange: { value in
                             viewModel.bigPictureUpdateWeight(value, modelContext: modelContext)
@@ -347,7 +353,8 @@ public struct BigPictureWorkoutView: View {
     @ViewBuilder
     private var equipmentVisualizerSection: some View {
         if let routineExercise = viewModel.bigPictureCurrentRoutineExercise,
-           let exercise = routineExercise.exercise {
+           let exercise = routineExercise.exercise,
+           !exercise.trackingMode.isTimeBased {
             TacticalPanel(code: "EQP.DISC", title: "DISCOS // BARRA", contentPadding: 10.0) {
                 EquipmentVisualizerView(
                     equipmentType: exercise.equipmentType,
@@ -367,6 +374,10 @@ struct BigPictureControlsView: View {
     var currentWeight: Double
     var currentReps: Int
     var targetUnitLabel: String = "REPS"
+    var trackingMode: ExerciseTrackingMode = .reps
+    var isStopwatchRunning: Bool = false
+    var stopwatchStartDate: Date? = nil
+    var onToggleStopwatch: () -> Void = {}
     var modelContext: ModelContext
     var onWeightChange: (Double) -> Void
     var onRepsChange: (Int) -> Void
@@ -375,13 +386,18 @@ struct BigPictureControlsView: View {
 
     var body: some View {
         VStack(spacing: 10.0) {
-            weightRow
+            if trackingMode.isTimeBased {
+                // Sin carga y sin series: un único bloque cronometrado.
+                timeRow
+            } else {
+                weightRow
 
-            Rectangle()
-                .fill(EndfieldPalette.borderSubtle)
-                .frame(height: 1.0)
+                Rectangle()
+                    .fill(EndfieldPalette.borderSubtle)
+                    .frame(height: 1.0)
 
-            repsRow
+                repsRow
+            }
         }
         .padding(.horizontal, 12.0)
         .padding(.vertical, 12.0)
@@ -477,6 +493,52 @@ struct BigPictureControlsView: View {
                 onRepsChange(1)
             }
             .accessibilityLabel("Sumar repetición")
+        }
+    }
+
+    // MARK: Tiempo (isométricos y cardio)
+
+    private var timeRow: some View {
+        HStack(spacing: 10.0) {
+            stepButton(
+                systemName: isStopwatchRunning ? "stop.fill" : "play.fill",
+                tint: isStopwatchRunning ? EndfieldPalette.accentRed : EndfieldPalette.accentYellow
+            ) {
+                onToggleStopwatch()
+            }
+            .accessibilityLabel(isStopwatchRunning ? "Detener cronómetro y registrar bloque" : "Iniciar cronómetro del bloque")
+
+            VStack(spacing: 0.0) {
+                if isStopwatchRunning, let stopwatchStartDate {
+                    TimelineView(.periodic(from: stopwatchStartDate, by: 1.0)) { timeline in
+                        Text(TimeSetRowView.formatted(elapsed: timeline.date.timeIntervalSince(stopwatchStartDate)))
+                            .font(EndfieldFont.mono(54.0, weight: .heavy))
+                            .monospacedDigit()
+                            .foregroundStyle(EndfieldPalette.accentYellow)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                    }
+                } else {
+                    Text(currentReps > 0 ? "\(currentReps)" : "—")
+                        .font(EndfieldFont.mono(54.0, weight: .heavy))
+                        .monospacedDigit()
+                        .foregroundStyle(EndfieldPalette.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                        .contentTransition(.numericText())
+                }
+
+                Text(targetUnitLabel + " // REGISTRO")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.2)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+            }
+            .frame(maxWidth: .infinity)
+
+            stepButton(systemName: "plus", tint: EndfieldPalette.accentYellow) {
+                onRepsChange(1)
+            }
+            .accessibilityLabel("Sumar valor objetivo")
         }
     }
 

@@ -206,6 +206,15 @@ public struct ActiveWorkoutView: View {
                                     exercise: exercise,
                                     sets: viewModel.activeSets[routineExercise.id] ?? [],
                                     isTimerOrigin: timerIsLaunching && timerOriginCardID == routineExercise.id,
+                                    stopwatchSetIndex: viewModel.stopwatchRoutineExerciseID == routineExercise.id ? viewModel.stopwatchSetIndex : nil,
+                                    stopwatchStartDate: viewModel.stopwatchRoutineExerciseID == routineExercise.id ? viewModel.stopwatchStartDate : nil,
+                                    onToggleStopwatch: { setIndex in
+                                        viewModel.toggleSetStopwatch(
+                                            for: routineExercise.id,
+                                            setIndex: setIndex,
+                                            modelContext: modelContext
+                                        )
+                                    },
                                     onToggleSet: { setIndex in
                                         toggleSet(for: routineExercise, setIndex: setIndex)
                                     },
@@ -759,6 +768,11 @@ struct ExerciseCardView: View {
     let exercise: Exercise
     let sets: [ActiveWorkoutViewModel.SetInputState]
     let isTimerOrigin: Bool
+    /// Serie cuyo cronómetro está en marcha, y su hora de inicio. Ambos llegan
+    /// filtrados por tarjeta desde el ViewModel.
+    let stopwatchSetIndex: Int?
+    let stopwatchStartDate: Date?
+    let onToggleStopwatch: (Int) -> Void
     let onToggleSet: (Int) -> Void
     let onUpdateSet: (Int, Double, Int) -> Void
     let onRemove: () -> Void
@@ -921,14 +935,25 @@ struct ExerciseCardView: View {
             Text("Nº")
                 .frame(width: 30.0, alignment: .leading)
 
-            Text("GHOST")
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if exercise.trackingMode.isTimeBased {
+                Text("CRONÓMETRO")
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text("KG")
-                .frame(width: 62.0, alignment: .center)
+                Text("")
+                    .frame(width: 62.0, alignment: .center)
 
-            Text(exercise.trackingMode.unitLabel)
-                .frame(width: 50.0, alignment: .center)
+                Text(exercise.trackingMode.unitLabel)
+                    .frame(width: 50.0, alignment: .center)
+            } else {
+                Text("GHOST")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("KG")
+                    .frame(width: 62.0, alignment: .center)
+
+                Text(exercise.trackingMode.unitLabel)
+                    .frame(width: 50.0, alignment: .center)
+            }
 
             Text("OK")
                 .frame(width: 28.0, alignment: .center)
@@ -941,13 +966,25 @@ struct ExerciseCardView: View {
     private var setRows: some View {
         VStack(spacing: 5.0) {
             ForEach(Array(sets.enumerated()), id: \.element.id) { index, set in
-                SetRowView(
-                    set: set,
-                    targetRepsMin: routineExercise.targetRepsMin,
-                    targetRepsMax: routineExercise.targetRepsMax,
-                    onToggle: { onToggleSet(index) },
-                    onUpdate: { w, r in onUpdateSet(index, w, r) }
-                )
+                if exercise.trackingMode.isTimeBased {
+                    TimeSetRowView(
+                        set: set,
+                        trackingMode: exercise.trackingMode,
+                        isRunning: stopwatchSetIndex == index && stopwatchStartDate != nil,
+                        startDate: stopwatchSetIndex == index ? stopwatchStartDate : nil,
+                        onToggleStopwatch: { onToggleStopwatch(index) },
+                        onToggle: { onToggleSet(index) },
+                        onUpdate: { reps in onUpdateSet(index, set.weight, reps) }
+                    )
+                } else {
+                    SetRowView(
+                        set: set,
+                        targetRepsMin: routineExercise.targetRepsMin,
+                        targetRepsMax: routineExercise.targetRepsMax,
+                        onToggle: { onToggleSet(index) },
+                        onUpdate: { w, r in onUpdateSet(index, w, r) }
+                    )
+                }
             }
         }
     }
@@ -1144,6 +1181,163 @@ struct SetRowView: View {
     private var ghostText: String {
         guard let gw = set.ghostWeight, let gr = set.ghostReps else { return "—" }
         return "\(String(format: "%.0f", gw))kg × \(gr)"
+    }
+}
+
+// MARK: - Time Set Row Component
+
+/// Fila de una serie medida en tiempo (isométricos y cardio): cronómetro real
+/// en marcha, sin columna de peso ni marca fantasma de kg.
+struct TimeSetRowView: View {
+    let set: ActiveWorkoutViewModel.SetInputState
+    let trackingMode: ExerciseTrackingMode
+    let isRunning: Bool
+    let startDate: Date?
+    let onToggleStopwatch: () -> Void
+    let onToggle: () -> Void
+    let onUpdate: (Int) -> Void
+
+    @State private var valueString: String
+    @FocusState private var isValueFocused: Bool
+
+    init(
+        set: ActiveWorkoutViewModel.SetInputState,
+        trackingMode: ExerciseTrackingMode,
+        isRunning: Bool,
+        startDate: Date?,
+        onToggleStopwatch: @escaping () -> Void,
+        onToggle: @escaping () -> Void,
+        onUpdate: @escaping (Int) -> Void
+    ) {
+        self.set = set
+        self.trackingMode = trackingMode
+        self.isRunning = isRunning
+        self.startDate = startDate
+        self.onToggleStopwatch = onToggleStopwatch
+        self.onToggle = onToggle
+        self.onUpdate = onUpdate
+        _valueString = State(initialValue: set.reps == 0 ? "" : "\(set.reps)")
+    }
+
+    var body: some View {
+        HStack(spacing: 6.0) {
+            Text(String(format: "%02d", set.setNumber))
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(set.isCompleted ? EndfieldPalette.accentYellow : EndfieldPalette.textSecondary)
+                .frame(width: 30.0, alignment: .leading)
+
+            elapsedView
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: onToggleStopwatch) {
+                Image(systemName: isRunning ? "stop.fill" : "play.fill")
+                    .font(EndfieldFont.mono(12.0, weight: .heavy))
+            }
+            .buttonStyle(EndfieldSquareButtonStyle(
+                tint: isRunning ? EndfieldPalette.accentRed : EndfieldPalette.accentCyan,
+                size: 30.0
+            ))
+            .frame(width: 62.0)
+            .disabled(set.isCompleted)
+            .opacity(set.isCompleted ? 0.4 : 1.0)
+            .accessibilityLabel(isRunning ? "Detener cronómetro y registrar serie" : "Iniciar cronómetro de la serie")
+
+            TextField(placeholder, text: $valueString)
+                .textFieldStyle(.plain)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.center)
+                .font(EndfieldFont.mono(15.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .frame(width: 50.0, height: 36.0)
+                .background(ChamferedRectangle(cut: EndfieldMetrics.cellCut).fill(EndfieldPalette.bgElevated))
+                .overlay {
+                    ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                        .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                }
+                .focused($isValueFocused)
+                .onChange(of: valueString) { _, newValue in
+                    if let value = Int(newValue) {
+                        onUpdate(value)
+                    }
+                }
+                .onChange(of: set.reps) { _, newValue in
+                    // El cronómetro escribe el tiempo real: el campo se
+                    // sincroniza salvo que el usuario esté editándolo.
+                    guard !isValueFocused else { return }
+                    valueString = newValue == 0 ? "" : "\(newValue)"
+                }
+
+            Button(action: onToggle) {
+                Image(systemName: "checkmark")
+                    .font(EndfieldFont.mono(13.0, weight: .heavy))
+                    .opacity(set.isCompleted ? 1.0 : 0.0)
+                    .frame(width: 28.0, height: 28.0)
+            }
+            .buttonStyle(SetCompletionButtonStyle(isCompleted: set.isCompleted))
+            .accessibilityLabel(set.isCompleted ? "Serie completada" : "Marcar serie como completada")
+        }
+        .padding(.horizontal, 6.0)
+        .padding(.vertical, 5.0)
+        .background {
+            if set.isCompleted {
+                ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                    .fill(EndfieldPalette.accentYellow.opacity(0.06))
+            }
+        }
+    }
+
+    /// Mientras corre muestra el tiempo real (mm:ss) actualizado por
+    /// `TimelineView`; en reposo, la última marca registrada.
+    @ViewBuilder
+    private var elapsedView: some View {
+        if isRunning, let startDate {
+            TimelineView(.periodic(from: startDate, by: 1.0)) { timeline in
+                Text(Self.formatted(elapsed: timeline.date.timeIntervalSince(startDate)))
+                    .font(EndfieldFont.mono(18.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+        } else {
+            Text(storedText)
+                .font(EndfieldFont.mono(12.0, weight: .semibold))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+    }
+
+    private var placeholder: String {
+        return trackingMode == .minutes ? "min" : "seg"
+    }
+
+    private var storedText: String {
+        guard set.reps > 0 else { return "—" }
+        if trackingMode == .seconds {
+            return Self.formatted(seconds: set.reps)
+        }
+        return "\(set.reps) min"
+    }
+
+    static func formatted(elapsed: TimeInterval) -> String {
+        let total: Int = max(0, Int(elapsed))
+        let hours: Int = total / 3600
+        let minutes: Int = (total % 3600) / 60
+        let seconds: Int = total % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    private static func formatted(seconds: Int) -> String {
+        let value: Int = max(0, seconds)
+        return String(format: "%02d:%02d", value / 60, value % 60)
     }
 }
 

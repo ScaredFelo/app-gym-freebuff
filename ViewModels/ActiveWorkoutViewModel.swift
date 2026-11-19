@@ -25,6 +25,13 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     @Published public var isTimerMinimized: Bool = false
     @Published public var isRestFinishing: Bool = false
 
+    // MARK: - Cronómetro por serie (ejercicios medidos en tiempo)
+
+    /// Ejercicio y serie cuyo cronómetro está en marcha (solo uno a la vez).
+    @Published public var stopwatchRoutineExerciseID: UUID?
+    @Published public var stopwatchSetIndex: Int?
+    @Published public var stopwatchStartDate: Date?
+
     /// Callback opcional invocado cuando el entrenamiento finaliza
     /// automáticamente desde el modo Big Picture (última serie del último ejercicio).
     public var onWorkoutFinished: (() -> Void)? = nil
@@ -188,7 +195,11 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             }
         var sets: [SetInputState] = []
 
-        for i in 1...max(1, routineExercise.defaultSets) {
+        // El cardio se registra como un único bloque cronometrado: las series
+        // no aportan nada cuando el objetivo son minutos continuos.
+        let setCount: Int = exercise.trackingMode == .minutes ? 1 : max(1, routineExercise.defaultSets)
+
+        for i in 1...setCount {
             let stableLog = currentLogs.first { (log: WorkoutSetLog) -> Bool in
                 return log.routineExerciseID == routineExercise.id && log.setNumber == i
             }
@@ -228,6 +239,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         let nextOrder = (routine.exercises.map(\.sortOrder).max() ?? -1) + 1
         let routineExercise = RoutineExercise(
             exercise: exercise,
+            defaultSets: exercise.trackingMode == .minutes ? 1 : 3,
             targetRepsMin: exercise.targetRepsMin,
             targetRepsMax: exercise.targetRepsMax,
             sortOrder: nextOrder
@@ -367,6 +379,11 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         let isNowCompleted = !sets[setIndex].isCompleted
         sets[setIndex].isCompleted = isNowCompleted
 
+        // Completar la serie a mano cierra su cronómetro si seguía en marcha.
+        if isNowCompleted, isStopwatchRunning(for: routineExerciseID, setIndex: setIndex) {
+            stopStopwatch()
+        }
+
         if isNowCompleted {
             let targetSet = sets[setIndex]
             let routineExercise: RoutineExercise? = routine.exercises.first(where: { (re: RoutineExercise) -> Bool in
@@ -475,6 +492,124 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         // reflejarse al instante en la Live Activity.
         if sets[setIndex].isCompleted {
             refreshLiveActivity()
+        }
+    }
+
+    // MARK: - Cronómetro por serie
+
+    /// `true` si el cronómetro en marcha pertenece a esta serie concreta.
+    public func isStopwatchRunning(for routineExerciseID: UUID, setIndex: Int) -> Bool {
+        return stopwatchRoutineExerciseID == routineExerciseID
+            && stopwatchSetIndex == setIndex
+            && stopwatchStartDate != nil
+    }
+
+    /// El cronómetro de esta serie está en marcha (aunque sea de otro ejercicio).
+    public func hasRunningStopwatch(for routineExerciseID: UUID) -> Bool {
+        return stopwatchRoutineExerciseID == routineExerciseID && stopwatchStartDate != nil
+    }
+
+    /// Arranca o detiene el cronómetro de la serie. Al detenerlo se registra el
+    /// tiempo real medido en segundos (isométricos) o minutos (cardio) y la
+    /// serie queda completada, con su descanso como cualquier otra.
+    public func toggleSetStopwatch(
+        for routineExerciseID: UUID,
+        setIndex: Int,
+        modelContext: ModelContext
+    ) {
+        guard let sets = activeSets[routineExerciseID], sets.indices.contains(setIndex) else { return }
+        guard let routineExercise: RoutineExercise = routine.exercises.first(where: { (re: RoutineExercise) -> Bool in
+            return re.id == routineExerciseID
+        }) else { return }
+        guard let exercise: Exercise = routineExercise.exercise,
+              exercise.trackingMode.isTimeBased else { return }
+
+        if isStopwatchRunning(for: routineExerciseID, setIndex: setIndex) {
+            let elapsed: TimeInterval = stopwatchElapsed()
+            stopStopwatch()
+
+            // Parada accidental (menos de medio segundo): no se registra nada.
+            let value: Int = recordedValue(elapsed: elapsed, mode: exercise.trackingMode)
+            guard value > 0 else { return }
+
+            updateSetValues(
+                for: routineExerciseID,
+                setIndex: setIndex,
+                weight: sets[setIndex].weight,
+                reps: value,
+                modelContext: modelContext
+            )
+
+            if !sets[setIndex].isCompleted {
+                toggleSetCompletion(for: routineExerciseID, setIndex: setIndex, modelContext: modelContext)
+            }
+            return
+        }
+
+        // Un único cronómetro a la vez: lo medido en el anterior se conserva.
+        finalizeRunningStopwatch(modelContext: modelContext)
+
+        guard !sets[setIndex].isCompleted else { return }
+
+        stopwatchRoutineExerciseID = routineExerciseID
+        stopwatchSetIndex = setIndex
+        stopwatchStartDate = Date()
+    }
+
+    /// Segundos transcurridos del cronómetro activo.
+    public func stopwatchElapsed(at date: Date = Date()) -> TimeInterval {
+        guard let start: Date = stopwatchStartDate else { return 0 }
+        return max(0, date.timeIntervalSince(start))
+    }
+
+    public func stopStopwatch() {
+        stopwatchRoutineExerciseID = nil
+        stopwatchSetIndex = nil
+        stopwatchStartDate = nil
+    }
+
+    /// Guarda el tiempo medido por el cronómetro activo sin completar la serie,
+    /// para no perderlo al saltar a otro ejercicio.
+    private func finalizeRunningStopwatch(modelContext: ModelContext) {
+        guard let id: UUID = stopwatchRoutineExerciseID,
+              let index: Int = stopwatchSetIndex,
+              let start: Date = stopwatchStartDate else { return }
+
+        let elapsed: TimeInterval = max(0, Date().timeIntervalSince(start))
+        stopStopwatch()
+
+        guard let mode: ExerciseTrackingMode = routine.exercises
+            .first(where: { (re: RoutineExercise) -> Bool in
+                return re.id == id
+            })?.exercise?.trackingMode,
+            let sets = activeSets[id],
+            sets.indices.contains(index),
+            !sets[index].isCompleted else { return }
+
+        let value: Int = recordedValue(elapsed: elapsed, mode: mode)
+        guard value > 0 else { return }
+
+        updateSetValues(
+            for: id,
+            setIndex: index,
+            weight: sets[index].weight,
+            reps: value,
+            modelContext: modelContext
+        )
+    }
+
+    /// Convierte el tiempo medido a la unidad del ejercicio. En cardio se
+    /// redondea al minuto más cercano y nunca se registra 0 si hubo trabajo.
+    private func recordedValue(elapsed: TimeInterval, mode: ExerciseTrackingMode) -> Int {
+        guard elapsed > 0 else { return 0 }
+
+        switch mode {
+        case .reps:
+            return 0
+        case .seconds:
+            return max(1, Int(elapsed.rounded()))
+        case .minutes:
+            return max(1, Int((elapsed / 60.0).rounded()))
         }
     }
 
@@ -1057,6 +1192,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     @discardableResult
     public func finishWorkout(modelContext: ModelContext) -> WorkoutSession {
         stopRest()
+        stopStopwatch()
         endWorkoutActivity()
         stopBPMTracking()
         HealthKitManager.shared.stopWorkoutSession()
@@ -1126,6 +1262,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
     public func cancelWorkout(modelContext: ModelContext) {
         stopRest()
+        stopStopwatch()
         endWorkoutActivity()
         stopBPMTracking()
         HealthKitManager.shared.stopWorkoutSession()
@@ -1377,13 +1514,15 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             let previous: WorkoutSetLog? = latestSessionLogs.first { (log: WorkoutSetLog) -> Bool in
                 return log.setNumber == set.setNumber
             }
+            let mode: ExerciseTrackingMode = exercise.trackingMode
+
             let previousText: String? = previous.map { (log: WorkoutSetLog) -> String in
-                return "\(Int(log.weight)) kg · \(log.reps)"
+                return markText(weight: log.weight, reps: log.reps, mode: mode)
             }
 
             let currentText: String?
             if set.isCompleted, let log = set.existingLog {
-                currentText = "\(Int(log.weight)) kg · \(log.reps)"
+                currentText = markText(weight: log.weight, reps: log.reps, mode: mode)
             } else {
                 currentText = nil
             }
@@ -1396,6 +1535,42 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         }
 
         return rows
+    }
+
+    /// Marca de una serie ya registrada: `60 kg · 8` en fuerza y solo la
+    /// duración (`45 s` o `25 min`) en ejercicios medidos en tiempo.
+    private func markText(weight: Double, reps: Int, mode: ExerciseTrackingMode) -> String {
+        switch mode {
+        case .reps:
+            return "\(Int(weight)) kg · \(reps)"
+        case .seconds:
+            return "\(reps) s"
+        case .minutes:
+            return "\(reps) min"
+        }
+    }
+
+    // MARK: Cronómetro en Big Picture
+
+    public var bigPictureIsStopwatchRunning: Bool {
+        guard let id: UUID = bigPictureCurrentExerciseID else { return false }
+        return hasRunningStopwatch(for: id)
+    }
+
+    public var bigPictureStopwatchStartDate: Date? {
+        return bigPictureIsStopwatchRunning ? stopwatchStartDate : nil
+    }
+
+    /// Arranca o detiene el cronómetro de la primera serie pendiente del
+    /// ejercicio actual en Big Picture.
+    public func toggleBigPictureStopwatch(modelContext: ModelContext) {
+        guard let id: UUID = bigPictureCurrentExerciseID,
+              let sets = activeSets[id],
+              let setIndex: Int = sets.firstIndex(where: { (set: SetInputState) -> Bool in
+                  return !set.isCompleted
+              }) else { return }
+
+        toggleSetStopwatch(for: id, setIndex: setIndex, modelContext: modelContext)
     }
 
     public var bigPictureIsTimerShowing: Bool {

@@ -86,11 +86,16 @@ enum LiveActivityFormat {
     }
 
     static func setLabel(_ set: LiveActivityCompletedSet) -> String {
+        // Sin carga (cardio e isométricos) solo se muestra la duración.
+        guard set.weight > 0 else { return "Serie \(set.id): \(set.reps)" }
         return "Serie \(set.id): \(weightText(set.weight)) kg × \(set.reps)"
     }
 
     /// Etiqueta de serie compacta de consola: `S-01 · 60KG × 8`.
     static func setRow(_ set: LiveActivityCompletedSet) -> String {
+        guard set.weight > 0 else {
+            return String(format: "S-%02d · %d", set.id, set.reps)
+        }
         return String(
             format: "S-%02d · %@KG × %d",
             set.id,

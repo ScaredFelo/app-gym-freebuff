@@ -103,6 +103,7 @@ struct EditRoutineView: View {
                 let nextOrder = (routine.exercises.map(\.sortOrder).max() ?? -1) + 1
                 let routineExercise = RoutineExercise(
                     exercise: exercise,
+                    defaultSets: exercise.trackingMode == .minutes ? 1 : 3,
                     targetRepsMin: exercise.targetRepsMin,
                     targetRepsMax: exercise.targetRepsMax,
                     sortOrder: nextOrder
@@ -262,16 +263,22 @@ private struct RoutineExerciseEditorRow: View {
 
                 tacticalRule
 
-                TacticalStepperRow(
-                    code: "SET",
-                    title: "Series",
-                    value: $routineExercise.defaultSets,
-                    range: 1...12
-                )
+                if routineExercise.exercise?.trackingMode != .minutes {
+                    TacticalStepperRow(
+                        code: "SET",
+                        title: "Series",
+                        value: $routineExercise.defaultSets,
+                        range: 1...12
+                    )
+                }
 
                 repsBlock
 
-                weightRow
+                // El cardio y los isométricos se registran con cronómetro: sin
+                // peso ni marcas fantasma de kg.
+                if routineExercise.exercise?.trackingMode.isTimeBased != true {
+                    weightRow
+                }
 
                 TacticalStepperRow(
                     code: "REST",
