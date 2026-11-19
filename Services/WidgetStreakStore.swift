@@ -130,6 +130,34 @@ public enum WidgetStreakStore {
         return WorkoutStreakSnapshot(weeklyGoal: storedWeeklyGoal())
     }
 
+    /// Snapshot listo para pintar ahora mismo. Si la app no se ha abierto
+    /// desde una semana anterior, la semana en curso aparece vacía; tras dos
+    /// o más semanas sin uso la racha ya está rota, porque la semana completa
+    /// intermedia no llegó al objetivo.
+    public static func currentSnapshot(now: Date = Date()) -> WorkoutStreakSnapshot {
+        let stored: WorkoutStreakSnapshot = load()
+        let calendar: Calendar = mondayCalendar()
+        let storedWeekStart: Date = startOfWeek(for: stored.lastUpdated, calendar: calendar)
+        let currentWeekStart: Date = startOfWeek(for: now, calendar: calendar)
+        guard currentWeekStart > storedWeekStart else { return stored }
+
+        var weeksAhead: Int = 0
+        var cursor: Date = storedWeekStart
+        while cursor < currentWeekStart && weeksAhead < 3 {
+            guard let next: Date = calendar.date(byAdding: .day, value: 7, to: cursor) else { break }
+            cursor = next
+            weeksAhead += 1
+        }
+
+        return WorkoutStreakSnapshot(
+            weekStreak: weeksAhead >= 2 ? 0 : stored.weekStreak,
+            currentWeekWorkouts: 0,
+            weeklyGoal: stored.weeklyGoal,
+            trainedWeekdays: Array(repeating: false, count: 7),
+            lastUpdated: stored.lastUpdated
+        )
+    }
+
     // MARK: - Cálculo
 
     /// Calcula la racha, el objetivo y los días entrenados de la semana actual

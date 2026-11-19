@@ -18,7 +18,7 @@ struct WorkoutStreakProvider: TimelineProvider {
     func getSnapshot(in context: Context, completion: @escaping (WorkoutStreakEntry) -> Void) {
         let entry: WorkoutStreakEntry = WorkoutStreakEntry(
             date: Date(),
-            snapshot: WidgetStreakStore.load()
+            snapshot: WidgetStreakStore.currentSnapshot()
         )
         completion(entry)
     }
@@ -27,7 +27,7 @@ struct WorkoutStreakProvider: TimelineProvider {
         let now: Date = Date()
         let entry: WorkoutStreakEntry = WorkoutStreakEntry(
             date: now,
-            snapshot: WidgetStreakStore.load()
+            snapshot: WidgetStreakStore.currentSnapshot(now: now)
         )
         let nextRefresh: Date = Calendar.current.date(byAdding: .hour, value: 1, to: now)
             ?? now.addingTimeInterval(3600.0)
