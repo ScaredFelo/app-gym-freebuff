@@ -61,79 +61,100 @@ jobs:
           name: AppGym-Unsigned-IPA
           path: AppGym.ipa
 
-      - name: Publish CI status branch
+      - name: Upload build log
         if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
+
+  # Job barato en Linux: arranca aunque el de macOS no llegue a empezar, asi que
+  # distingue "el run no corre" de "el token no puede escribir".
+  report:
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Download build log
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: build-log
+
+      - name: Publish status
         continue-on-error: true
         env:
-          JOB_STATUS: ${{ job.status }}
-          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          CI_STATUS_TOKEN: ${{ secrets.CI_STATUS_TOKEN }}
         run: |
           set +e
-
-          # Fuera del repo: no deja archivos sin seguimiento en el workspace.
-          work_file="$RUNNER_TEMP/ci-status.txt"
+          status_file="$RUNNER_TEMP/ci-status.txt"
+          date_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
           {
-            echo "result=$JOB_STATUS"
-            echo "build=$BUILD_OUTCOME"
+            echo "result=$BUILD_RESULT"
             echo "commit=$GITHUB_SHA"
             echo "run=$GITHUB_RUN_ID"
-            echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } > "$work_file"
+            echo "date=$date_utc"
+          } > "$status_file"
 
-          add_errors() {
-            echo "" >> "$work_file"
-            echo "--- errors ---" >> "$work_file"
-          }
+          errors=""
+          if [ "$BUILD_RESULT" != "success" ]; then
+            if [ -f build.log ]; then
+              errors="$(grep -i "error:" build.log | head -200)"
+              if [ -z "$errors" ]; then
+                errors="$(tail -100 build.log)"
+              fi
+            else
+              errors="Sin build.log: el job de macOS no llego a ejecutar ni el checkout (minutos macOS del plan, Actions deshabilitado o limite de gasto)."
+            fi
+          fi
 
-          case "$BUILD_OUTCOME" in
-            failure)
-              add_errors
-              if [ -f build.log ]; then
-                errors="$(grep -i "error:" build.log | head -200)"
-                if [ -n "$errors" ]; then
-                  echo "$errors" >> "$work_file"
-                else
-                  echo "Sin lineas 'error:' en build.log. Ultimas 150 lineas:" >> "$work_file"
-                  tail -150 build.log >> "$work_file"
-                fi
-              else
-                echo "El paso de build fallo sin generar build.log." >> "$work_file"
-              fi
-              ;;
-            skipped|cancelled)
-              add_errors
-              echo "El build no llego a ejecutarse (build=$BUILD_OUTCOME, job=$JOB_STATUS): el fallo o la cancelacion fue anterior al paso de compilacion." >> "$work_file"
-              ;;
-            *)
-              if [ "$JOB_STATUS" = "cancelled" ]; then
-                add_errors
-                echo "Job cancelado con el build en estado $BUILD_OUTCOME." >> "$work_file"
-              elif [ "$JOB_STATUS" != "success" ]; then
-                add_errors
-                echo "El build compilo (build=$BUILD_OUTCOME) pero el job termino en $JOB_STATUS: el fallo esta fuera de la compilacion (empaquetado o subida del artefacto)." >> "$work_file"
-              fi
-              ;;
-          esac
+          {
+            echo "## CI status"
+            echo ""
+            echo "| campo | valor |"
+            echo "| --- | --- |"
+            echo "| build | \`$BUILD_RESULT\` |"
+            echo "| commit | \`$GITHUB_SHA\` |"
+            echo "| run | \`$GITHUB_RUN_ID\` |"
+            echo "| fecha | $date_utc |"
+            echo ""
+            if [ -n "$errors" ]; then
+              echo '```'
+              echo "$errors"
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          # Si el token por defecto es de solo lectura, un PAT con contents:write
+          # en el secreto CI_STATUS_TOKEN publica la rama igualmente.
+          if [ -n "$CI_STATUS_TOKEN" ]; then
+            git remote set-url origin "https://x-access-token:${CI_STATUS_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+
           commit=""
-          blob="$(git hash-object -w "$work_file")"
+          blob="$(git hash-object -w "$status_file")"
           if [ -n "$blob" ]; then
             tree="$(printf '100644 blob %s\tci-status.txt\n' "$blob" | git mktree)"
             if [ -n "$tree" ]; then
-              commit="$(git commit-tree "$tree" -m "CI status: $JOB_STATUS [skip ci]")"
+              commit="$(git commit-tree "$tree" -m "CI status: $BUILD_RESULT [skip ci]")"
             fi
           fi
 
           if [ -n "$commit" ]; then
             git push -f origin "$commit:refs/heads/ci-status" \
-              || echo "No se pudo publicar la rama ci-status (revisa los permisos del token)."
+              || echo "No se pudo publicar ci-status: el estado queda en el resumen del run."
           else
-            echo "No se pudo crear el commit de estado; no se publica nada."
+            echo "No se pudo crear el commit de estado."
           fi
 
-          # El diagnostico nunca debe convertir un run en rojo.
           exit 0
