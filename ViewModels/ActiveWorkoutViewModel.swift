@@ -257,6 +257,39 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         return routineExercise
     }
 
+    /// Añade una serie extra al final del ejercicio durante el entrenamiento.
+    /// Se apoya en la estructura de la rutina para que el cambio se pueda
+    /// guardar al finalizar (o descartar, como el resto de modificaciones).
+    @discardableResult
+    public func addSet(for routineExerciseID: UUID, modelContext: ModelContext) -> Bool {
+        guard var sets = activeSets[routineExerciseID],
+              let routineExercise: RoutineExercise = routine.exercises.first(where: { (re: RoutineExercise) -> Bool in
+                  return re.id == routineExerciseID
+              }) else {
+            return false
+        }
+
+        let reference: SetInputState? = sets.last
+        sets.append(SetInputState(
+            setNumber: (sets.map { $0.setNumber }.max() ?? 0) + 1,
+            weight: reference?.weight ?? routineExercise.defaultWeight,
+            reps: reference?.reps ?? routineExercise.targetRepsMax,
+            isCompleted: false,
+            ghostWeight: reference?.ghostWeight,
+            ghostReps: reference?.ghostReps,
+            existingLog: nil
+        ))
+
+        activeSets[routineExerciseID] = sets
+        routineExercise.defaultSets = sets.count
+        structureVersion += 1
+        try? modelContext.save()
+        persistState()
+        refreshLiveActivity()
+
+        return true
+    }
+
     public func removeExercise(_ routineExercise: RoutineExercise, modelContext: ModelContext) {
         guard routine.exercises.contains(where: { $0.id == routineExercise.id }) else { return }
 
@@ -331,6 +364,14 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
     public var hasWorkoutChanges: Bool {
         hasRoutineChanged
+    }
+
+    /// Entrenamiento iniciado sin rutina con el botón "Entreno libre". La
+    /// rutina es un contenedor temporal que no se lista y se reutiliza (vacío)
+    /// en la siguiente sesión libre, así que no tiene sentido ofrecer guardar
+    /// los cambios sobre ella al finalizar.
+    public var isFreeWorkout: Bool {
+        FreeWorkoutRoutineStore.isFree(routine)
     }
 
     private func restoreOriginalStructure(modelContext: ModelContext) {

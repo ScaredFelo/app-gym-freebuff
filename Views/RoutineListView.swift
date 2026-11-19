@@ -14,6 +14,13 @@ public struct RoutineListView: View {
     @State private var isCreatingNewRoutine = false
     @State private var isEditing = false
     @State private var routinePendingDeletion: Routine? = nil
+    @State private var isShowingCardio = false
+
+    /// Las rutinas temporales de los entrenamientos libres viven en el mismo
+    /// contexto, pero nunca se listan ni se editan desde aquí.
+    private var visibleRoutines: [Routine] {
+        return routines.filter { $0.isTemplate }
+    }
 
     public var body: some View {
         NavigationStack {
@@ -21,7 +28,14 @@ public struct RoutineListView: View {
                 TechnicalGridBackground()
 
                 List {
-                    ForEach(routines) { routine in
+                    if !isEditing {
+                        quickActionsRow
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 8.0, leading: 16.0, bottom: 6.0, trailing: 16.0))
+                    }
+
+                    ForEach(visibleRoutines) { routine in
                         RoutineRowView(
                             routine: routine,
                             isEditing: isEditing,
@@ -78,6 +92,9 @@ public struct RoutineListView: View {
                     .interactiveDismissDisabled(true)
                 }
             }
+            .fullScreenCover(isPresented: $isShowingCardio) {
+                CardioView()
+            }
             .sheet(item: $routineToEdit, onDismiss: {
                 routineToEdit = nil
                 isCreatingNewRoutine = false
@@ -107,6 +124,94 @@ public struct RoutineListView: View {
         }
     }
 
+    // MARK: - Acciones rápidas
+
+    private var quickActionsRow: some View {
+        HStack(spacing: 8.0) {
+            quickActionButton(
+                icon: "bolt.fill",
+                title: "ENTRENO LIBRE",
+                caption: "AÑADIR AL VUELO",
+                tint: EndfieldPalette.accentCyan,
+                action: startFreeWorkout
+            )
+
+            quickActionButton(
+                icon: "figure.run",
+                title: "CARDIO",
+                caption: "TIEMPO + TIPO",
+                tint: EndfieldPalette.accentYellow,
+                action: { isShowingCardio = true }
+            )
+        }
+    }
+
+    private func quickActionButton(
+        icon: String,
+        title: String,
+        caption: String,
+        tint: Color,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 9.0) {
+                Image(systemName: icon)
+                    .font(.system(size: 14.0, weight: .semibold))
+                    .frame(width: 26.0, height: 26.0)
+                    .background(ChamferedRectangle(cut: 3.0).fill(tint.opacity(0.12)))
+                    .overlay {
+                        ChamferedRectangle(cut: 3.0)
+                            .stroke(tint.opacity(0.5), lineWidth: 1.0)
+                    }
+
+                VStack(alignment: .leading, spacing: 2.0) {
+                    Text(title)
+                        .font(EndfieldFont.mono(10.0, weight: .heavy))
+                        .tracking(0.9)
+                        .foregroundStyle(EndfieldPalette.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+
+                    Text(caption)
+                        .font(EndfieldFont.label(7.0, weight: .regular))
+                        .tracking(0.4)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                }
+
+                Spacer(minLength: 0.0)
+            }
+            .padding(.horizontal, 9.0)
+            .padding(.vertical, 8.0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ChamferedRectangle(cut: 5.0).fill(EndfieldPalette.bgPanel))
+            .overlay {
+                ChamferedRectangle(cut: 5.0)
+                    .stroke(tint.opacity(0.35), lineWidth: 1.0)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(caption)")
+    }
+
+    /// Arranca un entrenamiento sin rutina: el usuario añade los ejercicios y
+    /// las series que quiera desde la propia pantalla de entrenamiento.
+    private func startFreeWorkout() {
+        guard !isEditing else { return }
+
+        routineToEdit = nil
+        let routine = FreeWorkoutRoutineStore.prepare(modelContext: modelContext)
+        try? modelContext.save()
+
+        let session = WorkoutSession(startDate: Date(), totalVolumeKg: 0.0, routineName: routine.name)
+        modelContext.insert(session)
+        try? modelContext.save()
+
+        selectedRoutineForWorkout = routine
+        activeSession = session
+    }
+
     private func startWorkout(with routine: Routine) {
         guard !isEditing else { return }
 
@@ -121,24 +226,24 @@ public struct RoutineListView: View {
     private func createRoutine() {
         guard !isEditing else { return }
 
-        let nextOrder = (routines.map(\.sortOrder).max() ?? -1) + 1
+        let nextOrder = (visibleRoutines.map(\.sortOrder).max() ?? -1) + 1
         let routine = Routine(name: "Nueva rutina", isTemplate: true, sortOrder: nextOrder, exercises: [])
         isCreatingNewRoutine = true
         routineToEdit = routine
     }
 
     private func canMoveUp(_ routine: Routine) -> Bool {
-        guard let index = routines.firstIndex(where: { $0.id == routine.id }) else { return false }
+        guard let index = visibleRoutines.firstIndex(where: { $0.id == routine.id }) else { return false }
         return index > 0
     }
 
     private func canMoveDown(_ routine: Routine) -> Bool {
-        guard let index = routines.firstIndex(where: { $0.id == routine.id }) else { return false }
-        return index < routines.count - 1
+        guard let index = visibleRoutines.firstIndex(where: { $0.id == routine.id }) else { return false }
+        return index < visibleRoutines.count - 1
     }
 
     private func moveRoutine(_ routine: Routine, offset: Int) {
-        var ordered = routines
+        var ordered = visibleRoutines
         guard let index = ordered.firstIndex(where: { $0.id == routine.id }) else { return }
 
         let targetIndex = index + offset
@@ -177,7 +282,7 @@ public struct RoutineListView: View {
     private func deleteRoutine(_ routine: Routine) {
         modelContext.delete(routine)
 
-        let remaining = routines.filter { $0.id != routine.id }
+        let remaining = visibleRoutines.filter { $0.id != routine.id }
         for (index, item) in remaining.enumerated() {
             item.sortOrder = index
         }

@@ -199,7 +199,7 @@ public struct AnalyticsView: View {
                                 .font(EndfieldFont.mono(10.0, weight: .bold))
                                 .foregroundStyle(EndfieldPalette.textPrimary)
 
-                            Text("\(session.setsCompleted.count) SERIES")
+                            Text(sessionDetailText(session))
                                 .font(EndfieldFont.label(7.0))
                                 .tracking(0.8)
                                 .foregroundStyle(EndfieldPalette.textSecondary)
@@ -207,9 +207,9 @@ public struct AnalyticsView: View {
 
                         Spacer(minLength: 6.0)
 
-                        Text("\(Int(session.totalVolumeKg)) KG")
+                        Text(sessionMetricText(session))
                             .font(EndfieldFont.mono(10.0, weight: .bold))
-                            .foregroundStyle(EndfieldPalette.accentCyan)
+                            .foregroundStyle(sessionMetricTint(session))
 
                         Button(role: .destructive) {
                             sessionPendingDeletion = session
@@ -238,6 +238,34 @@ public struct AnalyticsView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Descripción de una sesión
+
+    /// Las sesiones de cardio no tienen series ni volumen: se describen por
+    /// modalidad y duración.
+    private func sessionDetailText(_ session: WorkoutSession) -> String {
+        if let cardioType: CardioType = session.cardioType {
+            return "CARDIO // \(cardioType.title)"
+        }
+        return "\(session.setsCompleted.count) SERIES"
+    }
+
+    private func sessionMetricText(_ session: WorkoutSession) -> String {
+        if session.isCardioSession {
+            return sessionDurationText(session)
+        }
+        return "\(Int(session.totalVolumeKg)) KG"
+    }
+
+    private func sessionMetricTint(_ session: WorkoutSession) -> Color {
+        return session.isCardioSession ? EndfieldPalette.accentCyan : EndfieldPalette.accentYellow
+    }
+
+    private func sessionDurationText(_ session: WorkoutSession) -> String {
+        let endDate: Date = session.endDate ?? Date()
+        let duration: TimeInterval = max(0, endDate.timeIntervalSince(session.startDate))
+        return WorkoutMetricsCalculator.formatDuration(duration).uppercased()
     }
 
     // MARK: - Selección de día y review histórico
@@ -378,11 +406,24 @@ struct DaySessionRowView: View {
 
             Spacer(minLength: 6.0)
 
-            Text(volumeText)
-                .font(EndfieldFont.mono(11.0, weight: .bold))
-                .foregroundStyle(EndfieldPalette.accentYellow)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            if let cardioType: CardioType = session.cardioType {
+                HStack(spacing: 4.0) {
+                    Image(systemName: cardioType.symbolName)
+                        .font(.system(size: 10.0, weight: .semibold))
+
+                    Text(cardioType.title)
+                        .font(EndfieldFont.mono(11.0, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+                .foregroundStyle(EndfieldPalette.accentCyan)
+            } else {
+                Text(volumeText)
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
 
             Image(systemName: "chevron.right")
                 .font(EndfieldFont.mono(9.0, weight: .bold))

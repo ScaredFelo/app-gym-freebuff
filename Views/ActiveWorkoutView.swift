@@ -227,6 +227,9 @@ public struct ActiveWorkoutView: View {
                                             modelContext: modelContext
                                         )
                                     },
+                                    onAddSet: {
+                                        _ = viewModel.addSet(for: routineExercise.id, modelContext: modelContext)
+                                    },
                                     onRemove: {
                                         exercisePendingRemoval = routineExercise
                                     }
@@ -250,7 +253,9 @@ public struct ActiveWorkoutView: View {
 
                         // Finish Workout Button
                         Button(action: {
-                            if viewModel.hasWorkoutChanges {
+                            // En un entreno libre no hay rutina que actualizar:
+                            // la sesión se cierra directamente.
+                            if viewModel.hasWorkoutChanges && !viewModel.isFreeWorkout {
                                 showingRoutineChangeOptions = true
                             } else {
                                 _ = viewModel.finishWorkout(modelContext: modelContext)
@@ -775,6 +780,7 @@ struct ExerciseCardView: View {
     let onToggleStopwatch: (Int) -> Void
     let onToggleSet: (Int) -> Void
     let onUpdateSet: (Int, Double, Int) -> Void
+    let onAddSet: () -> Void
     let onRemove: () -> Void
 
     @State private var notesExpanded = false
@@ -822,6 +828,8 @@ struct ExerciseCardView: View {
                     .frame(height: 1.0)
 
                 setRows
+
+                addSetButton
 
                 Rectangle()
                     .fill(EndfieldPalette.borderSubtle)
@@ -987,6 +995,25 @@ struct ExerciseCardView: View {
                 }
             }
         }
+    }
+
+    // MARK: Serie extra
+
+    /// Permite añadir series al ejercicio en pleno entrenamiento, sin pasar
+    /// por la edición de la rutina.
+    private var addSetButton: some View {
+        Button(action: onAddSet) {
+            HStack(spacing: 6.0) {
+                Image(systemName: "plus")
+                    .font(EndfieldFont.mono(9.0, weight: .bold))
+
+                Text("AÑADIR SERIE")
+                    .font(EndfieldFont.mono(9.0, weight: .bold))
+                    .tracking(1.0)
+            }
+        }
+        .buttonStyle(EndfieldSecondaryButtonStyle(compact: true, tint: EndfieldPalette.accentCyan))
+        .accessibilityLabel("Añadir serie a \(exercise.name)")
     }
 
     // MARK: Notas
