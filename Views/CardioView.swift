@@ -590,9 +590,63 @@ private struct CardioSessionView: View {
     // MARK: - Informe de sesión
 
     private var cardioReport: some View {
-        let report: CardioMetrics = viewModel.report()
+        CardioReportPanel(report: viewModel.report())
+    }
 
-        return TacticalPanel(
+    private func togglePause() {
+        if viewModel.phase == .paused {
+            viewModel.resume()
+        } else {
+            viewModel.pause()
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func persistSession() {
+        guard !didPersistSession else { return }
+        didPersistSession = true
+
+        // Se registra el tiempo efectivo del cronómetro (sin las pausas ni los
+        // huecos en los que la app quedó suspendida), no la hora del reloj.
+        let duration: TimeInterval = viewModel.elapsed(at: viewModel.finishedAt ?? Date())
+
+        let session = WorkoutSession(
+            startDate: viewModel.startedAt,
+            endDate: viewModel.startedAt.addingTimeInterval(max(1.0, duration)),
+            totalVolumeKg: 0.0,
+            routineName: viewModel.type.sessionName
+        )
+        // La telemetría de la sesión queda guardada con ella para que el
+        // historial pueda analizarla igual que las sesiones de fuerza.
+        session.bpmSamples = viewModel.bpmHistory
+
+        modelContext.insert(session)
+        try? modelContext.save()
+        WidgetStreakStore.refresh(modelContext: modelContext)
+    }
+
+    private func clockString(_ seconds: TimeInterval) -> String {
+        let total: Int = max(0, Int(seconds))
+        let hours: Int = total / 3600
+        let minutes: Int = (total % 3600) / 60
+        let secs: Int = total % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+}
+
+// MARK: - Informe de sesión de cardio (reutilizable)
+
+/// Panel del informe de una sesión de cardio. Se usa al terminar la sesión y
+/// al abrir una sesión de cardio desde el calendario o el historial.
+struct CardioReportPanel: View {
+    let report: CardioMetrics
+
+    var body: some View {
+        TacticalPanel(
             code: "RPT.01",
             title: "Informe de sesión",
             accentBorder: true,
@@ -733,48 +787,5 @@ private struct CardioSessionView: View {
                 .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
         }
     }
-
-    private func togglePause() {
-        if viewModel.phase == .paused {
-            viewModel.resume()
-        } else {
-            viewModel.pause()
-        }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
-
-    private func persistSession() {
-        guard !didPersistSession else { return }
-        didPersistSession = true
-
-        // Se registra el tiempo efectivo del cronómetro (sin las pausas ni los
-        // huecos en los que la app quedó suspendida), no la hora del reloj.
-        let duration: TimeInterval = viewModel.elapsed(at: viewModel.finishedAt ?? Date())
-
-        let session = WorkoutSession(
-            startDate: viewModel.startedAt,
-            endDate: viewModel.startedAt.addingTimeInterval(max(1.0, duration)),
-            totalVolumeKg: 0.0,
-            routineName: viewModel.type.sessionName
-        )
-        // La telemetría de la sesión queda guardada con ella para que el
-        // historial pueda analizarla igual que las sesiones de fuerza.
-        session.bpmSamples = viewModel.bpmHistory
-
-        modelContext.insert(session)
-        try? modelContext.save()
-        WidgetStreakStore.refresh(modelContext: modelContext)
-    }
-
-    private func clockString(_ seconds: TimeInterval) -> String {
-        let total: Int = max(0, Int(seconds))
-        let hours: Int = total / 3600
-        let minutes: Int = (total % 3600) / 60
-        let secs: Int = total % 60
-
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        }
-        return String(format: "%02d:%02d", minutes, secs)
-    }
 }
+

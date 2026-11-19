@@ -40,18 +40,24 @@ public struct WorkoutReviewView: View {
                         .padding(.horizontal, -16.0)
 
                     WorkoutReviewHeaderView(
-                        title: isPostWorkout ? "OPERACIÓN COMPLETADA" : "REVIEW DE MISIÓN",
+                        title: reviewTitle,
                         routineName: routineName,
                         sessionDate: session.startDate
                     )
 
-                    WorkoutReviewMainMetricsView(metrics: metrics)
+                    if session.isCardioSession {
+                        // El cardio no tiene series ni kg: reutiliza el mismo
+                        // informe que se muestra al terminar la sesión.
+                        CardioReportPanel(report: cardioReport)
+                    } else {
+                        WorkoutReviewMainMetricsView(metrics: metrics)
 
-                    if isHeartRateTrackingEnabled {
-                        WorkoutReviewHeartRateSectionView(metrics: metrics)
+                        if isHeartRateTrackingEnabled {
+                            WorkoutReviewHeartRateSectionView(metrics: metrics)
+                        }
+
+                        WorkoutReviewQualitySectionView(metrics: metrics)
                     }
-
-                    WorkoutReviewQualitySectionView(metrics: metrics)
                 }
                 .padding(.horizontal, 16.0)
                 .padding(.top, 8.0)
@@ -68,6 +74,24 @@ public struct WorkoutReviewView: View {
     private var routineName: String {
         let trimmed: String = session.routineName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Entrenamiento" : trimmed
+    }
+
+    private var reviewTitle: String {
+        if session.isCardioSession {
+            return "INFORME DE CARDIO"
+        }
+        return isPostWorkout ? "OPERACIÓN COMPLETADA" : "REVIEW DE MISIÓN"
+    }
+
+    /// Métricas calculables de una sesión de cardio guardada: tiempo y
+    /// pulsaciones registradas (sin volumen, densidad ni recuperación).
+    private var cardioReport: CardioMetrics {
+        let endDate: Date = session.endDate ?? Date()
+        let duration: TimeInterval = max(0, endDate.timeIntervalSince(session.startDate))
+        return WorkoutMetricsCalculator.calculateCardio(
+            duration: duration,
+            samples: session.bpmSamples
+        )
     }
 
     @ViewBuilder
