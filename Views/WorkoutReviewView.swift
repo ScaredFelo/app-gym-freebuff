@@ -68,11 +68,16 @@ public struct WorkoutReviewView: View {
                     } else {
                         WorkoutReviewMainMetricsView(metrics: metrics)
 
-                        if isHeartRateTrackingEnabled {
+                        // Pulsaciones y calidad de hipertrofia (Edwards, TRIMP,
+                        // recuperación y densidad) se calculan con la FC: se
+                        // muestran si la sesión guarda datos o si la medición
+                        // está activa. Así una sesión antigua conserva su
+                        // telemetría aunque ahora no se midan pulsaciones, y
+                        // no aparecen apartados vacíos con la medición off.
+                        if isHeartRateTrackingEnabled || metrics.hasHeartRateData {
                             WorkoutReviewHeartRateSectionView(metrics: metrics)
+                            WorkoutReviewQualitySectionView(metrics: metrics)
                         }
-
-                        WorkoutReviewQualitySectionView(metrics: metrics)
                     }
                 }
                 .padding(.horizontal, 16.0)

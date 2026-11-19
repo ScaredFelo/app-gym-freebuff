@@ -40,7 +40,7 @@ struct WorkoutLiveActivity: Widget {
                 CompactRestTimerView(state: context.state)
             } compactTrailing: {
                 // Estado 2 · Compacta: cuadrado rojo + BPM.
-                CompactBPMView(bpm: context.state.currentBPM)
+                CompactBPMView(bpm: context.state.currentBPM, showsHeartRate: context.state.showsHeartRate)
             } minimal: {
                 // Estado 3 · Minimizada: BPM y barra de descanso.
                 MinimalBPMTimerView(state: context.state)
@@ -78,6 +78,8 @@ enum LiveActivityFormat {
         return String(format: "%.1f", weight)
     }
 
+    /// Lectura de pulso. La medición activa mantiene el hueco con «--»
+    /// mientras el sensor aún no ha enviado muestras.
     static func bpm(_ bpm: Int) -> String {
         return bpm > 0 ? "\(bpm)" : "--"
     }
@@ -321,17 +323,20 @@ struct RestDialView: View {
                 tint: EndfieldPalette.accentYellow
             )
 
-            HStack(spacing: 4.0) {
-                Rectangle()
-                    .fill(EndfieldPalette.accentRed)
-                    .frame(width: 4.0, height: 4.0)
+            // Con la medición activa el bloque siempre está; apagada, desaparece.
+            if state.showsHeartRate {
+                HStack(spacing: 4.0) {
+                    Rectangle()
+                        .fill(EndfieldPalette.accentRed)
+                        .frame(width: 4.0, height: 4.0)
 
-                Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
-                    .font(EndfieldFont.label(9.0))
-                    .monospacedDigit()
-                    .foregroundStyle(EndfieldPalette.accentRed)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
+                        .font(EndfieldFont.label(9.0))
+                        .monospacedDigit()
+                        .foregroundStyle(EndfieldPalette.accentRed)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
             }
         }
         .padding(7.0)
@@ -373,24 +378,28 @@ struct CompactRestTimerView: View {
 
 struct CompactBPMView: View {
     let bpm: Int
+    let showsHeartRate: Bool
 
     var body: some View {
-        HStack(spacing: 3.0) {
-            Rectangle()
-                .fill(EndfieldPalette.accentRed)
-                .frame(width: 4.0, height: 4.0)
+        // Medición apagada: la isla compacta solo muestra la cuenta atrás.
+        if showsHeartRate {
+            HStack(spacing: 3.0) {
+                Rectangle()
+                    .fill(EndfieldPalette.accentRed)
+                    .frame(width: 4.0, height: 4.0)
 
-            Text(LiveActivityFormat.bpm(bpm))
-                .font(EndfieldFont.mono(13.0, weight: .heavy))
-                .monospacedDigit()
-                .foregroundStyle(EndfieldPalette.textPrimary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
+                Text(LiveActivityFormat.bpm(bpm))
+                    .font(EndfieldFont.mono(13.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
 
-            Text("BPM")
-                .font(EndfieldFont.label(8.0))
-                .tracking(0.6)
-                .foregroundStyle(EndfieldPalette.accentRed)
+                Text("BPM")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(0.6)
+                    .foregroundStyle(EndfieldPalette.accentRed)
+            }
         }
     }
 }
@@ -406,12 +415,15 @@ struct MinimalBPMTimerView: View {
 
     var body: some View {
         VStack(alignment: .center, spacing: 3.0) {
-            Text(LiveActivityFormat.bpm(state.currentBPM))
-                .font(EndfieldFont.mono(12.0, weight: .heavy))
-                .monospacedDigit()
-                .foregroundStyle(EndfieldPalette.accentRed)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            // Medición apagada: solo queda la barra de descanso.
+            if state.showsHeartRate {
+                Text(LiveActivityFormat.bpm(state.currentBPM))
+                    .font(EndfieldFont.mono(12.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.accentRed)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
 
             LiveActivityTimerBarView(
                 window: window,
@@ -512,7 +524,7 @@ struct CardioLiveActivity: Widget {
             } compactLeading: {
                 CardioCompactTimerView(state: context.state)
             } compactTrailing: {
-                CompactBPMView(bpm: context.state.currentBPM)
+                CompactBPMView(bpm: context.state.currentBPM, showsHeartRate: context.state.showsHeartRate)
             } minimal: {
                 CardioMinimalView(state: context.state)
             }
@@ -641,17 +653,20 @@ struct CardioExpandedView: View {
 
                 Spacer(minLength: 4.0)
 
-                HStack(spacing: 4.0) {
-                    Rectangle()
-                        .fill(EndfieldPalette.accentRed)
-                        .frame(width: 4.0, height: 4.0)
+                // Medición apagada: la isla expandida no deja bloque de pulso.
+                if state.showsHeartRate {
+                    HStack(spacing: 4.0) {
+                        Rectangle()
+                            .fill(EndfieldPalette.accentRed)
+                            .frame(width: 4.0, height: 4.0)
 
-                    Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
-                        .font(EndfieldFont.label(9.0))
-                        .monospacedDigit()
-                        .foregroundStyle(EndfieldPalette.accentRed)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
+                        Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
+                            .font(EndfieldFont.label(9.0))
+                            .monospacedDigit()
+                            .foregroundStyle(EndfieldPalette.accentRed)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
                 }
             }
 
@@ -689,12 +704,15 @@ struct CardioMinimalView: View {
 
     var body: some View {
         VStack(alignment: .center, spacing: 3.0) {
-            Text(LiveActivityFormat.bpm(state.currentBPM))
-                .font(EndfieldFont.mono(12.0, weight: .heavy))
-                .monospacedDigit()
-                .foregroundStyle(EndfieldPalette.accentRed)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
+            // Medición apagada: solo queda la barra de la sesión.
+            if state.showsHeartRate {
+                Text(LiveActivityFormat.bpm(state.currentBPM))
+                    .font(EndfieldFont.mono(12.0, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.accentRed)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
 
             CardioTimerBarView(state: state, height: 2.0, tint: EndfieldPalette.accentYellow)
                 .frame(width: 18.0)
@@ -747,23 +765,26 @@ struct CardioLockScreenView: View {
 
                 Spacer(minLength: 6.0)
 
-                VStack(alignment: .trailing, spacing: 3.0) {
-                    Text("PULSO")
-                        .font(EndfieldFont.label(7.0))
-                        .tracking(1.0)
-                        .foregroundStyle(EndfieldPalette.textSecondary)
+                // Medición apagada: no se muestra la columna de pulso.
+                if state.showsHeartRate {
+                    VStack(alignment: .trailing, spacing: 3.0) {
+                        Text("PULSO")
+                            .font(EndfieldFont.label(7.0))
+                            .tracking(1.0)
+                            .foregroundStyle(EndfieldPalette.textSecondary)
 
-                    HStack(spacing: 4.0) {
-                        Rectangle()
-                            .fill(EndfieldPalette.accentRed)
-                            .frame(width: 5.0, height: 5.0)
+                        HStack(spacing: 4.0) {
+                            Rectangle()
+                                .fill(EndfieldPalette.accentRed)
+                                .frame(width: 5.0, height: 5.0)
 
-                        Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
-                            .font(EndfieldFont.mono(15.0, weight: .heavy))
-                            .monospacedDigit()
-                            .foregroundStyle(EndfieldPalette.accentRed)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
+                            Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
+                                .font(EndfieldFont.mono(15.0, weight: .heavy))
+                                .monospacedDigit()
+                                .foregroundStyle(EndfieldPalette.accentRed)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
                     }
                 }
             }

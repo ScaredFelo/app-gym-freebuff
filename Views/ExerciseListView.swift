@@ -218,6 +218,9 @@ public struct AddExerciseView: View {
     @State private var useBpmDrop = false
     @State private var targetBpm = 110
 
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
+
     public var body: some View {
         NavigationStack {
             ZStack {
@@ -243,15 +246,19 @@ public struct AddExerciseView: View {
 
                         TacticalPanel(code: "RST.01", title: "Condición de descanso", contentPadding: 12.0) {
                             VStack(spacing: 12.0) {
-                                Toggle(isOn: $useBpmDrop) {
-                                    Text("DESCANSO POR BAJADA DE BPM")
-                                        .font(EndfieldFont.label(9.0))
-                                        .tracking(0.8)
-                                        .foregroundStyle(EndfieldPalette.textPrimary)
-                                        .lineLimit(1)
-                                        .minimumScaleFactor(0.75)
+                                // El descanso por recuperación necesita el pulsómetro:
+                                // sin medición activa solo se ofrece el temporizador.
+                                if isHeartRateTrackingEnabled {
+                                    Toggle(isOn: $useBpmDrop) {
+                                        Text("DESCANSO POR BAJADA DE BPM")
+                                            .font(EndfieldFont.label(9.0))
+                                            .tracking(0.8)
+                                            .foregroundStyle(EndfieldPalette.textPrimary)
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.75)
+                                    }
+                                    .tint(EndfieldPalette.accentYellow)
                                 }
-                                .tint(EndfieldPalette.accentYellow)
 
                                 if useBpmDrop {
                                     Stepper(value: $targetBpm, in: 80...160, step: 5) {

@@ -398,6 +398,9 @@ public struct ActiveWorkoutView: View {
     // MARK: - Barra de estado HUD del entrenamiento
 
     private struct HUDStatusPanel: View {
+        @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+        private var isHeartRateTrackingEnabled: Bool = true
+
         let routineName: String
         let sessionStart: Date
         let volumeKg: Double
@@ -482,11 +485,13 @@ public struct ActiveWorkoutView: View {
                         tint: EndfieldPalette.textPrimary
                     )
 
-                    verticalSeparator
+                    if isHeartRateTrackingEnabled {
+                        verticalSeparator
 
-                    pulseCell
+                        pulseCell
 
-                    verticalSeparator
+                        verticalSeparator
+                    }
 
                     metricCell(
                         code: "DESCANSO",

@@ -339,15 +339,13 @@ private struct BPMReadoutLabel: View {
     @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
     private var isHeartRateTrackingEnabled: Bool = true
 
-    private var bpmText: String {
-        guard isHeartRateTrackingEnabled, bpmManager.currentBPM > 0 else { return "-- BPM" }
-        return "\(bpmManager.currentBPM) BPM"
-    }
-
     var body: some View {
-        Text(bpmText)
-            .font(EndfieldFont.mono(11.0, weight: .bold))
-            .monospacedDigit()
-            .foregroundStyle(BPMZone.color(for: bpmManager.currentBPM))
+        // Sin medición de pulsaciones el dial no muestra ninguna lectura.
+        if isHeartRateTrackingEnabled {
+            Text(bpmManager.currentBPM > 0 ? "\(bpmManager.currentBPM) BPM" : "-- BPM")
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(BPMZone.color(for: bpmManager.currentBPM))
+        }
     }
 }

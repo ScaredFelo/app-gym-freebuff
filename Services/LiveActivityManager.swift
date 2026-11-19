@@ -323,6 +323,7 @@ final class LiveActivityManager: ObservableObject {
             exerciseName: snapshot.exerciseName,
             completedSets: snapshot.completedSets,
             currentBPM: UserSettingsManager.isHeartRateTrackingEnabled ? max(0, bpm) : 0,
+            tracksHeartRate: UserSettingsManager.isHeartRateTrackingEnabled,
             isResting: isResting,
             restStartDate: restStartDate,
             restEndDate: restEndDate
@@ -542,6 +543,7 @@ final class CardioLiveActivityManager: ObservableObject {
             startedAt: snapshot.startDate,
             endDate: snapshot.endDate,
             currentBPM: UserSettingsManager.isHeartRateTrackingEnabled ? max(0, bpm) : 0,
+            tracksHeartRate: UserSettingsManager.isHeartRateTrackingEnabled,
             isPaused: snapshot.isPaused,
             pausedRemaining: max(0, snapshot.pausedRemaining),
             progress: min(max(snapshot.progress, 0), 1)

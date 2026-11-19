@@ -1238,6 +1238,9 @@ enum CardioZoneStyle {
 struct CardioReportPanel: View {
     let report: CardioMetrics
 
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
+
     /// Muestras de toda la sesión para la gráfica del informe guardado. `nil`
     /// en el informe en vivo, que ya muestra la telemetría de los 3 últimos
     /// minutos encima del cronómetro.
@@ -1282,6 +1285,8 @@ struct CardioReportPanel: View {
                     }
                 }
 
+                // Las muestras guardadas de una sesión antigua se siguen
+                // dibujando aunque la medición esté apagada ahora.
                 if let chartSamples: [BPMSample] = chartSamples,
                    !chartSamples.isEmpty,
                    let domain: ClosedRange<Date> = sessionChartDomain(for: chartSamples) {
@@ -1329,7 +1334,7 @@ struct CardioReportPanel: View {
                     if hasZoneData {
                         zoneSection
                     }
-                } else {
+                } else if isHeartRateTrackingEnabled {
                     Text("SIN TELEMETRÍA CARDÍACA: SOLO SE REGISTRA EL TIEMPO DE LA SESIÓN.")
                         .font(EndfieldFont.label(7.5, weight: .regular))
                         .tracking(0.5)

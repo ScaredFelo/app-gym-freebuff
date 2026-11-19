@@ -24,6 +24,10 @@ public struct WorkoutActivityAttributes: ActivityAttributes {
         /// Series completadas del ejercicio actual durante esta sesión.
         public var completedSets: [LiveActivityCompletedSet]
         public var currentBPM: Int
+        /// `false` cuando el usuario tiene la medición de pulsaciones apagada.
+        /// Es opcional para que las actividades creadas por versiones anteriores
+        /// sigan decodificando: `nil` se interpreta como medición activa.
+        public var tracksHeartRate: Bool?
         public var isResting: Bool
         public var restStartDate: Date
         public var restEndDate: Date
@@ -32,6 +36,7 @@ public struct WorkoutActivityAttributes: ActivityAttributes {
             exerciseName: String,
             completedSets: [LiveActivityCompletedSet],
             currentBPM: Int,
+            tracksHeartRate: Bool? = nil,
             isResting: Bool,
             restStartDate: Date,
             restEndDate: Date
@@ -39,9 +44,17 @@ public struct WorkoutActivityAttributes: ActivityAttributes {
             self.exerciseName = exerciseName
             self.completedSets = completedSets
             self.currentBPM = currentBPM
+            self.tracksHeartRate = tracksHeartRate
             self.isResting = isResting
             self.restStartDate = restStartDate
             self.restEndDate = restEndDate
+        }
+
+        /// Criterio único de la Live Activity: con la medición activa el
+        /// indicador siempre está (con «--» si el sensor aún no ha enviado
+        /// lectura); apagada, no se dibuja ningún bloque de pulso.
+        public var showsHeartRate: Bool {
+            return tracksHeartRate ?? true
         }
 
         /// Rango seguro para `ProgressView(timerInterval:)` y `Text(timerInterval:)`.
@@ -74,6 +87,9 @@ public struct CardioActivityAttributes: ActivityAttributes {
         public var startedAt: Date
         public var endDate: Date
         public var currentBPM: Int
+        /// `false` cuando el usuario tiene la medición de pulsaciones apagada.
+        /// Opcional por compatibilidad con actividades ya publicadas.
+        public var tracksHeartRate: Bool?
         public var isPaused: Bool
         /// Tiempo restante congelado mientras la sesión está en pausa.
         public var pausedRemaining: TimeInterval
@@ -85,6 +101,7 @@ public struct CardioActivityAttributes: ActivityAttributes {
             startedAt: Date,
             endDate: Date,
             currentBPM: Int,
+            tracksHeartRate: Bool? = nil,
             isPaused: Bool,
             pausedRemaining: TimeInterval,
             progress: Double
@@ -93,9 +110,16 @@ public struct CardioActivityAttributes: ActivityAttributes {
             self.startedAt = startedAt
             self.endDate = endDate
             self.currentBPM = currentBPM
+            self.tracksHeartRate = tracksHeartRate
             self.isPaused = isPaused
             self.pausedRemaining = pausedRemaining
             self.progress = progress
+        }
+
+        /// Mismo criterio que la Live Activity de fuerza: el indicador existe
+        /// con la medición activa y desaparece cuando está apagada.
+        public var showsHeartRate: Bool {
+            return tracksHeartRate ?? true
         }
 
         /// Rango seguro para `Text(timerInterval:)` y `ProgressView(timerInterval:)`.

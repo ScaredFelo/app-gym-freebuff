@@ -10,6 +10,9 @@ public struct WorkoutSummaryView: View {
     let modelContext: ModelContext
     var onFinish: (() -> Void)?
 
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
+
     public init(viewModel: ActiveWorkoutViewModel, modelContext: ModelContext, onFinish: (() -> Void)? = nil) {
         self.viewModel = viewModel
         self.modelContext = modelContext
@@ -49,11 +52,13 @@ public struct WorkoutSummaryView: View {
                         value: "\(String(format: "%.0f", viewModel.session.totalVolumeKg)) kg"
                     )
 
-                    summaryRow(
-                        icon: "heart.fill",
-                        title: "Pulsaciones medias",
-                        value: "\(viewModel.averageBPM) BPM"
-                    )
+                    if isHeartRateTrackingEnabled {
+                        summaryRow(
+                            icon: "heart.fill",
+                            title: "Pulsaciones medias",
+                            value: "\(viewModel.averageBPM) BPM"
+                        )
+                    }
                 }
                 .padding(.horizontal, 32)
 

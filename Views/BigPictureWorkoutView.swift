@@ -574,19 +574,22 @@ struct BigPictureBPMReadout: View {
     }
 
     var body: some View {
-        HStack(spacing: 4.0) {
-            EndfieldLiveDot(size: 5.0)
+        // Sin medición de pulsaciones la cabecera no muestra el indicador.
+        if isHeartRateTrackingEnabled {
+            HStack(spacing: 4.0) {
+                EndfieldLiveDot(size: 5.0)
 
-            Text(isReadingPulse ? "\(bpmManager.currentBPM)" : "--")
-                .font(EndfieldFont.mono(12.0, weight: .bold))
-                .monospacedDigit()
-                .foregroundStyle(isReadingPulse ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
+                Text(isReadingPulse ? "\(bpmManager.currentBPM)" : "--")
+                    .font(EndfieldFont.mono(12.0, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(isReadingPulse ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary)
 
-            Text("BPM")
-                .font(EndfieldFont.label(7.0))
-                .foregroundStyle(EndfieldPalette.textSecondary)
+                Text("BPM")
+                    .font(EndfieldFont.label(7.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+            }
+            .fixedSize()
         }
-        .fixedSize()
     }
 }
 
