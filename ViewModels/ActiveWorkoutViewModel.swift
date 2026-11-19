@@ -1288,7 +1288,8 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         HealthKitManager.shared.stopWorkoutSession()
         // Conserva la fecha de fin fijada al abrir el resumen: repetir la
         // confirmación ("Terminar sesión") no debe alargar la duración.
-        if session.endDate == nil {
+        let didCloseSession: Bool = session.endDate == nil
+        if didCloseSession {
             session.endDate = Date()
         }
         persistSessionDetails()
@@ -1301,7 +1302,12 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
         endWorkoutActivity()
         // La sesión acaba de cerrarse: recalcula racha y objetivo del widget.
-        WidgetStreakStore.refresh(modelContext: modelContext)
+        // Confirmar el resumen vuelve a llamar a `finishWorkout`, así que solo
+        // la primera llamada pide la recarga: dos peticiones seguidas hacen que
+        // WidgetKit las agrupe o descarte.
+        if didCloseSession {
+            WidgetStreakStore.refresh(modelContext: modelContext)
+        }
         isShowingSummary = true
         return session
     }

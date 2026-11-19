@@ -130,6 +130,7 @@ struct AppGymApp: App {
     let container: ModelContainer
     private let recoveryMessage: String?
 
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var bpmManager = BPMManager.shared
     @State private var didRunLaunchTasks = false
     @State private var bannerMessage: String?
@@ -154,6 +155,15 @@ struct AppGymApp: App {
                 }
             }
             .onAppear(perform: runLaunchTasksOnce)
+            .onChange(of: scenePhase) { (_, newPhase: ScenePhase) in
+                // Al volver a la app la racha se calculó con las sesiones de la
+                // última vez. El arranque también pasa por `.active`, y ahí ya
+                // ha recalculado `runLaunchTasksOnce`: si el snapshot es de
+                // hace un instante, no se pide otra recarga.
+                guard newPhase == .active,
+                      Date().timeIntervalSince(WidgetStreakStore.load().lastUpdated) > 30.0 else { return }
+                WidgetStreakStore.refresh(modelContext: container.mainContext)
+            }
         }
         .modelContainer(container)
     }

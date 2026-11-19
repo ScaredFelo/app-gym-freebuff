@@ -1,6 +1,15 @@
 import SwiftUI
 import WidgetKit
 
+// MARK: - Origen de los datos
+
+/// `false` cuando este proceso no puede abrir el App Group (firma o perfil sin
+/// el entitlement): no hay nada que pintar y conviene decirlo en vez de mostrar
+/// ceros que parecerían datos reales.
+private var hasSharedWidgetData: Bool {
+    return WidgetStreakStore.isSharedStorageAvailable
+}
+
 // MARK: - Entrada de timeline
 
 struct WorkoutStreakEntry: TimelineEntry {
@@ -26,9 +35,9 @@ struct WorkoutStreakProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<WorkoutStreakEntry>) -> Void) {
         let now: Date = Date()
         let weekChange: Date = WidgetStreakStore.nextWeekStart(after: now)
-        // Dos entradas: ahora y el lunes a las 00:00 exactas. Con `.atEnd` el
-        // cambio de semana no depende del cupo de recargas de WidgetKit, que
-        // recorta la política de una hora.
+        // Dos entradas: ahora y el lunes a las 00:00 exactas, para que el cambio
+        // de semana se vea en ese instante. `.atEnd` pide la siguiente línea
+        // temporal tras la última; el resto de recargas las pide la app.
         let entries: [WorkoutStreakEntry] = [
             WorkoutStreakEntry(date: now, snapshot: WidgetStreakStore.currentSnapshot(now: now)),
             WorkoutStreakEntry(date: weekChange, snapshot: WidgetStreakStore.currentSnapshot(now: weekChange))
@@ -88,7 +97,7 @@ struct WorkoutStreakSmallView: View {
             Spacer(minLength: 0.0)
 
             HStack(alignment: .firstTextBaseline, spacing: 5.0) {
-                Text("\(snapshot.weekStreak)")
+                Text(hasSharedWidgetData ? "\(snapshot.weekStreak)" : "--")
                     .font(EndfieldFont.mono(38.0, weight: .heavy))
                     .monospacedDigit()
                     .foregroundStyle(EndfieldPalette.accentYellow)
@@ -115,18 +124,20 @@ struct WorkoutStreakSmallView: View {
             Spacer(minLength: 0.0)
 
             VStack(alignment: .leading, spacing: 4.0) {
-                Text("ESTA SEMANA: \(snapshot.currentWeekWorkouts)/\(goal)")
+                Text(hasSharedWidgetData ? "ESTA SEMANA: \(snapshot.currentWeekWorkouts)/\(goal)" : "ABRE LA APP")
                     .font(EndfieldFont.mono(9.0, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(EndfieldPalette.textPrimary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
 
-                WorkoutStreakProgressBar(
-                    progress: snapshot.goalProgress,
-                    height: 5.0,
-                    segments: 0
-                )
+                if hasSharedWidgetData {
+                    WorkoutStreakProgressBar(
+                        progress: snapshot.goalProgress,
+                        height: 5.0,
+                        segments: 0
+                    )
+                }
             }
         }
         .padding(9.0)
@@ -147,7 +158,7 @@ struct WorkoutStreakSmallView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
 
-            if !WidgetStreakStore.isSharedStorageAvailable {
+            if !hasSharedWidgetData {
                 Text("SIN SYNC")
                     .font(EndfieldFont.label(7.0))
                     .tracking(0.6)
@@ -174,10 +185,8 @@ struct WorkoutStreakMediumView: View {
         return snapshot.weekdays
     }
 
-    /// Sin App Group el widget no puede leer nada de la app: se avisa en vez
-    /// de pintar ceros como si fueran datos reales.
     private var goalTitle: String {
-        if WidgetStreakStore.isSharedStorageAvailable {
+        if hasSharedWidgetData {
             return "OBJETIVO SEMANAL // \(snapshot.currentWeekWorkouts) DE \(goal) DÍAS"
         }
         return "SIN SYNC // ABRE LA APP"
@@ -200,13 +209,15 @@ struct WorkoutStreakMediumView: View {
                 Spacer(minLength: 0.0)
 
                 VStack(alignment: .leading, spacing: 4.0) {
-                    WorkoutStreakProgressBar(
-                        progress: snapshot.goalProgress,
-                        height: 8.0,
-                        segments: goal
-                    )
+                    if hasSharedWidgetData {
+                        WorkoutStreakProgressBar(
+                            progress: snapshot.goalProgress,
+                            height: 8.0,
+                            segments: goal
+                        )
+                    }
 
-                    Text("\(snapshot.currentWeekWorkouts)/\(goal) DÍAS COMPLETADOS")
+                    Text(hasSharedWidgetData ? "\(snapshot.currentWeekWorkouts)/\(goal) DÍAS COMPLETADOS" : "SIN DATOS COMPARTIDOS")
                         .font(EndfieldFont.label(7.0))
                         .tracking(0.8)
                         .foregroundStyle(EndfieldPalette.textSecondary)
@@ -223,7 +234,7 @@ struct WorkoutStreakMediumView: View {
 
     private var streakBox: some View {
         VStack(alignment: .center, spacing: 2.0) {
-            Text("\(snapshot.weekStreak)")
+            Text(hasSharedWidgetData ? "\(snapshot.weekStreak)" : "--")
                 .font(EndfieldFont.mono(40.0, weight: .heavy))
                 .monospacedDigit()
                 .foregroundStyle(EndfieldPalette.accentYellow)
