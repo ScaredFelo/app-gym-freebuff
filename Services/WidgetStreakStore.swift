@@ -114,6 +114,33 @@ public enum WidgetStreakStore {
         UserDefaults.standard.set(data, forKey: snapshotKey)
     }
 
+    /// Indica si este proceso puede abrir el contenedor del App Group. Con
+    /// firma gratuita (Sideloadly) suele ser `false`: el widget no puede leer
+    /// nada escrito por la app y conviene avisarlo en vez de pintar ceros.
+    public static var isSharedStorageAvailable: Bool {
+        return FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupIdentifier
+        ) != nil
+    }
+
+    /// Publica el objetivo en el App Group para que el widget lo conozca antes
+    /// de que exista ningún snapshot.
+    public static func saveWeeklyGoal(_ goal: Int) {
+        let clamped: Int = clampedWeeklyGoal(goal)
+        if let shared: UserDefaults = sharedDefaults {
+            shared.set(clamped, forKey: weeklyGoalDefaultsKey)
+        }
+        UserDefaults.standard.set(clamped, forKey: weeklyGoalDefaultsKey)
+    }
+
+    /// Lunes a las 00:00 siguiente a `date`: el instante exacto en el que cambia
+    /// la semana que se está mostrando.
+    public static func nextWeekStart(after date: Date = Date()) -> Date {
+        let calendar: Calendar = mondayCalendar()
+        let weekStart: Date = startOfWeek(for: date, calendar: calendar)
+        return calendar.date(byAdding: .day, value: 7, to: weekStart) ?? weekStart
+    }
+
     /// Lee el snapshot desde el App Group con respaldo a `standard`.
     public static func load() -> WorkoutStreakSnapshot {
         if let shared: UserDefaults = sharedDefaults,

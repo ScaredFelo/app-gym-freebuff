@@ -22,6 +22,7 @@ extension WidgetStreakStore {
             weeklyGoal: weeklyGoal
         )
 
+        saveWeeklyGoal(weeklyGoal)
         save(snapshot)
         WidgetCenter.shared.reloadAllTimelines()
     }

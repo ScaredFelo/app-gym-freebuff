@@ -25,13 +25,15 @@ struct WorkoutStreakProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<WorkoutStreakEntry>) -> Void) {
         let now: Date = Date()
-        let entry: WorkoutStreakEntry = WorkoutStreakEntry(
-            date: now,
-            snapshot: WidgetStreakStore.currentSnapshot(now: now)
-        )
-        let nextRefresh: Date = Calendar.current.date(byAdding: .hour, value: 1, to: now)
-            ?? now.addingTimeInterval(3600.0)
-        completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
+        let weekChange: Date = WidgetStreakStore.nextWeekStart(after: now)
+        // Dos entradas: ahora y el lunes a las 00:00 exactas. Con `.atEnd` el
+        // cambio de semana no depende del cupo de recargas de WidgetKit, que
+        // recorta la política de una hora.
+        let entries: [WorkoutStreakEntry] = [
+            WorkoutStreakEntry(date: now, snapshot: WidgetStreakStore.currentSnapshot(now: now)),
+            WorkoutStreakEntry(date: weekChange, snapshot: WidgetStreakStore.currentSnapshot(now: weekChange))
+        ]
+        completion(Timeline(entries: entries, policy: .atEnd))
     }
 }
 
@@ -145,6 +147,15 @@ struct WorkoutStreakSmallView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
 
+            if !WidgetStreakStore.isSharedStorageAvailable {
+                Text("SIN SYNC")
+                    .font(EndfieldFont.label(7.0))
+                    .tracking(0.6)
+                    .foregroundStyle(EndfieldPalette.accentRed)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+            }
+
             Spacer(minLength: 0.0)
         }
     }
@@ -163,12 +174,21 @@ struct WorkoutStreakMediumView: View {
         return snapshot.weekdays
     }
 
+    /// Sin App Group el widget no puede leer nada de la app: se avisa en vez
+    /// de pintar ceros como si fueran datos reales.
+    private var goalTitle: String {
+        if WidgetStreakStore.isSharedStorageAvailable {
+            return "OBJETIVO SEMANAL // \(snapshot.currentWeekWorkouts) DE \(goal) DÍAS"
+        }
+        return "SIN SYNC // ABRE LA APP"
+    }
+
     var body: some View {
         HStack(spacing: 10.0) {
             streakBox
 
             VStack(alignment: .leading, spacing: 7.0) {
-                Text("OBJETIVO SEMANAL // \(snapshot.currentWeekWorkouts) DE \(goal) DÍAS")
+                Text(goalTitle)
                     .font(EndfieldFont.label(8.0))
                     .tracking(0.7)
                     .foregroundStyle(EndfieldPalette.textSecondary)
