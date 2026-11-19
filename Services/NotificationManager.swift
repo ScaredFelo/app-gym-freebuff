@@ -20,12 +20,28 @@ final class NotificationManager {
         }
     }
 
+    /// Programa el aviso de fin de descanso solo si el usuario ha autorizado
+    /// las notificaciones: programarlo sin permiso no muestra nada y deja la
+    /// sensación de que el temporizador no avisa.
     func scheduleRestFinishedNotification(endingAt endDate: Date) {
         cancelRestFinishedNotification()
 
         let timeInterval = endDate.timeIntervalSince(Date())
         guard timeInterval > 0 else { return }
 
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            guard let self else { return }
+
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                self.addRestFinishedNotification(timeInterval: timeInterval)
+            default:
+                print("[Notifications] Aviso de descanso omitido: sin permiso de notificaciones.")
+            }
+        }
+    }
+
+    private func addRestFinishedNotification(timeInterval: TimeInterval) {
         let content = UNMutableNotificationContent()
         content.title = "¡Tiempo de descanso finalizado!"
         content.body = "Prepara la siguiente serie"

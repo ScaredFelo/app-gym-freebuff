@@ -18,6 +18,8 @@ final class HealthKitManager: NSObject, ObservableObject, HKWorkoutSessionDelega
     private var wantsWorkoutSession = false
     private var workoutSessionRetryCount = 0
     private static let maxWorkoutSessionRetries = 10
+    /// Identificador del aviso de "sin lecturas" pendiente.
+    private var authorizationProbeID: UUID?
 
     private var bpmUnit: HKUnit {
         HKUnit.count().unitDivided(by: HKUnit.minute())
@@ -87,8 +89,13 @@ final class HealthKitManager: NSObject, ObservableObject, HKWorkoutSessionDelega
                         return
                     }
 
-                    self.debugMessage = "Autorizado. Esperando lecturas de BPM..."
+                    // HealthKit no revela si se ha concedido el permiso de
+                    // lectura: `success` solo indica que la solicitud se
+                    // completó. No se afirma que haya acceso y se comprueba
+                    // con un vigilante si llegan lecturas reales.
+                    self.debugMessage = "Permisos solicitados. Esperando lecturas de Apple Salud..."
                     self.startHeartRateQuery()
+                    self.scheduleEmptyReadingWatchdog()
 
                     if self.wantsWorkoutSession {
                         self.startWorkoutSessionIfAvailable()
@@ -150,6 +157,22 @@ final class HealthKitManager: NSObject, ObservableObject, HKWorkoutSessionDelega
 
         anchor = nil
         currentBPM = 0
+        isAuthorized = false
+        authorizationProbeID = nil
+        dataSourceName = "Buscando..."
+        debugMessage = "Pendiente de autorización"
+    }
+
+    /// Si tras 20 s no ha llegado ninguna lectura, el permiso de lectura puede
+    /// estar denegado (HealthKit no lo comunica de forma explícita).
+    private func scheduleEmptyReadingWatchdog() {
+        let token = UUID()
+        authorizationProbeID = token
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            guard let self, self.authorizationProbeID == token, self.currentBPM == 0 else { return }
+            self.debugMessage = "Sin datos de Apple Salud. Revisa Salud › Compartir › Apps y autoriza la frecuencia cardíaca."
+        }
     }
 
     // MARK: - Workout Session
@@ -258,6 +281,9 @@ final class HealthKitManager: NSObject, ObservableObject, HKWorkoutSessionDelega
     private func handleHeartRateSamples(_ samples: [HKSample]?, newAnchor: HKQueryAnchor?, error: Error?) {
         if let error {
             print("HealthKit error leyendo frecuencia cardíaca: \(error.localizedDescription)")
+            DispatchQueue.main.async { [weak self] in
+                self?.debugMessage = "Error de Apple Salud: \(error.localizedDescription)"
+            }
             return
         }
 

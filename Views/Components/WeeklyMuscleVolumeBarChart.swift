@@ -11,6 +11,10 @@ struct WeeklyMuscleVolumeBarChart: View {
     private static let labelWidth: CGFloat = 118.0
     private static let barHeight: CGFloat = 22.0
     private static let barSpacing: CGFloat = 4.0
+    /// Referencia semanal de cardio aerobio. La barra de cardio se mide contra
+    /// este valor fijo (y no contra su propio total) para que cada sesión
+    /// alargue la barra en lugar de quedar siempre llena.
+    private static let cardioReferenceMinutes: Int = 150
 
     var body: some View {
         let items: [WeeklyMuscleVolumeItem] = computeItems()
@@ -54,6 +58,13 @@ struct WeeklyMuscleVolumeBarChart: View {
             guard let endDate: Date = session.endDate else { continue }
             guard endDate >= windowStart && endDate <= now else { continue }
 
+            // Minutos de cardio registrados en los bloques cronometrados de la
+            // sesión (máquina de cardio dentro de una rutina).
+            var loggedCardioMinutes: Int = 0
+            // Series de fuerza completadas: una sesión con carga no puede
+            // aportar su duración completa como minutos de cardio.
+            var completedStrengthSets: Int = 0
+
             for log in session.setsCompleted {
                 guard log.isCompleted else { continue }
                 guard let exercise: Exercise = log.exercise else { continue }
@@ -65,20 +76,31 @@ struct WeeklyMuscleVolumeBarChart: View {
                 // El cardio no se mide en series: se suman los minutos
                 // registrados por el cronómetro de cada bloque.
                 if exercise.trackingMode == .minutes || groups.contains(.cardio) {
-                    cardioMinutes += max(0, log.reps)
+                    loggedCardioMinutes += max(0, log.reps)
                     continue
                 }
 
+                completedStrengthSets += 1
                 for group in groups {
                     totals[group, default: 0] += 1
                 }
             }
+
+            // La pantalla de cardio guarda la sesión como un único bloque de
+            // tiempo, sin series ni ejercicios asociados: sus minutos salen de
+            // la duración del cronómetro.
+            if loggedCardioMinutes > 0 {
+                cardioMinutes += loggedCardioMinutes
+            } else if completedStrengthSets == 0 && session.isCardioSession {
+                let duration: TimeInterval = max(0.0, endDate.timeIntervalSince(session.startDate))
+                cardioMinutes += max(0, Int((duration / 60.0).rounded()))
+            }
         }
 
-        // Series y minutos viven en escalas distintas: cada unidad se compara
-        // con su propio máximo para que la fila de cardio siga siendo legible.
+        // Las series se comparan con su propio máximo; el cardio, con la
+        // referencia semanal fija, para que sumar minutos siempre se note.
         let setsScale: Int = max(12, totals.values.max() ?? 0)
-        let minutesScale: Int = max(60, cardioMinutes)
+        let minutesScale: Int = max(Self.cardioReferenceMinutes, cardioMinutes)
 
         return MuscleGroup.allCases.map { (group: MuscleGroup) -> WeeklyMuscleVolumeItem in
             if group == .cardio {

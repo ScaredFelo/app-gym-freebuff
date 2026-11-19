@@ -75,14 +75,14 @@ public struct ActiveWorkoutView: View {
             // el entrenamiento sigue vivo en segundo plano hasta que el
             // usuario pulse "Terminar sesión" o cancele.
             pendingNewRoutinePromptID = nil
-            try? modelContext.save()
+            PersistenceService.save(modelContext, operation: "guardar el estado del entrenamiento")
         }
         .onChange(of: scenePhase) { _, newPhase in
             switch newPhase {
             case .active:
                 viewModel.handleScenePhaseActive()
             case .inactive:
-                try? modelContext.save()
+                PersistenceService.save(modelContext, operation: "guardar el estado del entrenamiento")
             case .background:
                 viewModel.handleScenePhaseBackground(modelContext: modelContext)
             @unknown default:
@@ -131,8 +131,9 @@ public struct ActiveWorkoutView: View {
                 pendingNewRoutinePromptID = nil
                 showingRoutineChangeOptions = false
                 showingNewRoutineNameAlert = false
-                viewModel.cancelWorkout(modelContext: modelContext)
-                dismiss()
+                if viewModel.cancelWorkout(modelContext: modelContext) {
+                    dismiss()
+                }
             }
             Button("Seguir entrenando", role: .cancel) {}
         } message: {
@@ -160,8 +161,9 @@ public struct ActiveWorkoutView: View {
             isPresented: $showingBigPictureCancelConfirmation
         ) {
             Button("Sí, descartar", role: .destructive) {
-                viewModel.cancelWorkout(modelContext: modelContext)
-                dismiss()
+                if viewModel.cancelWorkout(modelContext: modelContext) {
+                    dismiss()
+                }
             }
             Button("Seguir entrenando", role: .cancel) {}
         } message: {
@@ -169,6 +171,21 @@ public struct ActiveWorkoutView: View {
         }
         .withKeyboardDismiss()
         .dismissKeyboardOnTap()
+        .alert(
+            "No se pudo guardar",
+            isPresented: Binding(
+                get: { viewModel.saveErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { viewModel.saveErrorMessage = nil }
+                }
+            )
+        ) {
+            Button("Entendido", role: .cancel) {
+                viewModel.saveErrorMessage = nil
+            }
+        } message: {
+            Text(viewModel.saveErrorMessage ?? "")
+        }
     }
 
     private var normalBody: some View {

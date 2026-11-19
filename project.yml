@@ -118,3 +118,21 @@ targets:
         SWIFT_VERSION: "5.0"
         SWIFT_STRICT_CONCURRENCY: "minimal"
         GENERATE_INFOPLIST_FILE: "NO"
+
+# El esquema se declara aqui para que `xcodegen generate` lo regenere siempre.
+# Sin esta seccion, CI usa el .xcscheme versionado como residuo y cualquier
+# cambio de configuracion del esquema se queda fuera del build.
+schemes:
+  AppGym:
+    build:
+      targets:
+        AppGym: all
+    run:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release
+

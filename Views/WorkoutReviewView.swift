@@ -141,6 +141,21 @@ public struct WorkoutReviewView: View {
             .padding(.top, 12.0)
             .padding(.bottom, 12.0)
         }
+        .alert(
+            "No se pudo guardar",
+            isPresented: Binding(
+                get: { viewModel?.saveErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { viewModel?.saveErrorMessage = nil }
+                }
+            )
+        ) {
+            Button("Entendido", role: .cancel) {
+                viewModel?.saveErrorMessage = nil
+            }
+        } message: {
+            Text(viewModel?.saveErrorMessage ?? "")
+        }
         .background(EndfieldPalette.bgPrimary)
         .overlay(alignment: .top) {
             Rectangle()
@@ -152,7 +167,9 @@ public struct WorkoutReviewView: View {
     private func finish() {
         if isPostWorkout {
             if let viewModel: ActiveWorkoutViewModel = viewModel {
-                viewModel.confirmWorkoutSummary(modelContext: modelContext)
+                // Si el guardado falla, la sesión sigue activa y el informe no
+                // debe cerrarse: así el usuario puede reintentarlo.
+                guard viewModel.confirmWorkoutSummary(modelContext: modelContext) else { return }
             }
             onFinish?()
         } else {

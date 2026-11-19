@@ -108,7 +108,7 @@ public struct ExerciseListView: View {
             let exercise = filteredExercises[index]
             modelContext.delete(exercise)
         }
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "guardar los ejercicios")
     }
 }
 
@@ -305,7 +305,7 @@ public struct AddExerciseView: View {
                             newExercise.secondaryMuscles = info.secondaryMuscles
                         }
                         modelContext.insert(newExercise)
-                        try? modelContext.save()
+                        PersistenceService.save(modelContext, operation: "guardar los ejercicios")
                         dismiss()
                     }
                     .font(EndfieldFont.mono(11.0, weight: .bold))

@@ -485,7 +485,7 @@ struct ExerciseSettingsView: View {
         exercise.whenRecommended = whenRecommended
         exercise.whenNotRecommended = whenNotRecommended
         exercise.notes = notes
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "guardar los ajustes del ejercicio")
     }
 }
 

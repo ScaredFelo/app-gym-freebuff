@@ -88,8 +88,9 @@ public struct BigPictureWorkoutView: View {
         }
         .alert("¿Descartar entrenamiento?", isPresented: $showingCancelConfirmation) {
             Button("Sí, descartar", role: .destructive) {
-                viewModel.cancelWorkout(modelContext: modelContext)
-                dismiss()
+                if viewModel.cancelWorkout(modelContext: modelContext) {
+                    dismiss()
+                }
             }
             Button("Seguir entrenando", role: .cancel) {}
         } message: {
@@ -342,7 +343,7 @@ public struct BigPictureWorkoutView: View {
             get: { routineExercise.notes },
             set: {
                 routineExercise.notes = $0
-                try? modelContext.save()
+                PersistenceService.save(modelContext, operation: "guardar el estado del entrenamiento")
             }
         )
     }

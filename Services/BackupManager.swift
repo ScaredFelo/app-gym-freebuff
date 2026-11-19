@@ -49,6 +49,23 @@ struct ExerciseBackupDTO: Codable {
     /// Unidad de registro (`reps`, `seconds`, `minutes`). Opcional para poder
     /// leer archivos exportados antes de existir el campo.
     var trackingModeRaw: String?
+
+    // MARK: Campos añadidos después de la versión 1
+    //
+    // Todos son opcionales para seguir leyendo archivos antiguos. Sin ellos la
+    // importación perdía las notas y los ajustes manuales del usuario.
+
+    var isCompound: Bool? = nil
+    var primaryMusclesRaw: String? = nil
+    var secondaryMusclesRaw: String? = nil
+    var notes: String? = nil
+    var whyGoodExercise: String? = nil
+    var whyBadExercise: String? = nil
+    var whenRecommended: String? = nil
+    var whenNotRecommended: String? = nil
+    var hasCustomRequiresStraps: Bool? = nil
+    var hasCustomEquipment: Bool? = nil
+    var hasCustomRestCondition: Bool? = nil
 }
 
 extension ExerciseBackupDTO {
@@ -148,6 +165,26 @@ struct AppBackupData: Codable {
     var routines: [RoutineBackupDTO]
     var sessions: [WorkoutSessionBackupDTO]
     var settings: SettingsBackupDTO
+
+    /// Comprobaciones estructurales mínimas antes de sustituir la base de datos.
+    /// Un archivo con fechas invertidas o tamaños absurdos se rechaza en lugar
+    /// de aplicarse y dejar el historial incoherente.
+    var isStructurallyValid: Bool {
+        guard routines.count <= 5_000, sessions.count <= 50_000 else { return false }
+
+        for routine in routines where routine.exercises.count > 5_000 {
+            return false
+        }
+
+        for session in sessions {
+            guard session.exercises.count <= 5_000 else { return false }
+            if let endDate = session.endDate, endDate < session.startDate {
+                return false
+            }
+        }
+
+        return true
+    }
 }
 
 // MARK: - Documento para SwiftUI
@@ -237,6 +274,11 @@ enum BackupManager {
             throw BackupError.readFailed
         }
 
+        // Un archivo enorme no puede ser una copia legítima de esta app.
+        guard data.count <= maximumBackupBytes else {
+            throw BackupError.invalidFile
+        }
+
         let backup: AppBackupData
         do {
             backup = try makeDecoder().decode(AppBackupData.self, from: data)
@@ -244,8 +286,12 @@ enum BackupManager {
             throw BackupError.invalidFile
         }
 
-        guard backup.version <= AppBackupData.currentVersion else {
+        guard backup.version >= 1, backup.version <= AppBackupData.currentVersion else {
             throw BackupError.unsupportedVersion(version: backup.version)
+        }
+
+        guard backup.isStructurallyValid else {
+            throw BackupError.invalidFile
         }
 
         // Copia automática previa: si no se puede guardar, no se toca nada.
@@ -338,7 +384,18 @@ enum BackupManager {
             targetRepsMax: exercise.targetRepsMax,
             defaultRestSeconds: restSeconds,
             defaultRestTargetBPM: restTargetBPM,
-            trackingModeRaw: exercise.trackingModeRaw
+            trackingModeRaw: exercise.trackingModeRaw,
+            isCompound: exercise.isCompound,
+            primaryMusclesRaw: exercise.primaryMusclesRaw,
+            secondaryMusclesRaw: exercise.secondaryMusclesRaw,
+            notes: exercise.notes,
+            whyGoodExercise: exercise.whyGoodExercise,
+            whyBadExercise: exercise.whyBadExercise,
+            whenRecommended: exercise.whenRecommended,
+            whenNotRecommended: exercise.whenNotRecommended,
+            hasCustomRequiresStraps: exercise.hasCustomRequiresStraps,
+            hasCustomEquipment: exercise.hasCustomEquipment,
+            hasCustomRestCondition: exercise.hasCustomRestCondition
         )
     }
 
@@ -535,6 +592,37 @@ enum BackupManager {
             defaultRestCondition: snapshot.restCondition,
             trackingMode: ExerciseTrackingMode.fromStoredRawValue(snapshot.trackingModeRaw ?? "")
         )
+
+        // Campos que no existían en los archivos de la versión 1: si están se
+        // restauran, y si no se quedan con el perfil inferido por nombre.
+        if let isCompound = snapshot.isCompound {
+            exercise.isCompound = isCompound
+        }
+        if let primary = snapshot.primaryMusclesRaw {
+            exercise.primaryMusclesRaw = primary
+        }
+        if let secondary = snapshot.secondaryMusclesRaw {
+            exercise.secondaryMusclesRaw = secondary
+        }
+        if let notes = snapshot.notes {
+            exercise.notes = notes
+        }
+        if let value = snapshot.whyGoodExercise {
+            exercise.whyGoodExercise = value
+        }
+        if let value = snapshot.whyBadExercise {
+            exercise.whyBadExercise = value
+        }
+        if let value = snapshot.whenRecommended {
+            exercise.whenRecommended = value
+        }
+        if let value = snapshot.whenNotRecommended {
+            exercise.whenNotRecommended = value
+        }
+        exercise.hasCustomRequiresStraps = snapshot.hasCustomRequiresStraps ?? false
+        exercise.hasCustomEquipment = snapshot.hasCustomEquipment ?? false
+        exercise.hasCustomRestCondition = snapshot.hasCustomRestCondition ?? false
+
         context.insert(exercise)
         cache[key] = exercise
         return exercise
@@ -545,11 +633,14 @@ enum BackupManager {
         cache: inout [String: Exercise],
         context: ModelContext
     ) {
+        // Una fecha de fin anterior al inicio dejaría duraciones negativas en
+        // las estadísticas: se normaliza al importar.
+        let normalizedEndDate: Date? = dto.endDate.map { max($0, dto.startDate) }
         let session: WorkoutSession = WorkoutSession(
             id: dto.id,
             startDate: dto.startDate,
-            endDate: dto.endDate,
-            totalVolumeKg: dto.totalVolumeKg,
+            endDate: normalizedEndDate,
+            totalVolumeKg: max(0, dto.totalVolumeKg),
             routineName: dto.routineName
         )
         context.insert(session)
@@ -635,6 +726,9 @@ enum BackupManager {
 
     /// Copias automáticas que se conservan en disco.
     private static let maximumSafetyCopies: Int = 3
+
+    /// Tamaño máximo aceptado para un archivo de importación (64 MB).
+    private static let maximumBackupBytes: Int = 64 * 1024 * 1024
 
     /// Guarda en disco un JSON con los datos actuales antes de sobrescribirlos.
     /// Es lanzado desde `restoreBackup`, de modo que cada importación deja una

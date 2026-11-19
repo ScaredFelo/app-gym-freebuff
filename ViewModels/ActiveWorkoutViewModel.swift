@@ -43,6 +43,10 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     /// mismo estado de presentación.
     @Published public var isShowingSummary = false
 
+    /// Último error de guardado pendiente de mostrar. Las vistas lo enlazan a
+    /// una alerta y lo limpian al cerrarla.
+    @Published public var saveErrorMessage: String? = nil
+
     /// Tiempo total transcurrido desde el inicio del entrenamiento hasta ahora
     /// (o hasta session.endDate si ya finalizó).
     public var totalWorkoutDuration: TimeInterval {
@@ -250,7 +254,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         activeSets[routineExercise.id] = buildSetStates(for: routineExercise, modelContext: modelContext)
         addedRoutineExerciseIDs.insert(routineExercise.id)
         structureVersion += 1
-        try? modelContext.save()
+        persist(modelContext, operation: "añadir el ejercicio")
         persistState()
         refreshLiveActivity()
 
@@ -283,7 +287,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         activeSets[routineExerciseID] = sets
         routineExercise.defaultSets = sets.count
         structureVersion += 1
-        try? modelContext.save()
+        persist(modelContext, operation: "añadir la serie")
         persistState()
         refreshLiveActivity()
 
@@ -305,7 +309,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
 
         normalizeSortOrder()
         structureVersion += 1
-        try? modelContext.save()
+        persist(modelContext, operation: "quitar el ejercicio")
         persistState()
         refreshLiveActivity()
     }
@@ -450,7 +454,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             sets[setIndex].existingLog = log
             activeSets[routineExerciseID] = sets
             session.totalVolumeKg += (targetSet.weight * Double(targetSet.reps))
-            try? modelContext.save()
+            persist(modelContext, operation: "registrar la serie")
 
             if let exercise, let routineExercise {
                 let condition: RestCondition
@@ -490,7 +494,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             sets[setIndex].existingLog = nil
             activeSets[routineExerciseID] = sets
             session.totalVolumeKg = max(0, session.totalVolumeKg - volumeToSubtract)
-            try? modelContext.save()
+            persist(modelContext, operation: "actualizar la serie")
         }
 
         refreshLiveActivity()
@@ -523,7 +527,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             log.weight = sanitizedWeight
             log.reps = sanitizedReps
             session.totalVolumeKg = max(0, session.totalVolumeKg - previousVolume + newVolume)
-            try? modelContext.save()
+            persist(modelContext, operation: "actualizar kg y repeticiones")
         }
 
         activeSets[routineExerciseID] = sets
@@ -664,7 +668,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         if session.endDate == nil {
             persistSessionDetails()
         }
-        try? modelContext.save()
+        persist(modelContext, operation: "guardar al pasar a segundo plano")
         LiveActivityManager.shared.handleScenePhaseBackground()
 
         // Actualizamos el tiempo restante antes de persistir para que el estado
@@ -1060,36 +1064,34 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         restoreCompletedSets(from: state.completedSets, modelContext: modelContext)
         restoreStopwatch(from: state)
 
+        restoreRestState(from: state)
+    }
+
+    /// Reanuda el descanso guardado sin dejar estado fantasma.
+    ///
+    /// Solo se restaura lo que sigue vigente: un descanso por pulso, uno
+    /// pausado o un temporizador con fecha futura. Si el temporizador venció
+    /// mientras la app estaba cerrada, se limpia el estado (sin sonido) y se
+    /// reescribe el snapshot para que la próxima apertura parta de cero.
+    private func restoreRestState(from state: PersistedWorkoutState) {
         guard state.isResting else { return }
 
-        currentExerciseName = state.currentExerciseName
-        currentRestModeTitle = state.currentRestModeTitle
-        restingSetNumber = state.restingSetNumber
-        restingTotalSets = state.restingTotalSets
-        totalRestSeconds = state.totalRestSeconds
-        isTimerMinimized = state.isTimerMinimized
-        restTargetBpm = state.restTargetBpm
-        currentRestCondition = state.restCondition
-        restingRoutineExerciseID = routine.exercises.first { (re: RoutineExercise) -> Bool in
-            return re.exercise?.name == state.currentExerciseName
-        }?.id
-
-        if currentRestCondition == nil {
-            currentRestCondition = .timer(seconds: max(1, state.totalRestSeconds))
-        }
-
-        if state.isRestPaused {
-            isResting = true
-            isRestPaused = true
-            restTimeRemaining = max(0, state.restTimeRemaining)
-            timerTargetDuration = restTimeRemaining
-            timerStartDate = nil
-            restTimerEndDate = nil
-            isRestTimerActive = false
-            return
+        func applyRestHeaders() {
+            currentExerciseName = state.currentExerciseName
+            currentRestModeTitle = state.currentRestModeTitle
+            restingSetNumber = state.restingSetNumber
+            restingTotalSets = state.restingTotalSets
+            totalRestSeconds = state.totalRestSeconds
+            isTimerMinimized = state.isTimerMinimized
+            restTargetBpm = state.restTargetBpm
+            currentRestCondition = state.restCondition ?? .timer(seconds: max(1, state.totalRestSeconds))
+            restingRoutineExerciseID = routine.exercises.first { (re: RoutineExercise) -> Bool in
+                return re.exercise?.name == state.currentExerciseName
+            }?.id
         }
 
         if let condition = state.restCondition, case .bpmDrop(let targetBpm) = condition {
+            applyRestHeaders()
             isResting = true
             isRestPaused = false
             restTargetBpm = targetBpm
@@ -1098,23 +1100,41 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             restTimerEndDate = nil
             isRestTimerActive = false
             startBpmRecoveryObserver(targetBpm: targetBpm)
+            persistState()
             return
         }
 
-        guard state.isRestTimerActive, let endDate = state.restTimerEndDate, endDate > Date() else {
+        if state.isRestPaused {
+            applyRestHeaders()
+            isResting = true
+            isRestPaused = true
+            restTimeRemaining = max(0, state.restTimeRemaining)
+            timerTargetDuration = restTimeRemaining
+            timerStartDate = nil
+            restTimerEndDate = nil
+            isRestTimerActive = false
+            persistState()
             return
         }
 
-        isResting = true
-        isRestPaused = false
-        restTimerEndDate = endDate
-        timerStartDate = state.timerStartDate ?? Date()
-        isRestTimerActive = true
-        restTimeRemaining = max(0, Int(ceil(endDate.timeIntervalSinceNow)))
-        timerTargetDuration = max(state.totalRestSeconds, restTimeRemaining)
-        NotificationManager.shared.scheduleRestFinishedNotification(endingAt: endDate)
-        AudioAlertService.shared.startBackgroundAudio()
-        startTimerCountdown()
+        if let endDate = state.restTimerEndDate, endDate > Date() {
+            applyRestHeaders()
+            isResting = true
+            isRestPaused = false
+            restTimerEndDate = endDate
+            timerStartDate = state.timerStartDate ?? Date()
+            isRestTimerActive = true
+            restTimeRemaining = max(0, Int(ceil(endDate.timeIntervalSinceNow)))
+            timerTargetDuration = max(state.totalRestSeconds, restTimeRemaining)
+            NotificationManager.shared.scheduleRestFinishedNotification(endingAt: endDate)
+            AudioAlertService.shared.startBackgroundAudio()
+            startTimerCountdown()
+            persistState()
+            return
+        }
+
+        // Descanso vencido con la app cerrada: se descarta sin avisar.
+        clearRestState()
     }
 
     /// Tiempo máximo que se acepta de un cronómetro restaurado. Evita registrar
@@ -1242,7 +1262,7 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             }
         }
 
-        try? modelContext.save()
+        persist(modelContext, operation: "restaurar las series completadas")
     }
 
     // MARK: - Finish / Cancel
@@ -1264,7 +1284,6 @@ public final class ActiveWorkoutViewModel: ObservableObject {
     public func finishWorkout(modelContext: ModelContext) -> WorkoutSession {
         stopRest()
         stopStopwatch()
-        endWorkoutActivity()
         stopBPMTracking()
         HealthKitManager.shared.stopWorkoutSession()
         // Conserva la fecha de fin fijada al abrir el resumen: repetir la
@@ -1273,20 +1292,56 @@ public final class ActiveWorkoutViewModel: ObservableObject {
             session.endDate = Date()
         }
         persistSessionDetails()
-        ActiveWorkoutStateStore.clear()
-        try? modelContext.save()
+
+        // El estado recuperable, la Live Activity y el audio solo se limpian
+        // cuando el entrenamiento está realmente guardado en disco.
+        guard saveFinishedWorkout(modelContext: modelContext) else {
+            return session
+        }
+
+        endWorkoutActivity()
         // La sesión acaba de cerrarse: recalcula racha y objetivo del widget.
         WidgetStreakStore.refresh(modelContext: modelContext)
         isShowingSummary = true
         return session
     }
 
+    /// Guarda el entrenamiento finalizado. Si falla, deshace el cambio de
+    /// `endDate` y mantiene la sesión viva para poder reintentarlo: nunca se
+    /// borra el estado recuperable antes de saber que el guardado ha ido bien.
+    private func saveFinishedWorkout(modelContext: ModelContext) -> Bool {
+        do {
+            try modelContext.save()
+            return true
+        } catch {
+            print("[Persistence] No se pudo guardar el entrenamiento finalizado: \(error)")
+            modelContext.rollback()
+            isShowingSummary = false
+            saveErrorMessage = "No se ha podido guardar el entrenamiento. Sigue activo: vuelve a intentarlo cuando haya espacio libre en el dispositivo."
+            persistState()
+            return false
+        }
+    }
+
+    /// Guardado de las acciones intermedias (series, ejercicios, notas). Si
+    /// falla se avisa al usuario; el entrenamiento no se pierde porque cada
+    /// serie se guarda por separado.
+    private func persist(_ context: ModelContext, operation: String) {
+        guard !PersistenceService.save(context, operation: operation) else { return }
+        saveErrorMessage = "No se han podido guardar los últimos cambios (\(operation)). Comprueba el espacio libre del dispositivo."
+    }
+
     /// Confirma el resumen final a pantalla completa: guarda definitivamente la
     /// sesión (manteniendo `session.startDate` original), detiene temporizadores,
     /// Live Activity y audio, limpia `ActiveWorkoutStateStore` y cierra el resumen.
-    public func confirmWorkoutSummary(modelContext: ModelContext) {
+    @discardableResult
+    public func confirmWorkoutSummary(modelContext: ModelContext) -> Bool {
         _ = finishWorkout(modelContext: modelContext)
+        // Si el guardado ha fallado, `endDate` se ha revertido y el resumen no
+        // debe cerrarse: la pantalla sigue mostrando el entrenamiento activo.
+        guard session.endDate != nil else { return false }
         isShowingSummary = false
+        return true
     }
 
     @discardableResult
@@ -1327,22 +1382,30 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         modelContext.insert(newRoutine)
         restoreOriginalStructure(modelContext: modelContext)
         session.routineName = newRoutine.name
-        try? modelContext.save()
+        persist(modelContext, operation: "guardar la rutina nueva")
         return finishWorkout(modelContext: modelContext)
     }
 
-    public func cancelWorkout(modelContext: ModelContext) {
+    /// Descarta la sesión. Devuelve `false` si el borrado no se pudo guardar,
+    /// en cuyo caso la vista no debe cerrarse para no perder el entrenamiento.
+    @discardableResult
+    public func cancelWorkout(modelContext: ModelContext) -> Bool {
         stopRest()
         stopStopwatch()
-        endWorkoutActivity()
         stopBPMTracking()
         HealthKitManager.shared.stopWorkoutSession()
         restoreOriginalStructure(modelContext: modelContext)
         modelContext.delete(session)
-        ActiveWorkoutStateStore.clear()
-        try? modelContext.save()
+
+        guard PersistenceService.saveOrRollback(modelContext, operation: "descartar el entrenamiento") else {
+            saveErrorMessage = "No se ha podido descartar el entrenamiento. Sigue activo: vuelve a intentarlo."
+            return false
+        }
+
+        endWorkoutActivity()
         // La sesión cancelada desaparece: recalcula racha y objetivo.
         WidgetStreakStore.refresh(modelContext: modelContext)
+        return true
     }
 
     // MARK: - Live Activity

@@ -98,13 +98,26 @@ public final class Exercise {
         return "\(targetUnitLabel): \(targetRepsText)"
     }
 
+    /// Condición de descanso del ejercicio. La escritura es no destructiva: si
+    /// la codificación falla se conserva el valor anterior y la lectura cae al
+    /// descanso por defecto sin borrar el dato guardado.
     @Transient
     public var defaultRestCondition: RestCondition {
         get {
-            (try? JSONDecoder().decode(RestCondition.self, from: defaultRestConditionData)) ?? .timer(seconds: 90)
+            guard !defaultRestConditionData.isEmpty else { return .timer(seconds: 90) }
+            do {
+                return try JSONDecoder().decode(RestCondition.self, from: defaultRestConditionData)
+            } catch {
+                print("[Persistence] Descanso del ejercicio ilegible: \(error)")
+                return .timer(seconds: 90)
+            }
         }
         set {
-            defaultRestConditionData = (try? JSONEncoder().encode(newValue)) ?? Data()
+            do {
+                defaultRestConditionData = try JSONEncoder().encode(newValue)
+            } catch {
+                print("[Persistence] No se pudo codificar el descanso; se conserva el anterior: \(error)")
+            }
         }
     }
 

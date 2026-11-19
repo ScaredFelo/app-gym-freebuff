@@ -11,6 +11,7 @@ public struct AnalyticsView: View {
     @State private var showingPersonalRecords = false
     @State private var showingWorkoutHistory = false
     @State private var sessionPendingDeletion: WorkoutSession?
+    @State private var saveErrorMessage: String?
 
     // Selección de un día del calendario y review de una sesión histórica.
     @State private var selectedDayDate: Date?
@@ -56,6 +57,21 @@ public struct AnalyticsView: View {
             }
             .navigationTitle("PROGRESO")
             .navigationBarTitleDisplayMode(.inline)
+            .alert(
+                "No se pudo guardar",
+                isPresented: Binding(
+                    get: { saveErrorMessage != nil },
+                    set: { isPresented in
+                        if !isPresented { saveErrorMessage = nil }
+                    }
+                )
+            ) {
+                Button("Entendido", role: .cancel) {
+                    saveErrorMessage = nil
+                }
+            } message: {
+                Text(saveErrorMessage ?? "")
+            }
             .alert(
                 "¿Eliminar entrenamiento?",
                 isPresented: Binding(
@@ -318,7 +334,12 @@ public struct AnalyticsView: View {
             modelContext.delete(log)
         }
         modelContext.delete(session)
-        try? modelContext.save()
+
+        guard PersistenceService.saveOrRollback(modelContext, operation: "eliminar la sesión") else {
+            saveErrorMessage = "No se ha podido eliminar la sesión. Vuelve a intentarlo."
+            return
+        }
+
         // La sesión borrada deja de contar para la racha semanal.
         WidgetStreakStore.refresh(modelContext: modelContext)
     }

@@ -31,6 +31,16 @@ jobs:
       - name: Install XcodeGen
         run: brew install xcodegen
 
+      # Deja en el log la version exacta de Xcode y Swift con la que se compila.
+      # El codigo usa `#if compiler(>=6.2)` y `#available(iOS 26.0, *)`, asi que
+      # saber el toolchain es imprescindible para diagnosticar diferencias.
+      - name: Show toolchain versions
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun swift --version
+          xcodegen --version
+
       - name: Generate Xcode Project
         run: xcodegen generate
 

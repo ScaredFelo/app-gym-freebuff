@@ -90,6 +90,16 @@ public final class CardioViewModel: ObservableObject {
         self.bpmHistory = snapshot.bpmSamples.sorted { (lhs: BPMSample, rhs: BPMSample) -> Bool in
             return lhs.timestamp < rhs.timestamp
         }
+
+        if let finishedAt = snapshot.finishedAt {
+            // La sesión ya había terminado: se abre directamente el informe y
+            // la vista la guarda en cuanto aparece (el snapshot se conserva
+            // hasta que el guardado confirma).
+            self.phase = .finished
+            self.finishedAt = finishedAt
+            self.reachedTarget = true
+            self.segmentStart = nil
+        }
         self.lastBPMSampleDate = self.bpmHistory.last?.timestamp ?? .distantPast
 
         // Los hitos ya alcanzados no vuelven a sonar al recuperar la sesión.
@@ -245,9 +255,18 @@ public final class CardioViewModel: ObservableObject {
         stopBPMRecording()
         stopHeartRateSensing()
         CardioLiveActivityManager.shared.end()
-        CardioSessionStore.clear()
+
+        // El snapshot se conserva, ya marcado como terminado, hasta que la
+        // sesión esté guardada en SwiftData. Si la app se cierra en el informe
+        // se recupera al volver a abrirla en lugar de perderse.
+        persistSnapshot()
 
         scheduleBackgroundAudioStop()
+    }
+
+    /// La sesión ya está en SwiftData: se puede borrar el snapshot de recuperación.
+    public func clearPersistedSnapshot() {
+        CardioSessionStore.clear()
     }
 
     /// Apaga el audio del cardio unos segundos después del cierre: la campana
@@ -427,7 +446,8 @@ public final class CardioViewModel: ObservableObject {
                 savedAt: Date(),
                 elapsedAtSave: elapsed(at: Date()),
                 targetZone: targetZone,
-                milestoneAlertsEnabled: milestoneAlertsEnabled
+                milestoneAlertsEnabled: milestoneAlertsEnabled,
+                finishedAt: finishedAt
             )
         )
     }
@@ -452,6 +472,9 @@ struct CardioSessionSnapshot: Codable {
     var targetZone: Int?
     /// Si estaban activos los avisos de mitad y último minuto.
     var milestoneAlertsEnabled: Bool?
+    /// Instante de fin cuando la sesión ya terminó pero aún no se ha guardado
+    /// en SwiftData. Opcional para leer snapshots anteriores.
+    var finishedAt: Date? = nil
 
     /// Una sesión sin actualizaciones más allá de este tiempo se considera
     /// abandonada: no se reanuda sola, se ofrece guardarla o descartarla.

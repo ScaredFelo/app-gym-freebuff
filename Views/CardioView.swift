@@ -131,9 +131,14 @@ public struct CardioView: View {
         session.bpmSamples = snapshot.bpmSamples
 
         modelContext.insert(session)
-        try? modelContext.save()
-        WidgetStreakStore.refresh(modelContext: modelContext)
 
+        // Solo se descarta el snapshot cuando la sesión está guardada: si el
+        // guardado falla, la copia sigue disponible para reintentarlo.
+        guard PersistenceService.saveOrRollback(modelContext, operation: "guardar una sesión de cardio abandonada") else {
+            return
+        }
+
+        WidgetStreakStore.refresh(modelContext: modelContext)
         CardioSessionStore.clear()
         abandonedSnapshot = nil
     }
@@ -529,6 +534,7 @@ private struct CardioSessionView: View {
 
     @State private var showingAbortConfirmation = false
     @State private var didPersistSession = false
+    @State private var saveErrorMessage: String?
     @State private var cardioComparison: CardioComparison?
     @State private var didLoadComparison: Bool = false
 
@@ -591,6 +597,21 @@ private struct CardioSessionView: View {
             Button("Continuar", role: .cancel) {}
         } message: {
             Text("Se descartará el tiempo realizado sin guardarlo en el historial.")
+        }
+        .alert(
+            "No se pudo guardar",
+            isPresented: Binding(
+                get: { saveErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented { saveErrorMessage = nil }
+                }
+            )
+        ) {
+            Button("Entendido", role: .cancel) {
+                saveErrorMessage = nil
+            }
+        } message: {
+            Text(saveErrorMessage ?? "")
         }
     }
 
@@ -849,11 +870,18 @@ private struct CardioSessionView: View {
 
     private func persistSession() {
         guard !didPersistSession else { return }
-        didPersistSession = true
 
         // Se registra el tiempo efectivo del cronómetro (sin las pausas ni los
         // huecos en los que la app quedó suspendida), no la hora del reloj.
         let duration: TimeInterval = viewModel.elapsed(at: viewModel.finishedAt ?? Date())
+
+        // Recuperar una sesión terminada puede volver a pasar por aquí: si ya
+        // está guardada no se duplica en el historial.
+        if existingSession(startDate: viewModel.startedAt, routineName: viewModel.type.sessionName) != nil {
+            didPersistSession = true
+            viewModel.clearPersistedSnapshot()
+            return
+        }
 
         let session = WorkoutSession(
             startDate: viewModel.startedAt,
@@ -866,8 +894,30 @@ private struct CardioSessionView: View {
         session.bpmSamples = viewModel.bpmHistory
 
         modelContext.insert(session)
-        try? modelContext.save()
+
+        guard PersistenceService.saveOrRollback(modelContext, operation: "guardar la sesión de cardio") else {
+            saveErrorMessage = "No se ha podido guardar la sesión de cardio. Sigue en pantalla: vuelve a intentarlo cuando haya espacio libre."
+            return
+        }
+
+        didPersistSession = true
+        viewModel.clearPersistedSnapshot()
         WidgetStreakStore.refresh(modelContext: modelContext)
+    }
+
+    /// Sesión ya guardada con el mismo inicio y modalidad (margen de 2 s por
+    /// las diferencias de redondeo entre intentos).
+    private func existingSession(startDate: Date, routineName: String) -> WorkoutSession? {
+        let lowerBound: Date = startDate.addingTimeInterval(-2.0)
+        let upperBound: Date = startDate.addingTimeInterval(2.0)
+        let descriptor = FetchDescriptor<WorkoutSession>(
+            predicate: #Predicate<WorkoutSession> { session in
+                session.routineName == routineName
+                    && session.startDate >= lowerBound
+                    && session.startDate <= upperBound
+            }
+        )
+        return (try? modelContext.fetch(descriptor))?.first
     }
 
     private func clockString(_ seconds: TimeInterval) -> String {

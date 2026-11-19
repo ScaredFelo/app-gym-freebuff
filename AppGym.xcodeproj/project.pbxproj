@@ -60,6 +60,12 @@
 		AB1000000000000000000002 /* WidgetStreakStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000001 /* WidgetStreakStore.swift */; };
 		AB1000000000000000000003 /* WorkoutStreakWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000002 /* WorkoutStreakWidget.swift */; };
 		AB1000000000000000000004 /* WeeklyMuscleVolumeBarChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB0000000000000000000003 /* WeeklyMuscleVolumeBarChart.swift */; };
+		AA1000000000000000000050 /* CardioType.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000050 /* CardioType.swift */; };
+		AA1000000000000000000051 /* FreeWorkoutRoutineStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000051 /* FreeWorkoutRoutineStore.swift */; };
+		AA1000000000000000000052 /* PersistenceService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000052 /* PersistenceService.swift */; };
+		AA1000000000000000000053 /* CardioViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000053 /* CardioViewModel.swift */; };
+		AA1000000000000000000054 /* CardioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000054 /* CardioView.swift */; };
+		AA1000000000000000000055 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2000000000000000000055 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -141,6 +147,12 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 		AB0000000000000000000004 /* WidgetStreakStore+App.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WidgetStreakStore+App.swift"; sourceTree = "<group>"; };
 		AB0000000000000000000002 /* WorkoutStreakWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutStreakWidget.swift; sourceTree = "<group>"; };
 		AB0000000000000000000003 /* WeeklyMuscleVolumeBarChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeeklyMuscleVolumeBarChart.swift; sourceTree = "<group>"; };
+		AA2000000000000000000050 /* CardioType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardioType.swift; sourceTree = "<group>"; };
+		AA2000000000000000000051 /* FreeWorkoutRoutineStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FreeWorkoutRoutineStore.swift; sourceTree = "<group>"; };
+		AA2000000000000000000052 /* PersistenceService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersistenceService.swift; sourceTree = "<group>"; };
+		AA2000000000000000000053 /* CardioViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardioViewModel.swift; sourceTree = "<group>"; };
+		AA2000000000000000000054 /* CardioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CardioView.swift; sourceTree = "<group>"; };
+		AA2000000000000000000055 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -174,6 +186,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 			isa = PBXGroup;
 			children = (
 				3ACE7C52B64E15AB73DAC0AD /* ActiveWorkoutViewModel.swift */,
+				AA2000000000000000000053 /* CardioViewModel.swift */,
 			);
 			name = ViewModels;
 			path = ViewModels;
@@ -193,6 +206,8 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 			children = (
 				E89474F08AF146B70514F79A /* AudioAlertService.swift */,
 				AA2000000000000000000040 /* BackupManager.swift */,
+				AA2000000000000000000051 /* FreeWorkoutRoutineStore.swift */,
+				AA2000000000000000000052 /* PersistenceService.swift */,
 				AA2000000000000000000003 /* ActiveWorkoutStateStore.swift */,
 				B25522A6E8A844357703F614 /* BPMManager.swift */,
 				37DA97A4F9F271FBE9BABCD4 /* HealthKitManager.swift */,
@@ -242,6 +257,8 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 			isa = PBXGroup;
 			children = (
 				A4988B431C542FC01518F238 /* ActiveWorkoutView.swift */,
+				AA2000000000000000000054 /* CardioView.swift */,
+				AA2000000000000000000055 /* SettingsView.swift */,
 				0C4EF0CC94701D1C636E62D2 /* AnalyticsView.swift */,
 				AA2000000000000000000005 /* BigPictureWorkoutView.swift */,
 				BABD2BA90F6E116680D106E1 /* EditRoutineView.swift */,
@@ -311,6 +328,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 				9D5FD65528501527F55D75EE /* Enums.swift */,
 				AA2000000000000000000020 /* MuscleGroup.swift */,
 				84B6D982922C3997DC5B7B4D /* Exercise.swift */,
+				AA2000000000000000000050 /* CardioType.swift */,
 				6DD8C216849F8578850A3715 /* Routine.swift */,
 				FB5642812FCFA2922D641738 /* WorkoutSession.swift */,
 			);
@@ -477,6 +495,12 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 				AB1000000000000000000001 /* WidgetStreakStore.swift in Sources */,
 				AB1000000000000000000005 /* WidgetStreakStore+App.swift in Sources */,
 				AB1000000000000000000004 /* WeeklyMuscleVolumeBarChart.swift in Sources */,
+				AA1000000000000000000050 /* CardioType.swift in Sources */,
+				AA1000000000000000000051 /* FreeWorkoutRoutineStore.swift in Sources */,
+				AA1000000000000000000052 /* PersistenceService.swift in Sources */,
+				AA1000000000000000000053 /* CardioViewModel.swift in Sources */,
+				AA1000000000000000000054 /* CardioView.swift in Sources */,
+				AA1000000000000000000055 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

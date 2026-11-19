@@ -15,6 +15,7 @@ public struct RoutineListView: View {
     @State private var isEditing = false
     @State private var routinePendingDeletion: Routine? = nil
     @State private var isShowingCardio = false
+    @State private var saveErrorMessage: String?
 
     /// El entreno libre se ejecuta siempre en modo normal: con Big Picture
     /// activo se avisa y se ofrece desactivarlo antes de arrancar.
@@ -68,6 +69,21 @@ public struct RoutineListView: View {
             }
             .navigationTitle(isEditing ? "EDITAR RUTINAS" : "RUTINAS")
             .navigationBarTitleDisplayMode(.inline)
+            .alert(
+                "No se pudo guardar",
+                isPresented: Binding(
+                    get: { saveErrorMessage != nil },
+                    set: { isPresented in
+                        if !isPresented { saveErrorMessage = nil }
+                    }
+                )
+            ) {
+                Button("Entendido", role: .cancel) {
+                    saveErrorMessage = nil
+                }
+            } message: {
+                Text(saveErrorMessage ?? "")
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     if isEditing {
@@ -225,13 +241,21 @@ public struct RoutineListView: View {
     }
 
     private func beginFreeWorkout() {
+        guard !ActiveWorkoutStateStore.hasActiveWorkout else {
+            saveErrorMessage = "Ya hay un entrenamiento activo. Termínalo o descártalo antes de empezar otro."
+            return
+        }
+
         routineToEdit = nil
         let routine = FreeWorkoutRoutineStore.prepare(modelContext: modelContext)
-        try? modelContext.save()
 
         let session = WorkoutSession(startDate: Date(), totalVolumeKg: 0.0, routineName: routine.name)
         modelContext.insert(session)
-        try? modelContext.save()
+
+        guard PersistenceService.saveOrRollback(modelContext, operation: "iniciar el entreno libre") else {
+            saveErrorMessage = "No se ha podido iniciar el entreno libre. Comprueba el espacio libre del dispositivo."
+            return
+        }
 
         selectedRoutineForWorkout = routine
         activeSession = session
@@ -239,11 +263,20 @@ public struct RoutineListView: View {
 
     private func startWorkout(with routine: Routine) {
         guard !isEditing else { return }
+        guard !ActiveWorkoutStateStore.hasActiveWorkout else {
+            saveErrorMessage = "Ya hay un entrenamiento activo. Termínalo o descártalo antes de empezar otro."
+            return
+        }
 
         routineToEdit = nil
         let session = WorkoutSession(startDate: Date(), totalVolumeKg: 0.0, routineName: routine.name)
         modelContext.insert(session)
-        try? modelContext.save()
+
+        guard PersistenceService.saveOrRollback(modelContext, operation: "iniciar el entrenamiento") else {
+            saveErrorMessage = "No se ha podido iniciar el entrenamiento. Comprueba el espacio libre del dispositivo."
+            return
+        }
+
         selectedRoutineForWorkout = routine
         activeSession = session
     }
@@ -280,7 +313,7 @@ public struct RoutineListView: View {
                 item.sortOrder = position
             }
         }
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "reordenar las rutinas")
     }
 
     private func enterEditMode() {
@@ -300,7 +333,7 @@ public struct RoutineListView: View {
     }
 
     private func confirmEditMode() {
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "guardar la edición de rutinas")
         exitEditMode()
     }
 
@@ -312,7 +345,11 @@ public struct RoutineListView: View {
             item.sortOrder = index
         }
 
-        try? modelContext.save()
+        guard PersistenceService.saveOrRollback(modelContext, operation: "eliminar la rutina") else {
+            saveErrorMessage = "No se ha podido eliminar la rutina. Vuelve a intentarlo."
+            return
+        }
+
         routinePendingDeletion = nil
     }
 }

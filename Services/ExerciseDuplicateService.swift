@@ -351,6 +351,7 @@ public enum ExerciseDuplicateService {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: jsonURL, options: .atomic)
             _ = try? summaryText(for: backup).write(to: textURL, atomically: true, encoding: String.Encoding.utf8)
+            pruneCopies(in: directory)
             return jsonURL
         } catch {
             print("No se pudo escribir la copia de seguridad de la unificación: \(error)")
@@ -366,6 +367,31 @@ public enum ExerciseDuplicateService {
         return base
             .appendingPathComponent("AppGym", isDirectory: true)
             .appendingPathComponent("CopiasEjercicios", isDirectory: true)
+    }
+
+    /// Conserva las copias más recientes de la unificación. Cada ejecución deja
+    /// un JSON y un TXT, así que se mantienen los 10 archivos últimos (5 tandas).
+    private static func pruneCopies(in directory: URL) {
+        let fileManager: FileManager = FileManager.default
+        guard let contents: [URL] = try? fileManager.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        ) else {
+            return
+        }
+
+        let copies: [URL] = contents
+            .filter { (url: URL) -> Bool in
+                return url.lastPathComponent.hasPrefix("Ejercicios-unificados-")
+            }
+            .sorted { (lhs: URL, rhs: URL) -> Bool in
+                return lhs.lastPathComponent > rhs.lastPathComponent
+            }
+
+        for url in copies.dropFirst(10) {
+            try? fileManager.removeItem(at: url)
+        }
     }
 
     private static func timestamp() -> String {

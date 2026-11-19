@@ -66,21 +66,54 @@ public enum CardioType: String, CaseIterable, Sendable, Identifiable {
 
     /// Prefijo con el que se registran las sesiones de cardio en el historial.
     public static let sessionPrefix = "CARDIO · "
+    /// Palabra con la que se reconocen las sesiones de cardio aunque el
+    /// separador o las mayúsculas no coincidan con `sessionPrefix`.
+    public static let sessionKeyword = "CARDIO"
+    /// Separadores admitidos entre `CARDIO` y la modalidad. Una palabra suelta
+    /// detrás de la clave (p. ej. "Cardio y core") no es una sesión de cardio.
+    private static let sessionSeparators: CharacterSet = CharacterSet(charactersIn: "·-:•|/")
 
     /// Nombre con el que la sesión se guarda en el historial y el calendario.
     public var sessionName: String {
         return CardioType.sessionPrefix + title
     }
 
-    /// Modalidad de una sesión guardada, o `nil` si no es de cardio.
-    public static func fromSessionName(_ name: String) -> CardioType? {
-        let trimmed: String = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix(sessionPrefix) else { return nil }
+    /// `true` si el nombre corresponde a una sesión de cardio, aunque la
+    /// modalidad no esté en el catálogo. Ignora mayúsculas y espacios de más y
+    /// exige que `CARDIO` vaya solo o seguido de un separador (`CARDIO · CINTA`),
+    /// de modo que una rutina llamada "Cardio y core" no cuente como cardio.
+    public static func isCardioSessionName(_ name: String) -> Bool {
+        let normalized: String = normalizedSessionName(name)
+        guard normalized.hasPrefix(sessionKeyword) else { return false }
 
-        let title: String = String(trimmed.dropFirst(sessionPrefix.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let remainder: String = String(normalized.dropFirst(sessionKeyword.count))
+            .trimmingCharacters(in: .whitespaces)
+        guard let firstScalar: Unicode.Scalar = remainder.unicodeScalars.first else { return true }
+
+        return sessionSeparators.contains(firstScalar)
+    }
+
+    /// Modalidad de una sesión guardada, o `nil` si no es de cardio o si la
+    /// modalidad no se reconoce.
+    public static func fromSessionName(_ name: String) -> CardioType? {
+        guard isCardioSessionName(name) else { return nil }
+
+        let normalized: String = normalizedSessionName(name)
+        let remainder: String = String(normalized.dropFirst(sessionKeyword.count))
+            .trimmingCharacters(in: sessionSeparators.union(.whitespaces))
+
+        guard !remainder.isEmpty else { return nil }
+        return CardioType.allCases.first { $0.title == remainder }
+    }
+
+    /// Mayúsculas y espacios simples: `" cardio ·  cinta "` → `"CARDIO · CINTA"`.
+    private static func normalizedSessionName(_ name: String) -> String {
+        return name
             .uppercased()
-        return CardioType.allCases.first { $0.title == title }
+            .split(whereSeparator: { (character: Character) -> Bool in
+                return character.isWhitespace
+            })
+            .joined(separator: " ")
     }
 }
 
@@ -91,6 +124,6 @@ extension WorkoutSession {
     }
 
     public var isCardioSession: Bool {
-        return cardioType != nil
+        return CardioType.isCardioSessionName(routineName)
     }
 }

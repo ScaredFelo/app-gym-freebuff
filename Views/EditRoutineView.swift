@@ -92,7 +92,7 @@ struct EditRoutineView: View {
                         modelContext.insert(routine)
                     }
 
-                    try? modelContext.save()
+                    PersistenceService.save(modelContext, operation: "guardar la rutina")
                     dismiss()
                 }
                 .fontWeight(.bold)
@@ -113,7 +113,7 @@ struct EditRoutineView: View {
                 }
                 routine.exercises.append(routineExercise)
                 if !isNewRoutine {
-                    try? modelContext.save()
+                    PersistenceService.save(modelContext, operation: "guardar la rutina")
                 }
             }
         }
@@ -135,7 +135,7 @@ struct EditRoutineView: View {
                     }
                     normalizeSortOrder()
                     if !isNewRoutine {
-                        try? modelContext.save()
+                        PersistenceService.save(modelContext, operation: "guardar la rutina")
                     }
                 }
                 exercisePendingRemoval = nil
@@ -217,7 +217,7 @@ struct EditRoutineView: View {
     private func discardNewRoutineIfNeeded() {
         guard isNewRoutine, routine.modelContext != nil else { return }
         modelContext.delete(routine)
-        try? modelContext.save()
+        PersistenceService.save(modelContext, operation: "guardar la rutina")
     }
 }
 

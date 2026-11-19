@@ -96,26 +96,50 @@ public final class WorkoutSession {
     public var setsCompleted: [WorkoutSetLog] = []
 
     /// Historial completo de pulsaciones de la sesión.
+    ///
+    /// La lectura de datos ilegibles devuelve una lista vacía para no romper la
+    /// interfaz, y la escritura es **no destructiva**: si la codificación falla
+    /// se conserva el valor anterior en lugar de dejar el campo a cero y perder
+    /// el histórico ya guardado.
     @Transient
     public var bpmSamples: [BPMSample] {
         get {
-            guard let bpmSamplesData else { return [] }
-            return (try? JSONDecoder().decode([BPMSample].self, from: bpmSamplesData)) ?? []
+            guard let bpmSamplesData, !bpmSamplesData.isEmpty else { return [] }
+            do {
+                return try JSONDecoder().decode([BPMSample].self, from: bpmSamplesData)
+            } catch {
+                print("[Persistence] Muestras de BPM ilegibles: \(error)")
+                return []
+            }
         }
         set {
-            bpmSamplesData = (try? JSONEncoder().encode(newValue)) ?? Data()
+            do {
+                bpmSamplesData = try JSONEncoder().encode(newValue)
+            } catch {
+                print("[Persistence] No se pudieron codificar las muestras de BPM; se conservan las anteriores: \(error)")
+            }
         }
     }
 
     /// Registros detallados de ejercicios y series con sus marcas temporales.
+    /// Mismo criterio que `bpmSamples`: nunca se sobrescribe con datos vacíos.
     @Transient
     public var exerciseRecords: [WorkoutExerciseRecord] {
         get {
-            guard let exerciseRecordsData else { return [] }
-            return (try? JSONDecoder().decode([WorkoutExerciseRecord].self, from: exerciseRecordsData)) ?? []
+            guard let exerciseRecordsData, !exerciseRecordsData.isEmpty else { return [] }
+            do {
+                return try JSONDecoder().decode([WorkoutExerciseRecord].self, from: exerciseRecordsData)
+            } catch {
+                print("[Persistence] Registros de ejercicios ilegibles: \(error)")
+                return []
+            }
         }
         set {
-            exerciseRecordsData = (try? JSONEncoder().encode(newValue)) ?? Data()
+            do {
+                exerciseRecordsData = try JSONEncoder().encode(newValue)
+            } catch {
+                print("[Persistence] No se pudieron codificar los registros de ejercicios; se conservan los anteriores: \(error)")
+            }
         }
     }
 
