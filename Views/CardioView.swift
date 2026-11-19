@@ -164,8 +164,8 @@ private struct CardioSetupView: View {
         _targetMinutes = State(initialValue: UserSettingsManager.lastCardioMinutes)
     }
     private let minuteStep: Int = 5
-    private let minimumMinutes: Int = 5
-    private let maximumMinutes: Int = 180
+    private let minimumMinutes: Int = UserSettingsManager.cardioMinutesRange.lowerBound
+    private let maximumMinutes: Int = UserSettingsManager.cardioMinutesRange.upperBound
 
     private let typeColumns: [GridItem] = [
         GridItem(.flexible(), spacing: 8.0),
