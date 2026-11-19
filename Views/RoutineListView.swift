@@ -16,6 +16,12 @@ public struct RoutineListView: View {
     @State private var routinePendingDeletion: Routine? = nil
     @State private var isShowingCardio = false
 
+    /// El entreno libre se ejecuta siempre en modo normal: con Big Picture
+    /// activo se avisa y se ofrece desactivarlo antes de arrancar.
+    @AppStorage(UserSettingsManager.isBigPictureModeEnabledKey)
+    private var isBigPictureModeEnabled: Bool = false
+    @State private var showingFreeWorkoutBigPictureAlert = false
+
     /// Las rutinas temporales de los entrenamientos libres viven en el mismo
     /// contexto, pero nunca se listan ni se editan desde aquí.
     private var visibleRoutines: [Routine] {
@@ -121,6 +127,16 @@ public struct RoutineListView: View {
             } message: {
                 Text("Se eliminará \"\(routinePendingDeletion?.name ?? "")\". Esta acción no se puede deshacer.")
             }
+            .alert("Modo Big Picture activo", isPresented: $showingFreeWorkoutBigPictureAlert) {
+                Button("Cancelar", role: .cancel) {}
+
+                Button("Desactivar y continuar") {
+                    isBigPictureModeEnabled = false
+                    beginFreeWorkout()
+                }
+            } message: {
+                Text("No es posible entrenar libremente con el modo Big Picture activo. ¿Quieres desactivarlo para continuar?")
+            }
         }
     }
 
@@ -200,6 +216,15 @@ public struct RoutineListView: View {
     private func startFreeWorkout() {
         guard !isEditing else { return }
 
+        guard !isBigPictureModeEnabled else {
+            showingFreeWorkoutBigPictureAlert = true
+            return
+        }
+
+        beginFreeWorkout()
+    }
+
+    private func beginFreeWorkout() {
         routineToEdit = nil
         let routine = FreeWorkoutRoutineStore.prepare(modelContext: modelContext)
         try? modelContext.save()

@@ -196,10 +196,19 @@ struct SettingsView: View {
         ) {
             VStack(alignment: .leading, spacing: 6.0) {
                 ForEach(UserSettingsManager.plateOptions, id: \.self) { (plate: Double) in
-                    Toggle(isOn: plateBinding(for: plate)) {
-                        plateLabel(for: plate)
+                    TacticalToggleRow(
+                        code: "PLT",
+                        title: "\(UserSettingsManager.formatted(plate)) KG",
+                        isOn: plateBinding(for: plate)
+                    ) {
+                        Rectangle()
+                            .fill(PlateCalculatorService.color(for: plate))
+                            .frame(width: 10.0, height: 10.0)
+                            .overlay {
+                                Rectangle()
+                                    .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
+                            }
                     }
-                    .tint(EndfieldPalette.accentYellow)
                 }
 
                 Text("Activa solo los discos de los que dispone tu gimnasio.")
@@ -253,20 +262,12 @@ struct SettingsView: View {
 
     private var visualModePanel: some View {
         TacticalPanel(code: "UI.03", title: "Modo visual", contentPadding: 12.0) {
-            VStack(alignment: .leading, spacing: 6.0) {
-                Toggle(isOn: $isBigPictureModeEnabled) {
-                    HStack(spacing: 7.0) {
-                        Image(systemName: "textformat.size")
-                            .font(EndfieldFont.mono(11.0, weight: .bold))
-                            .foregroundStyle(EndfieldPalette.accentYellow)
-
-                        Text("BIG PICTURE")
-                            .font(EndfieldFont.label(10.0))
-                            .tracking(1.0)
-                            .foregroundStyle(EndfieldPalette.textPrimary)
-                    }
-                }
-                .tint(EndfieldPalette.accentYellow)
+            VStack(alignment: .leading, spacing: 8.0) {
+                TacticalToggleRow(
+                    code: "UI",
+                    title: "Big Picture",
+                    isOn: $isBigPictureModeEnabled
+                )
 
                 Text("Aumenta la tipografía y el contraste durante el entrenamiento activo.")
                     .font(EndfieldFont.mono(9.0))
@@ -281,21 +282,11 @@ struct SettingsView: View {
     private var heartRatePanel: some View {
         TacticalPanel(code: "BPM.04", title: "Pulsaciones", contentPadding: 12.0) {
             VStack(alignment: .leading, spacing: 12.0) {
-                Toggle(isOn: $isHeartRateTrackingEnabled) {
-                    HStack(spacing: 7.0) {
-                        Image(systemName: "heart.fill")
-                            .font(EndfieldFont.mono(11.0, weight: .bold))
-                            .foregroundStyle(EndfieldPalette.accentRed)
-
-                        Text("MEDIR PULSACIONES")
-                            .font(EndfieldFont.label(10.0))
-                            .tracking(1.0)
-                            .foregroundStyle(EndfieldPalette.textPrimary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
-                    }
-                }
-                .tint(EndfieldPalette.accentYellow)
+                TacticalToggleRow(
+                    code: "BPM",
+                    title: "Medir pulsaciones",
+                    isOn: $isHeartRateTrackingEnabled
+                )
 
                 Text(isHeartRateTrackingEnabled
                      ? "Muestra los BPM durante el entrenamiento, en la Live Activity y en las estadísticas al terminar."
@@ -507,22 +498,6 @@ struct SettingsView: View {
                     .minimumScaleFactor(0.7)
             }
             .tint(EndfieldPalette.accentYellow)
-        }
-    }
-
-    private func plateLabel(for plate: Double) -> some View {
-        return HStack(spacing: 8.0) {
-            Rectangle()
-                .fill(PlateCalculatorService.color(for: plate))
-                .frame(width: 10.0, height: 10.0)
-                .overlay {
-                    Rectangle()
-                        .stroke(Color.white.opacity(0.35), lineWidth: 0.5)
-                }
-
-            Text("\(UserSettingsManager.formatted(plate)) KG")
-                .font(EndfieldFont.mono(11.0, weight: .bold))
-                .foregroundStyle(EndfieldPalette.textPrimary)
         }
     }
 

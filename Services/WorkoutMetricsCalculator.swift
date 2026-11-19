@@ -24,6 +24,24 @@ struct WorkoutMetrics {
     }
 }
 
+// MARK: - Resultado de métricas de cardio
+
+/// Resumen de una sesión de cardio. No hay series ni peso levantado, así que
+/// solo se publican los valores que se pueden calcular con tiempo y pulsaciones.
+struct CardioMetrics {
+    let duration: TimeInterval
+    let durationFormatted: String
+    let averageBPM: Double
+    let maxBPM: Int
+    let minBPM: Int
+    let edwardsTrainingLoad: Double
+    let trimp: Double
+
+    var hasHeartRateData: Bool {
+        return maxBPM > 0 || averageBPM > 0
+    }
+}
+
 struct ExerciseHeartRateRow: Identifiable {
     let id: UUID
     let exerciseName: String
@@ -81,6 +99,40 @@ enum WorkoutMetricsCalculator {
             trimp: trimpValue,
             recoveryRate: recovery,
             cardiovascularDensity: density
+        )
+    }
+
+    /// Métricas de una sesión de cardio: tiempo, pulsaciones y carga. El
+    /// volumen, la densidad cardiovascular y la recuperación entre series no
+    /// se calculan porque no hay series ni kg.
+    static func calculateCardio(duration: TimeInterval, samples: [BPMSample]) -> CardioMetrics {
+        let sorted: [BPMSample] = samples.sorted { (lhs: BPMSample, rhs: BPMSample) -> Bool in
+            return lhs.timestamp < rhs.timestamp
+        }
+        let hrMax: Double = resolvedHRMax()
+        let hrRest: Double = resolvedHRRest(hrMax: hrMax)
+        let averageBPM: Double = averageValue(samples: sorted)
+        let edwards: Double = edwardsTrainingLoad(samples: sorted, hrMax: hrMax)
+        let trimpValue: Double = trimpLoad(
+            duration: duration,
+            averageBPM: averageBPM,
+            hrMax: hrMax,
+            hrRest: hrRest
+        )
+        let values: [Int] = sorted.map { (sample: BPMSample) -> Int in
+            return Int(sample.bpm.rounded())
+        }.filter { (value: Int) -> Bool in
+            return value > 0
+        }
+
+        return CardioMetrics(
+            duration: duration,
+            durationFormatted: formatDuration(duration),
+            averageBPM: averageBPM,
+            maxBPM: values.max() ?? 0,
+            minBPM: values.min() ?? 0,
+            edwardsTrainingLoad: edwards,
+            trimp: trimpValue
         )
     }
 

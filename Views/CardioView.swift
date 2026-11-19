@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import UIKit
+import Charts
 
 /// Pantalla de cardio: primero se elige modalidad y tiempo objetivo y, una vez
 /// arranca, la misma pantalla muestra la cuenta atrás con pausa, ajuste de
@@ -289,6 +290,9 @@ private struct CardioSessionView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage(UserSettingsManager.isHeartRateTrackingEnabledKey)
+    private var isHeartRateTrackingEnabled: Bool = true
+
     @State private var showingAbortConfirmation = false
     @State private var didPersistSession = false
 
@@ -304,8 +308,12 @@ private struct CardioSessionView: View {
                     sessionPanel
 
                     if viewModel.phase == .finished {
+                        cardioReport
                         finishedActions
                     } else {
+                        if isHeartRateTrackingEnabled {
+                            bpmChartPanel
+                        }
                         runningActions
                     }
                 }
@@ -322,6 +330,7 @@ private struct CardioSessionView: View {
         .alert("¿Abortar sesión de cardio?", isPresented: $showingAbortConfirmation) {
             Button("Descartar", role: .destructive) {
                 didPersistSession = true
+                viewModel.cancelSession()
                 dismiss()
             }
             Button("Continuar", role: .cancel) {}
@@ -525,6 +534,206 @@ private struct CardioSessionView: View {
         }
     }
 
+    // MARK: - Gráfica de pulsaciones (últimos 3 minutos)
+
+    private var bpmChartPanel: some View {
+        TacticalPanel(code: "HUD.BPM", title: "Últimos 3 min", contentPadding: 12.0) {
+            TimelineView(.periodic(from: .now, by: 1.0)) { timeline in
+                chartContent(at: timeline.date)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func chartContent(at date: Date) -> some View {
+        let samples: [BPMSample] = viewModel.bpmPoints(within: 180.0, relativeTo: date)
+
+        if samples.isEmpty {
+            Text("ESPERANDO TELEMETRÍA CARDÍACA...")
+                .font(EndfieldFont.mono(10.0))
+                .foregroundStyle(EndfieldPalette.textSecondary.opacity(0.7))
+                .frame(height: 100.0)
+                .frame(maxWidth: .infinity)
+        } else {
+            Chart(samples) { (sample: BPMSample) in
+                LineMark(
+                    x: .value("Tiempo", sample.timestamp),
+                    y: .value("BPM", sample.bpm)
+                )
+                .foregroundStyle(EndfieldPalette.accentRed)
+                .lineStyle(StrokeStyle(lineWidth: 1.5))
+                .interpolationMethod(.catmullRom)
+
+                PointMark(
+                    x: .value("Tiempo", sample.timestamp),
+                    y: .value("BPM", sample.bpm)
+                )
+                .foregroundStyle(EndfieldPalette.accentRed)
+            }
+            .chartXScale(domain: date.addingTimeInterval(-180.0)...date)
+            .chartYScale(domain: 40...200)
+            .chartXAxis(.hidden)
+            .chartYAxis {
+                AxisMarks(values: .stride(by: 40.0)) { _ in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2.0, 2.0]))
+                        .foregroundStyle(Color.white.opacity(0.10))
+                    AxisValueLabel()
+                        .font(EndfieldFont.label(8.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                }
+            }
+            .frame(height: 100.0)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: - Informe de sesión
+
+    private var cardioReport: some View {
+        let report: CardioMetrics = viewModel.report()
+
+        return TacticalPanel(
+            code: "RPT.01",
+            title: "Informe de sesión",
+            accentBorder: true,
+            contentPadding: 12.0
+        ) {
+            VStack(alignment: .leading, spacing: 8.0) {
+                HStack(spacing: 8.0) {
+                    reportBox(
+                        code: "T+",
+                        label: "TIEMPO",
+                        value: report.durationFormatted,
+                        tint: EndfieldPalette.textPrimary
+                    )
+
+                    if report.hasHeartRateData {
+                        reportBox(
+                            code: "MEDIA",
+                            label: "BPM",
+                            value: "\(Int(report.averageBPM.rounded()))",
+                            tint: EndfieldPalette.accentRed
+                        )
+
+                        reportBox(
+                            code: "PICO",
+                            label: "BPM MÁX",
+                            value: "\(report.maxBPM)",
+                            tint: EndfieldPalette.accentRed
+                        )
+                    }
+                }
+
+                if report.hasHeartRateData {
+                    reportRow(
+                        code: "MIN",
+                        title: "BPM mínimos",
+                        value: "\(report.minBPM)",
+                        unit: "BPM",
+                        tint: EndfieldPalette.accentCyan
+                    )
+
+                    reportRow(
+                        code: "EDW",
+                        title: "Carga de Edwards",
+                        value: String(format: "%.0f", report.edwardsTrainingLoad),
+                        unit: "UA",
+                        tint: EndfieldPalette.accentYellow
+                    )
+
+                    reportRow(
+                        code: "TRIMP",
+                        title: "TRIMP de Banister",
+                        value: String(format: "%.1f", report.trimp),
+                        unit: "TRIMP",
+                        tint: EndfieldPalette.accentCyan
+                    )
+                } else {
+                    Text("SIN TELEMETRÍA CARDÍACA: SOLO SE REGISTRA EL TIEMPO DE LA SESIÓN.")
+                        .font(EndfieldFont.label(7.5, weight: .regular))
+                        .tracking(0.5)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    private func reportBox(code: String, label: String, value: String, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4.0) {
+            Text(code)
+                .font(EndfieldFont.label(8.0))
+                .tracking(1.0)
+                .foregroundStyle(tint)
+
+            Text(value)
+                .font(EndfieldFont.mono(18.0, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+
+            Text(label)
+                .font(EndfieldFont.label(7.0))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(9.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+    }
+
+    private func reportRow(
+        code: String,
+        title: String,
+        value: String,
+        unit: String,
+        tint: Color
+    ) -> some View {
+        HStack(spacing: 8.0) {
+            Text(code)
+                .font(EndfieldFont.label(7.5))
+                .tracking(1.0)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .frame(width: 38.0, alignment: .leading)
+
+            Text(title)
+                .font(EndfieldFont.mono(10.0, weight: .semibold))
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Spacer(minLength: 6.0)
+
+            Text(value)
+                .font(EndfieldFont.mono(15.0, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .fixedSize()
+
+            Text(unit)
+                .font(EndfieldFont.label(7.5))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .fixedSize()
+        }
+        .padding(.horizontal, 9.0)
+        .padding(.vertical, 7.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+        }
+    }
+
     private func togglePause() {
         if viewModel.phase == .paused {
             viewModel.resume()
@@ -548,6 +757,10 @@ private struct CardioSessionView: View {
             totalVolumeKg: 0.0,
             routineName: viewModel.type.sessionName
         )
+        // La telemetría de la sesión queda guardada con ella para que el
+        // historial pueda analizarla igual que las sesiones de fuerza.
+        session.bpmSamples = viewModel.bpmHistory
+
         modelContext.insert(session)
         try? modelContext.save()
         WidgetStreakStore.refresh(modelContext: modelContext)

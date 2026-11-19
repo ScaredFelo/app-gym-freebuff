@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 // MARK: - 1. Forma angular
 
@@ -884,5 +887,103 @@ public struct TacticalStepperRow: View {
 
     private func increase() {
         value = min(range.upperBound, value + step)
+    }
+}
+
+// MARK: - 14. Fila de interruptor técnico
+
+/// Interruptor de consola: código y título a la izquierda, caja `ON/OFF` a la
+/// derecha. Sustituye al `Toggle` del sistema manteniendo la misma estética
+/// que el interruptor de straps de la edición de ejercicio.
+public struct TacticalToggleRow<Accessory: View>: View {
+    private let code: String
+    private let title: String
+    @Binding private var isOn: Bool
+    private let tint: Color
+    private let accessory: Accessory
+
+    public init(
+        code: String,
+        title: String,
+        isOn: Binding<Bool>,
+        tint: Color = EndfieldPalette.accentYellow,
+        @ViewBuilder accessory: () -> Accessory
+    ) {
+        self.code = code
+        self.title = title
+        self._isOn = isOn
+        self.tint = tint
+        self.accessory = accessory()
+    }
+
+    public var body: some View {
+        Button {
+            #if canImport(UIKit)
+            UISelectionFeedbackGenerator().selectionChanged()
+            #endif
+            isOn.toggle()
+        } label: {
+            HStack(spacing: 8.0) {
+                VStack(alignment: .leading, spacing: 2.0) {
+                    Text(code)
+                        .font(EndfieldFont.label(8.0))
+                        .tracking(1.2)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+
+                    Text(title)
+                        .font(EndfieldFont.mono(11.0, weight: .semibold))
+                        .foregroundStyle(EndfieldPalette.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+
+                accessory
+
+                Spacer(minLength: 6.0)
+
+                Text(isOn ? "ON" : "OFF")
+                    .font(EndfieldFont.label(9.0))
+                    .tracking(1.0)
+                    .foregroundStyle(isOn ? EndfieldPalette.bgPrimary : EndfieldPalette.textSecondary)
+                    .padding(.horizontal, 10.0)
+                    .padding(.vertical, 5.0)
+                    .background(
+                        ChamferedRectangle(cut: 3.0)
+                            .fill(isOn ? tint : Color.clear)
+                    )
+                    .overlay {
+                        ChamferedRectangle(cut: 3.0)
+                            .stroke(isOn ? tint : EndfieldPalette.borderSubtle, lineWidth: 1.0)
+                    }
+                    .fixedSize()
+            }
+            .padding(.horizontal, 9.0)
+            .padding(.vertical, 7.0)
+            .background(
+                ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                    .fill(EndfieldPalette.bgElevated)
+            )
+            .overlay {
+                ChamferedRectangle(cut: EndfieldMetrics.tightCut * 0.8)
+                    .stroke(EndfieldPalette.borderSubtle, lineWidth: 1.0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(isOn ? "Activado" : "Desactivado")
+        .accessibilityAddTraits(.isButton)
+    }
+}
+
+public extension TacticalToggleRow where Accessory == EmptyView {
+    init(
+        code: String,
+        title: String,
+        isOn: Binding<Bool>,
+        tint: Color = EndfieldPalette.accentYellow
+    ) {
+        self.init(code: code, title: title, isOn: isOn, tint: tint) { EmptyView() }
     }
 }

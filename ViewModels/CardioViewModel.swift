@@ -7,6 +7,9 @@ import Combine
 /// el tiempo sigue siendo correcto aunque la app quede en segundo plano o el
 /// móvil se bloquee. La cuenta atrás se cierra sola al alcanzar el objetivo y
 /// el instante de finalización queda fijado en `finishedAt`.
+///
+/// Mientras la sesión corre también muestrea el pulsómetro para dibujar la
+/// gráfica de BPM de los últimos 3 minutos y para construir el informe final.
 @MainActor
 public final class CardioViewModel: ObservableObject {
     public enum Phase: Equatable {
@@ -23,9 +26,19 @@ public final class CardioViewModel: ObservableObject {
     @Published public private(set) var finishedAt: Date?
     @Published public private(set) var reachedTarget = false
 
+    /// Muestras de pulso de toda la sesión. Deliberadamente **sin publicar**:
+    /// la gráfica se evalúa dentro de un `TimelineView` y no hace falta
+    /// invalidar la vista en cada lectura del sensor.
+    public private(set) var bpmHistory: [BPMSample] = []
+
     private var accumulatedBeforeSegment: TimeInterval = 0
     private var segmentStart: Date?
     private var tickTask: Task<Void, Never>?
+
+    /// Cadencia de muestreo de la telemetría: suficiente para 3 minutos de
+    /// gráfica sin acumular lecturas redundantes del sensor.
+    private let bpmSampleInterval: TimeInterval = 2.0
+    private var lastBPMSampleDate: Date = .distantPast
 
     public init(type: CardioType, targetMinutes: Int, startedAt: Date = Date()) {
         self.type = type
@@ -57,12 +70,17 @@ public final class CardioViewModel: ObservableObject {
     public func start() {
         guard phase == .running, tickTask == nil else { return }
 
+        startHeartRateSensing()
+
         tickTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 guard let self, !Task.isCancelled, self.phase == .running else { return }
 
-                if self.remaining(at: Date()) <= 0 {
+                let now: Date = Date()
+                self.recordHeartRateSample(at: now)
+
+                if self.remaining(at: now) <= 0 {
                     self.terminate(reachedTarget: true)
                     return
                 }
@@ -101,6 +119,12 @@ public final class CardioViewModel: ObservableObject {
         terminate(reachedTarget: false)
     }
 
+    /// Abandona la sesión sin guardarla en el historial.
+    public func cancelSession() {
+        stopTicking()
+        stopHeartRateSensing()
+    }
+
     private func terminate(reachedTarget: Bool) {
         accumulatedBeforeSegment = elapsed(at: Date())
         segmentStart = nil
@@ -108,10 +132,58 @@ public final class CardioViewModel: ObservableObject {
         finishedAt = Date()
         self.reachedTarget = reachedTarget
         stopTicking()
+        stopHeartRateSensing()
     }
 
     private func stopTicking() {
         tickTask?.cancel()
         tickTask = nil
+    }
+
+    // MARK: - Telemetría cardíaca
+
+    /// Muestras dentro de la ventana indicada respecto a `date` (3 minutos por
+    /// defecto), que es lo que dibuja la gráfica en vivo.
+    public func bpmPoints(
+        within window: TimeInterval = 180.0,
+        relativeTo date: Date = Date()
+    ) -> [BPMSample] {
+        let cutoff: Date = date.addingTimeInterval(-window)
+        return bpmHistory.filter { (sample: BPMSample) -> Bool in
+            return sample.timestamp >= cutoff && sample.timestamp <= date
+        }
+    }
+
+    /// Resumen de la sesión terminada. Solo contiene datos calculables en
+    /// cardio: tiempo, pulsaciones y carga cardiovascular (sin volumen ni
+    /// densidad, porque no se levanta peso).
+    func report() -> CardioMetrics {
+        let end: Date = finishedAt ?? Date()
+        return WorkoutMetricsCalculator.calculateCardio(
+            duration: elapsed(at: end),
+            samples: bpmHistory
+        )
+    }
+
+    private func startHeartRateSensing() {
+        guard UserSettingsManager.isHeartRateTrackingEnabled else { return }
+
+        BPMManager.shared.applySettings()
+        BPMManager.shared.startScanning()
+    }
+
+    private func stopHeartRateSensing() {
+        BPMManager.shared.stopScanning()
+    }
+
+    private func recordHeartRateSample(at date: Date) {
+        guard UserSettingsManager.isHeartRateTrackingEnabled else { return }
+        guard date.timeIntervalSince(lastBPMSampleDate) >= bpmSampleInterval else { return }
+
+        let bpm: Int = BPMManager.shared.currentBPM
+        guard bpm > 0 else { return }
+
+        lastBPMSampleDate = date
+        bpmHistory.append(BPMSample(timestamp: date, bpm: Double(bpm)))
     }
 }
