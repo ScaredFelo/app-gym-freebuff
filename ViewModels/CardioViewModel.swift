@@ -34,6 +34,9 @@ public final class CardioViewModel: ObservableObject {
     private var accumulatedBeforeSegment: TimeInterval = 0
     private var segmentStart: Date?
     private var tickTask: Task<Void, Never>?
+    /// Muestreo del sensor independiente de la cuenta atrás: sigue grabando
+    /// durante las pausas para que la gráfica y el informe no tengan huecos.
+    private var bpmTask: Task<Void, Never>?
 
     /// Cadencia de muestreo de la telemetría: suficiente para 3 minutos de
     /// gráfica sin acumular lecturas redundantes del sensor.
@@ -91,23 +94,30 @@ public final class CardioViewModel: ObservableObject {
     public func start() {
         guard phase == .running, tickTask == nil else { return }
 
-        startHeartRateSensing()
-        persistSnapshot()
+        resumeMonitoring()
 
         tickTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 guard let self, !Task.isCancelled, self.phase == .running else { return }
 
-                let now: Date = Date()
-                self.recordHeartRateSample(at: now)
-
-                if self.remaining(at: now) <= 0 {
+                if self.remaining(at: Date()) <= 0 {
                     self.terminate(reachedTarget: true)
                     return
                 }
             }
         }
+    }
+
+    /// Reanuda sensor, muestreo de BPM y Live Activity sin arrancar la cuenta
+    /// atrás. También se usa al recuperar una sesión que quedó en pausa.
+    func resumeMonitoring() {
+        guard phase != .finished else { return }
+
+        startHeartRateSensing()
+        startBPMRecording()
+        startCardioActivity()
+        persistSnapshot()
     }
 
     public func pause() {
@@ -117,6 +127,7 @@ public final class CardioViewModel: ObservableObject {
         segmentStart = nil
         phase = .paused
         stopTicking()
+        updateCardioActivity()
         persistSnapshot()
     }
 
@@ -135,6 +146,7 @@ public final class CardioViewModel: ObservableObject {
 
         let updated: TimeInterval = targetDuration + TimeInterval(minutes) * 60.0
         targetDuration = min(180.0 * 60.0, max(60.0, updated))
+        updateCardioActivity()
         persistSnapshot()
     }
 
@@ -147,7 +159,9 @@ public final class CardioViewModel: ObservableObject {
     /// Abandona la sesión sin guardarla en el historial.
     public func cancelSession() {
         stopTicking()
+        stopBPMRecording()
         stopHeartRateSensing()
+        CardioLiveActivityManager.shared.end()
         CardioSessionStore.clear()
     }
 
@@ -158,7 +172,9 @@ public final class CardioViewModel: ObservableObject {
         finishedAt = Date()
         self.reachedTarget = reachedTarget
         stopTicking()
+        stopBPMRecording()
         stopHeartRateSensing()
+        CardioLiveActivityManager.shared.end()
         CardioSessionStore.clear()
     }
 
@@ -212,11 +228,62 @@ public final class CardioViewModel: ObservableObject {
 
         lastBPMSampleDate = date
         bpmHistory.append(BPMSample(timestamp: date, bpm: Double(bpm)))
+        CardioLiveActivityManager.shared.updateBPM(bpm)
 
         if date.timeIntervalSince(lastPersistDate) >= 10.0 {
             lastPersistDate = date
             persistSnapshot()
         }
+    }
+
+    // MARK: - Muestreo continuo
+
+    private func startBPMRecording() {
+        guard bpmTask == nil else { return }
+
+        bpmTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard let self, !Task.isCancelled, self.phase != .finished else { return }
+                self.recordHeartRateSample(at: Date())
+            }
+        }
+    }
+
+    private func stopBPMRecording() {
+        bpmTask?.cancel()
+        bpmTask = nil
+    }
+
+    // MARK: - Live Activity
+
+    private func cardioActivitySnapshot() -> CardioLiveActivityManager.Snapshot {
+        let now: Date = Date()
+        let remainingTime: TimeInterval = remaining(at: now)
+
+        return CardioLiveActivityManager.Snapshot(
+            typeName: type.title,
+            sessionName: type.sessionName,
+            startDate: startedAt,
+            endDate: now.addingTimeInterval(remainingTime),
+            isPaused: phase == .paused,
+            pausedRemaining: remainingTime,
+            progress: progress(at: now)
+        )
+    }
+
+    private func startCardioActivity() {
+        CardioLiveActivityManager.shared.start(
+            snapshot: cardioActivitySnapshot(),
+            bpm: BPMManager.shared.currentBPM
+        )
+    }
+
+    private func updateCardioActivity() {
+        CardioLiveActivityManager.shared.update(
+            snapshot: cardioActivitySnapshot(),
+            bpm: BPMManager.shared.currentBPM
+        )
     }
 
     // MARK: - Persistencia
@@ -232,7 +299,9 @@ public final class CardioViewModel: ObservableObject {
                 accumulatedBeforeSegment: accumulatedBeforeSegment,
                 segmentStart: segmentStart,
                 isPaused: phase == .paused,
-                bpmSamples: bpmHistory
+                bpmSamples: bpmHistory,
+                savedAt: Date(),
+                elapsedAtSave: elapsed(at: Date())
             )
         )
     }
@@ -249,6 +318,14 @@ struct CardioSessionSnapshot: Codable {
     var segmentStart: Date?
     var isPaused: Bool
     var bpmSamples: [BPMSample]
+    /// Última escritura del snapshot; sirve para descartar sesiones huérfanas.
+    var savedAt: Date?
+    /// Tiempo efectivo acumulado en esa última escritura.
+    var elapsedAtSave: TimeInterval?
+
+    /// Una sesión sin actualizaciones más allá de este tiempo se considera
+    /// abandonada: no se reanuda sola, se ofrece guardarla o descartarla.
+    static let abandonmentThreshold: TimeInterval = 6 * 3600
 }
 
 /// Guarda la sesión de cardio activa en `UserDefaults`. Es deliberadamente

@@ -62,3 +62,51 @@ public struct WorkoutActivityAttributes: ActivityAttributes {
         self.workoutName = workoutName
     }
 }
+
+// MARK: - Live Activity de cardio
+
+/// Atributos de la Live Activity de una sesión de cardio: modalidad y estado
+/// del cronómetro. La cuenta atrás se dibuja con el temporizador nativo del
+/// sistema, así sigue avanzando con la pantalla bloqueada.
+public struct CardioActivityAttributes: ActivityAttributes {
+    public struct ContentState: Codable, Hashable {
+        public var typeName: String
+        public var startedAt: Date
+        public var endDate: Date
+        public var currentBPM: Int
+        public var isPaused: Bool
+        /// Tiempo restante congelado mientras la sesión está en pausa.
+        public var pausedRemaining: TimeInterval
+        /// Fracción completada; se usa para la barra estática en pausa.
+        public var progress: Double
+
+        public init(
+            typeName: String,
+            startedAt: Date,
+            endDate: Date,
+            currentBPM: Int,
+            isPaused: Bool,
+            pausedRemaining: TimeInterval,
+            progress: Double
+        ) {
+            self.typeName = typeName
+            self.startedAt = startedAt
+            self.endDate = endDate
+            self.currentBPM = currentBPM
+            self.isPaused = isPaused
+            self.pausedRemaining = pausedRemaining
+            self.progress = progress
+        }
+
+        /// Rango seguro para `Text(timerInterval:)` y `ProgressView(timerInterval:)`.
+        public var timerRange: ClosedRange<Date> {
+            return endDate > startedAt ? startedAt...endDate : startedAt...startedAt
+        }
+    }
+
+    public var sessionName: String
+
+    public init(sessionName: String) {
+        self.sessionName = sessionName
+    }
+}

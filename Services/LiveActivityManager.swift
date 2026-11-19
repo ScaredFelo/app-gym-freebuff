@@ -338,3 +338,213 @@ final class LiveActivityManager: ObservableObject {
         )
     }
 }
+
+// MARK: - Live Activity de cardio
+
+/// Mantiene la Live Activity de cardio: cuenta atrás nativa, BPM y estado de
+/// pausa. Separada de la de fuerza para que ambas nunca compartan estado.
+final class CardioLiveActivityManager: ObservableObject {
+    static let shared = CardioLiveActivityManager()
+
+    struct Snapshot {
+        var typeName: String
+        var sessionName: String
+        var startDate: Date
+        var endDate: Date
+        var isPaused: Bool
+        var pausedRemaining: TimeInterval
+        var progress: Double
+
+        static var empty: Snapshot {
+            Snapshot(
+                typeName: "CARDIO",
+                sessionName: "CARDIO",
+                startDate: Date(),
+                endDate: Date(),
+                isPaused: false,
+                pausedRemaining: 0,
+                progress: 0
+            )
+        }
+    }
+
+    private var currentActivity: Activity<CardioActivityAttributes>?
+    private var lastState: CardioActivityAttributes.ContentState?
+    private var snapshot: Snapshot = .empty
+    private var bpm: Int = 0
+    private var pendingStartTask: Task<Void, Never>?
+    private var lastBPMUpdateDate: Date = .distantPast
+    private let bpmUpdateInterval: TimeInterval = 1.5
+    private let staleMargin: TimeInterval = 14_400
+
+    private init() {}
+
+    // MARK: - Inicio
+
+    func start(snapshot: Snapshot, bpm: Int) {
+        self.snapshot = snapshot
+        self.bpm = UserSettingsManager.isHeartRateTrackingEnabled ? max(0, bpm) : 0
+
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+            currentActivity = nil
+            lastState = nil
+            return
+        }
+
+        if let activity = currentActivity, isUsable(activity) {
+            push(state: makeState(), force: true)
+            return
+        }
+
+        // La petición ya está en vuelo: el estado se leerá al crearla.
+        guard pendingStartTask == nil else { return }
+
+        let existing: [Activity<CardioActivityAttributes>] = Activity<CardioActivityAttributes>.activities
+        if let activity = existing.first(where: { isUsable($0) }) {
+            currentActivity = activity
+            lastState = nil
+            push(state: makeState(), force: true)
+
+            let duplicates: [Activity<CardioActivityAttributes>] = existing.filter { (item: Activity<CardioActivityAttributes>) -> Bool in
+                return item.id != activity.id
+            }
+            if !duplicates.isEmpty {
+                Task {
+                    for item in duplicates {
+                        await item.end(nil, dismissalPolicy: .immediate)
+                    }
+                }
+            }
+            return
+        }
+
+        requestActivity()
+    }
+
+    private func requestActivity() {
+        let requested: Snapshot = snapshot
+        let attributes = CardioActivityAttributes(sessionName: requested.sessionName)
+
+        pendingStartTask?.cancel()
+        pendingStartTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await Task.yield()
+            defer { self.pendingStartTask = nil }
+            guard !Task.isCancelled, self.currentActivity == nil else { return }
+
+            do {
+                let state = self.makeState()
+                let activity = try Activity<CardioActivityAttributes>.request(
+                    attributes: attributes,
+                    content: ActivityContent(state: state, staleDate: Date().addingTimeInterval(self.staleMargin)),
+                    pushType: nil
+                )
+                guard !Task.isCancelled else {
+                    await activity.end(nil, dismissalPolicy: .immediate)
+                    return
+                }
+                self.currentActivity = activity
+                self.lastState = state
+                print("[CardioLiveActivity] Iniciada con éxito")
+            } catch {
+                self.currentActivity = nil
+                self.lastState = nil
+                print("[CardioLiveActivity] ERROR al iniciar: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Actualizaciones
+
+    func update(snapshot: Snapshot, bpm: Int? = nil) {
+        self.snapshot = snapshot
+        if let bpm {
+            self.bpm = UserSettingsManager.isHeartRateTrackingEnabled ? max(0, bpm) : 0
+        }
+
+        guard let activity = currentActivity, isUsable(activity) else { return }
+        push(state: makeState(), force: false)
+    }
+
+    /// Actualización de pulso con throttling para no agotar el presupuesto de
+    /// ActivityKit (el muestreo del cardio llega cada 2 s).
+    func updateBPM(_ bpm: Int, now: Date = Date()) {
+        guard UserSettingsManager.isHeartRateTrackingEnabled else { return }
+
+        let value: Int = max(0, bpm)
+        guard value != self.bpm else { return }
+        self.bpm = value
+
+        guard let activity = currentActivity, isUsable(activity) else { return }
+        guard now.timeIntervalSince(lastBPMUpdateDate) >= bpmUpdateInterval else { return }
+
+        let state: CardioActivityAttributes.ContentState = makeState()
+        guard state != lastState else { return }
+
+        lastBPMUpdateDate = now
+        lastState = state
+
+        let content = ActivityContent(state: state, staleDate: now.addingTimeInterval(staleMargin))
+        Task {
+            await activity.update(content)
+        }
+    }
+
+    private func push(state: CardioActivityAttributes.ContentState, force: Bool) {
+        guard let activity = currentActivity, isUsable(activity) else {
+            currentActivity = nil
+            lastState = nil
+            return
+        }
+
+        if !force, state == lastState { return }
+        lastState = state
+
+        let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(staleMargin))
+        Task {
+            await activity.update(content)
+        }
+    }
+
+    // MARK: - Cierre
+
+    func end() {
+        pendingStartTask?.cancel()
+        pendingStartTask = nil
+        currentActivity = nil
+        lastState = nil
+        snapshot = .empty
+        bpm = 0
+        lastBPMUpdateDate = .distantPast
+
+        let activities: [Activity<CardioActivityAttributes>] = Activity<CardioActivityAttributes>.activities
+        Task {
+            for activity in activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
+    }
+
+    private func isUsable(_ activity: Activity<CardioActivityAttributes>) -> Bool {
+        switch activity.activityState {
+        case .active, .stale:
+            return true
+        case .ended, .dismissed:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+
+    private func makeState() -> CardioActivityAttributes.ContentState {
+        return CardioActivityAttributes.ContentState(
+            typeName: snapshot.typeName,
+            startedAt: snapshot.startDate,
+            endDate: snapshot.endDate,
+            currentBPM: UserSettingsManager.isHeartRateTrackingEnabled ? max(0, bpm) : 0,
+            isPaused: snapshot.isPaused,
+            pausedRemaining: max(0, snapshot.pausedRemaining),
+            progress: min(max(snapshot.progress, 0), 1)
+        )
+    }
+}

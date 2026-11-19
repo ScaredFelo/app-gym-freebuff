@@ -7,6 +7,7 @@ import WidgetKit
 struct AppGymWidgetBundle: WidgetBundle {
     var body: some Widget {
         WorkoutLiveActivity()
+        CardioLiveActivity()
         WorkoutStreakWidget()
     }
 }
@@ -487,6 +488,287 @@ struct LockScreenLiveActivityView: View {
 
                 RestDialView(state: state, width: 118.0)
             }
+        }
+        .padding(.horizontal, 14.0)
+        .padding(.vertical, 11.0)
+    }
+}
+// MARK: - Live Activity de cardio
+
+struct CardioLiveActivity: Widget {
+    var body: some WidgetConfiguration {
+        ActivityConfiguration(for: CardioActivityAttributes.self) { context in
+            CardioLockScreenView(
+                state: context.state,
+                sessionName: context.attributes.sessionName
+            )
+            .activityBackgroundTint(EndfieldPalette.bgPrimary)
+            .activitySystemActionForegroundColor(EndfieldPalette.accentYellow)
+        } dynamicIsland: { context in
+            DynamicIsland {
+                DynamicIslandExpandedRegion(.bottom) {
+                    CardioExpandedView(state: context.state)
+                }
+            } compactLeading: {
+                CardioCompactTimerView(state: context.state)
+            } compactTrailing: {
+                CompactBPMView(bpm: context.state.currentBPM)
+            } minimal: {
+                CardioMinimalView(state: context.state)
+            }
+            .keylineTint(EndfieldPalette.accentCyan)
+        }
+    }
+}
+
+// MARK: - Formato de la cuenta atrás
+
+private enum CardioActivityFormat {
+    static func clock(_ seconds: TimeInterval) -> String {
+        let total: Int = max(0, Int(seconds.rounded()))
+        let hours: Int = total / 3600
+        let minutes: Int = (total % 3600) / 60
+        let secs: Int = total % 60
+
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%02d:%02d", minutes, secs)
+    }
+}
+
+// MARK: - Cuenta atrás y barra
+
+struct CardioTimerTextView: View {
+    let state: CardioActivityAttributes.ContentState
+    let font: Font
+    let tint: Color
+
+    var body: some View {
+        Group {
+            if state.isPaused {
+                Text(CardioActivityFormat.clock(state.pausedRemaining))
+            } else {
+                Text(timerInterval: state.timerRange, countsDown: true, showsHours: true)
+            }
+        }
+        .font(font)
+        .monospacedDigit()
+        .foregroundStyle(tint)
+        .lineLimit(1)
+        .minimumScaleFactor(0.6)
+    }
+}
+
+struct CardioTimerBarView: View {
+    let state: CardioActivityAttributes.ContentState
+    let height: CGFloat
+    let tint: Color
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            Rectangle()
+                .fill(EndfieldPalette.bgElevated)
+                .frame(height: height)
+
+            if state.isPaused {
+                GeometryReader { proxy in
+                    Rectangle()
+                        .fill(tint.opacity(0.55))
+                        .frame(
+                            width: CGFloat(max(0.0, min(1.0, state.progress))) * proxy.size.width,
+                            height: height
+                        )
+                }
+                .frame(height: height)
+            } else {
+                ProgressView(
+                    timerInterval: state.timerRange,
+                    countsDown: true,
+                    label: { EmptyView() },
+                    currentValueLabel: { EmptyView() }
+                )
+                .progressViewStyle(.linear)
+                .tint(tint)
+                .frame(height: height)
+                .clipped()
+            }
+        }
+        .frame(height: height)
+    }
+}
+// MARK: - Estado 1 · Maximizada
+
+struct CardioExpandedView: View {
+    let state: CardioActivityAttributes.ContentState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6.0) {
+            HStack(spacing: 6.0) {
+                WidgetTag(text: "CD", tint: EndfieldPalette.accentCyan)
+
+                Text(state.typeName.uppercased())
+                    .font(EndfieldFont.mono(14.0, weight: .heavy))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer(minLength: 4.0)
+
+                Text(state.isPaused ? "PAUSA" : "LIVE")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(state.isPaused ? EndfieldPalette.accentYellow : EndfieldPalette.accentCyan)
+            }
+
+            Rectangle()
+                .fill(EndfieldPalette.accentCyan.opacity(0.45))
+                .frame(height: 1.0)
+
+            HStack(alignment: .bottom, spacing: 10.0) {
+                VStack(alignment: .leading, spacing: 3.0) {
+                    Text(state.isPaused ? "RESTANTE" : "TIEMPO")
+                        .font(EndfieldFont.label(7.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+
+                    CardioTimerTextView(
+                        state: state,
+                        font: EndfieldFont.mono(19.0, weight: .heavy),
+                        tint: EndfieldPalette.accentYellow
+                    )
+                }
+
+                Spacer(minLength: 4.0)
+
+                HStack(spacing: 4.0) {
+                    Rectangle()
+                        .fill(EndfieldPalette.accentRed)
+                        .frame(width: 4.0, height: 4.0)
+
+                    Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
+                        .font(EndfieldFont.label(9.0))
+                        .monospacedDigit()
+                        .foregroundStyle(EndfieldPalette.accentRed)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+            }
+
+            CardioTimerBarView(state: state, height: 3.0, tint: EndfieldPalette.accentYellow)
+        }
+    }
+}
+
+// MARK: - Estado 2 · Compacta
+
+struct CardioCompactTimerView: View {
+    let state: CardioActivityAttributes.ContentState
+
+    var body: some View {
+        HStack(spacing: 3.0) {
+            Rectangle()
+                .fill(EndfieldPalette.accentCyan)
+                .frame(width: 2.0, height: 13.0)
+
+            CardioTimerTextView(
+                state: state,
+                font: EndfieldFont.mono(12.0, weight: .heavy),
+                tint: EndfieldPalette.accentYellow
+            )
+            .frame(minWidth: 34.0, maxWidth: 52.0, alignment: .leading)
+        }
+        .padding(.leading, 1.0)
+    }
+}
+
+// MARK: - Estado 3 · Minimizada
+
+struct CardioMinimalView: View {
+    let state: CardioActivityAttributes.ContentState
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 3.0) {
+            Text(LiveActivityFormat.bpm(state.currentBPM))
+                .font(EndfieldFont.mono(12.0, weight: .heavy))
+                .monospacedDigit()
+                .foregroundStyle(EndfieldPalette.accentRed)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            CardioTimerBarView(state: state, height: 2.0, tint: EndfieldPalette.accentYellow)
+                .frame(width: 18.0)
+        }
+        .frame(width: 22.0)
+    }
+}
+// MARK: - Pantalla de bloqueo
+
+struct CardioLockScreenView: View {
+    let state: CardioActivityAttributes.ContentState
+    let sessionName: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7.0) {
+            HStack(spacing: 6.0) {
+                WidgetTag(text: "CD", tint: EndfieldPalette.accentCyan)
+
+                Text(state.typeName.uppercased())
+                    .font(EndfieldFont.mono(17.0, weight: .heavy))
+                    .foregroundStyle(EndfieldPalette.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+
+                Spacer(minLength: 6.0)
+
+                Text(state.isPaused ? "PAUSA" : "LIVE")
+                    .font(EndfieldFont.label(8.0))
+                    .tracking(1.0)
+                    .foregroundStyle(state.isPaused ? EndfieldPalette.accentYellow : EndfieldPalette.accentCyan)
+            }
+
+            Rectangle()
+                .fill(EndfieldPalette.accentCyan.opacity(0.45))
+                .frame(height: 1.0)
+
+            HStack(alignment: .bottom, spacing: 12.0) {
+                VStack(alignment: .leading, spacing: 3.0) {
+                    Text(state.isPaused ? "RESTANTE" : "TIEMPO")
+                        .font(EndfieldFont.label(7.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+
+                    CardioTimerTextView(
+                        state: state,
+                        font: EndfieldFont.mono(26.0, weight: .heavy),
+                        tint: EndfieldPalette.accentYellow
+                    )
+                }
+
+                Spacer(minLength: 6.0)
+
+                VStack(alignment: .trailing, spacing: 3.0) {
+                    Text("PULSO")
+                        .font(EndfieldFont.label(7.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+
+                    HStack(spacing: 4.0) {
+                        Rectangle()
+                            .fill(EndfieldPalette.accentRed)
+                            .frame(width: 5.0, height: 5.0)
+
+                        Text(LiveActivityFormat.bpmWithUnit(state.currentBPM))
+                            .font(EndfieldFont.mono(15.0, weight: .heavy))
+                            .monospacedDigit()
+                            .foregroundStyle(EndfieldPalette.accentRed)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                }
+            }
+
+            CardioTimerBarView(state: state, height: 3.0, tint: EndfieldPalette.accentYellow)
         }
         .padding(.horizontal, 14.0)
         .padding(.vertical, 11.0)

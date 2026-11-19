@@ -8,7 +8,10 @@ import Charts
 /// tiempo y finalización. La sesión terminada se guarda en el historial con el
 /// nombre "CARDIO · <TIPO>".
 public struct CardioView: View {
+    @Environment(\.modelContext) private var modelContext
+
     @State private var viewModel: CardioViewModel?
+    @State private var abandonedSnapshot: CardioSessionSnapshot?
 
     public init() {}
 
@@ -27,6 +30,30 @@ public struct CardioView: View {
         .onAppear {
             restoreSessionIfNeeded()
         }
+        .alert(
+            "Sesión de cardio abandonada",
+            isPresented: Binding(
+                get: { abandonedSnapshot != nil },
+                set: { (isPresented: Bool) in
+                    if !isPresented {
+                        abandonedSnapshot = nil
+                    }
+                }
+            )
+        ) {
+            Button("Guardar sesión") {
+                if let snapshot: CardioSessionSnapshot = abandonedSnapshot {
+                    saveAbandonedSession(snapshot)
+                }
+            }
+
+            Button("Descartar", role: .destructive) {
+                CardioSessionStore.clear()
+                abandonedSnapshot = nil
+            }
+        } message: {
+            Text("Hay una sesión de cardio sin actividad desde hace más de 6 horas. Puedes guardarla con el tiempo registrado hasta el último dato o descartarla.")
+        }
     }
 
     private func startSession(type: CardioType, minutes: Int) {
@@ -42,6 +69,15 @@ public struct CardioView: View {
     private func restoreSessionIfNeeded() {
         guard viewModel == nil else { return }
         guard let snapshot: CardioSessionSnapshot = CardioSessionStore.load() else { return }
+
+        // Una sesión sin actualizaciones durante horas no se reanuda sola: se
+        // ofrece guardarla o descartarla.
+        let lastUpdate: Date = snapshot.savedAt ?? snapshot.startedAt
+        guard Date().timeIntervalSince(lastUpdate) <= CardioSessionSnapshot.abandonmentThreshold else {
+            abandonedSnapshot = snapshot
+            return
+        }
+
         guard let restored: CardioViewModel = CardioViewModel(snapshot: snapshot) else {
             CardioSessionStore.clear()
             return
@@ -53,9 +89,40 @@ public struct CardioView: View {
         // se muestra ya terminada con su informe.
         if restored.phase == .running, restored.remaining(at: Date()) <= 0 {
             restored.finishEarly()
+        } else if restored.phase == .paused {
+            restored.resumeMonitoring()
         } else {
             restored.start()
         }
+    }
+
+    /// Guarda como sesión completada el tiempo que llegó a registrarse antes
+    /// de que la app se cerrara.
+    private func saveAbandonedSession(_ snapshot: CardioSessionSnapshot) {
+        guard let type: CardioType = CardioType(rawValue: snapshot.typeRaw) else {
+            CardioSessionStore.clear()
+            abandonedSnapshot = nil
+            return
+        }
+
+        let target: TimeInterval = max(60.0, snapshot.targetDuration)
+        let registered: TimeInterval = snapshot.elapsedAtSave ?? Date().timeIntervalSince(snapshot.startedAt)
+        let duration: TimeInterval = max(1.0, min(target, registered))
+
+        let session = WorkoutSession(
+            startDate: snapshot.startedAt,
+            endDate: snapshot.startedAt.addingTimeInterval(duration),
+            totalVolumeKg: 0.0,
+            routineName: type.sessionName
+        )
+        session.bpmSamples = snapshot.bpmSamples
+
+        modelContext.insert(session)
+        try? modelContext.save()
+        WidgetStreakStore.refresh(modelContext: modelContext)
+
+        CardioSessionStore.clear()
+        abandonedSnapshot = nil
     }
 }
 
@@ -336,6 +403,7 @@ private struct CardioSessionView: View {
                         finishedActions
                     } else {
                         if isHeartRateTrackingEnabled {
+                            CardioSensorStatusView()
                             bpmChartPanel
                         }
                         runningActions
@@ -640,6 +708,69 @@ private struct CardioSessionView: View {
             return String(format: "%d:%02d:%02d", hours, minutes, secs)
         }
         return String(format: "%02d:%02d", minutes, secs)
+    }
+}
+
+// MARK: - Estado del sensor de pulso
+
+/// Aviso de enlace del pulsómetro durante el cardio. Se mantiene aislado para
+/// que las lecturas del sensor no redibujen la pantalla completa.
+private struct CardioSensorStatusView: View {
+    @ObservedObject private var bpmManager = BPMManager.shared
+
+    var body: some View {
+        HStack(spacing: 8.0) {
+            Rectangle()
+                .fill(bpmManager.isConnected ? EndfieldPalette.accentCyan : EndfieldPalette.accentRed)
+                .frame(width: 5.0, height: 5.0)
+
+            Text(bpmManager.isConnected ? "SENSOR DE PULSO ENLAZADO" : "SENSOR DE PULSO DESCONECTADO")
+                .font(EndfieldFont.label(8.0))
+                .tracking(0.9)
+                .foregroundStyle(bpmManager.isConnected ? EndfieldPalette.textSecondary : EndfieldPalette.accentRed)
+                .lineLimit(1)
+                .minimumScaleFactor(0.65)
+
+            Spacer(minLength: 6.0)
+
+            if bpmManager.isConnected {
+                Text(bpmManager.currentBPM > 0 ? "\(bpmManager.currentBPM) BPM" : "-- BPM")
+                    .font(EndfieldFont.mono(10.0, weight: .bold))
+                    .monospacedDigit()
+                    .foregroundStyle(EndfieldPalette.accentRed)
+                    .fixedSize()
+            } else {
+                Button {
+                    bpmManager.reconnect()
+                } label: {
+                    Text("RECONECTAR")
+                        .font(EndfieldFont.mono(9.0, weight: .bold))
+                        .tracking(0.6)
+                }
+                .buttonStyle(
+                    EndfieldSecondaryButtonStyle(
+                        fullWidth: false,
+                        compact: true,
+                        tint: EndfieldPalette.accentCyan
+                    )
+                )
+            }
+        }
+        .padding(.horizontal, 9.0)
+        .padding(.vertical, 6.0)
+        .background(EndfieldPalette.bgElevated)
+        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cellCut))
+        .overlay {
+            ChamferedRectangle(cut: EndfieldMetrics.cellCut)
+                .stroke(
+                    bpmManager.isConnected ? EndfieldPalette.borderSubtle : EndfieldPalette.accentRed.opacity(0.55),
+                    lineWidth: 1.0
+                )
+        }
+        .onChange(of: bpmManager.isConnected) { _, isConnected in
+            guard !isConnected else { return }
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
     }
 }
 
