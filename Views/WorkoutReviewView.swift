@@ -106,37 +106,14 @@ public struct WorkoutReviewView: View {
     /// y compara sus estadísticas con las de esta.
     private func loadCardioComparisonIfNeeded() {
         guard session.isCardioSession, !didLoadComparison else { return }
+        didLoadComparison = true
 
-        let routineName: String = session.routineName
-        let startedAt: Date = session.startDate
-
-        var descriptor: FetchDescriptor<WorkoutSession> = FetchDescriptor<WorkoutSession>(
-            predicate: #Predicate<WorkoutSession> { (candidate: WorkoutSession) -> Bool in
-                return candidate.routineName == routineName &&
-                    candidate.startDate < startedAt
-            },
-            sortBy: [SortDescriptor(\WorkoutSession.startDate, order: .reverse)]
-        )
-        descriptor.fetchLimit = 1
-
-        defer { didLoadComparison = true }
-
-        guard let previous: WorkoutSession = try? modelContext.fetch(descriptor).first else {
-            cardioComparison = nil
-            return
-        }
-
-        let previousEnd: Date = previous.endDate ?? previous.startDate
-        let previousDuration: TimeInterval = max(0.0, previousEnd.timeIntervalSince(previous.startDate))
-        let previousMetrics: CardioMetrics = WorkoutMetricsCalculator.calculateCardio(
-            duration: previousDuration,
-            samples: previous.bpmSamples
-        )
-
-        cardioComparison = WorkoutMetricsCalculator.compareCardio(
+        cardioComparison = CardioComparisonLoader.comparison(
             current: cardioReport,
-            previous: previousMetrics,
-            previousDate: previous.startDate
+            routineName: session.routineName,
+            modality: session.cardioType,
+            startedAt: session.startDate,
+            context: modelContext
         )
     }
 
@@ -559,6 +536,72 @@ struct WorkoutReviewQualityCardView: View {
 }
 
 // MARK: - Comparativa con la última sesión de cardio
+
+/// Resuelve contra el historial la última sesión de cardio del mismo tipo y
+/// construye su comparativa. Se comparte entre el review del historial y el
+/// informe que aparece al terminar la sesión en vivo.
+enum CardioComparisonLoader {
+    /// Última sesión de cardio de la misma modalidad anterior a `startedAt`.
+    /// La modalidad se resuelve con la misma detección que el historial y la
+    /// gráfica: así una sesión antigua guardada con otro formato de nombre
+    /// sigue comparándose con la última del mismo tipo.
+    static func previousSession(
+        routineName: String,
+        modality: CardioType?,
+        startedAt: Date,
+        context: ModelContext
+    ) -> WorkoutSession? {
+        var descriptor: FetchDescriptor<WorkoutSession> = FetchDescriptor<WorkoutSession>(
+            predicate: #Predicate<WorkoutSession> { (candidate: WorkoutSession) -> Bool in
+                return candidate.startDate < startedAt
+            },
+            sortBy: [SortDescriptor(\WorkoutSession.startDate, order: .reverse)]
+        )
+        descriptor.fetchLimit = nil
+
+        let candidates: [WorkoutSession] = (try? context.fetch(descriptor)) ?? []
+        return candidates.first { (candidate: WorkoutSession) -> Bool in
+            guard candidate.isCardioSession else { return false }
+
+            if let modality: CardioType = modality {
+                return candidate.cardioType == modality
+            }
+            return candidate.routineName == routineName
+        }
+    }
+
+    /// Comparativa de la sesión actual con la anterior, o `nil` si no hay
+    /// ninguna sesión previa de esa modalidad.
+    static func comparison(
+        current: CardioMetrics,
+        routineName: String,
+        modality: CardioType?,
+        startedAt: Date,
+        context: ModelContext
+    ) -> CardioComparison? {
+        guard let previous: WorkoutSession = previousSession(
+            routineName: routineName,
+            modality: modality,
+            startedAt: startedAt,
+            context: context
+        ) else {
+            return nil
+        }
+
+        let previousEnd: Date = previous.endDate ?? previous.startDate
+        let previousDuration: TimeInterval = max(0.0, previousEnd.timeIntervalSince(previous.startDate))
+        let previousMetrics: CardioMetrics = WorkoutMetricsCalculator.calculateCardio(
+            duration: previousDuration,
+            samples: previous.bpmSamples
+        )
+
+        return WorkoutMetricsCalculator.compareCardio(
+            current: current,
+            previous: previousMetrics,
+            previousDate: previous.startDate
+        )
+    }
+}
 
 /// Panel que enfrenta las estadísticas de la sesión revisada con las de la
 /// última sesión de la misma modalidad. Si no hay sesión anterior, lo indica

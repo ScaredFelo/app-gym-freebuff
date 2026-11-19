@@ -529,6 +529,8 @@ private struct CardioSessionView: View {
 
     @State private var showingAbortConfirmation = false
     @State private var didPersistSession = false
+    @State private var cardioComparison: CardioComparison?
+    @State private var didLoadComparison: Bool = false
 
     private let minuteStep: Int = 5
 
@@ -543,6 +545,16 @@ private struct CardioSessionView: View {
 
                     if viewModel.phase == .finished {
                         cardioReport
+
+                        // Misma comparativa que el review del historial, aquí
+                        // con la sesión que se acaba de terminar.
+                        if didLoadComparison {
+                            CardioComparisonView(
+                                comparison: cardioComparison,
+                                typeTitle: viewModel.type.title
+                            )
+                        }
+
                         finishedActions
                     } else {
                         if isHeartRateTrackingEnabled {
@@ -561,11 +573,13 @@ private struct CardioSessionView: View {
             guard newPhase == .finished else { return }
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             persistSession()
+            loadCardioComparisonIfNeeded()
         }
         .onAppear {
             // Sesión restaurada que ya había cumplido su objetivo.
             if viewModel.phase == .finished {
                 persistSession()
+                loadCardioComparisonIfNeeded()
             }
         }
         .alert("¿Abortar sesión de cardio?", isPresented: $showingAbortConfirmation) {
@@ -807,6 +821,21 @@ private struct CardioSessionView: View {
 
     private var cardioReport: some View {
         CardioReportPanel(report: viewModel.report())
+    }
+
+    /// Compara el informe recién calculado con la última sesión de la misma
+    /// modalidad guardada en el historial.
+    private func loadCardioComparisonIfNeeded() {
+        guard !didLoadComparison else { return }
+        didLoadComparison = true
+
+        cardioComparison = CardioComparisonLoader.comparison(
+            current: viewModel.report(),
+            routineName: viewModel.type.sessionName,
+            modality: viewModel.type,
+            startedAt: viewModel.startedAt,
+            context: modelContext
+        )
     }
 
     private func togglePause() {
