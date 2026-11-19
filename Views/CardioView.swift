@@ -199,6 +199,39 @@ private struct CardioSetupView: View {
                         }
                     }
 
+                    TacticalPanel(code: "AUD.04", title: "Sonidos de la sesión", contentPadding: 12.0) {
+                        VStack(alignment: .leading, spacing: 6.0) {
+                            soundRow(
+                                code: "50%",
+                                text: "Un pitido medio al llegar a la mitad del tiempo objetivo."
+                            )
+
+                            soundRow(
+                                code: "1 MIN",
+                                text: "Tres pitidos agudos al entrar en el último minuto."
+                            )
+
+                            soundRow(
+                                code: "FIN",
+                                text: "Campana al completar el objetivo."
+                            )
+
+                            if alertZone > 0 {
+                                soundRow(
+                                    code: "Z\(alertZone)",
+                                    text: "Doble pitido grave al salir de la zona de pulso y mantenerte fuera 30 segundos."
+                                )
+                            } else {
+                                Text("AVISOS DE PULSO DESACTIVADOS: NO SONARÁ AL CAMBIAR DE ZONA.")
+                                    .font(EndfieldFont.label(7.0, weight: .regular))
+                                    .tracking(0.5)
+                                    .foregroundStyle(EndfieldPalette.textSecondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .padding(.top, 2.0)
+                            }
+                        }
+                    }
+
                     Button {
                         onStart(selectedType, targetMinutes, alertZone)
                     } label: {
@@ -387,6 +420,25 @@ private struct CardioSetupView: View {
             )
         )
         .disabled(!enabled)
+    }
+
+    private func soundRow(code: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 8.0) {
+            Text(code)
+                .font(EndfieldFont.label(7.0))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.accentCyan)
+                .frame(width: 42.0, alignment: .leading)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Text(text)
+                .font(EndfieldFont.label(7.5, weight: .regular))
+                .tracking(0.4)
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private func alertZoneOption(title: String, value: Int) -> some View {
