@@ -46,6 +46,7 @@ struct SettingsView: View {
     @State private var backupResultMessage: String = ""
     @State private var backupDocument: WorkoutBackupDocument?
     @State private var backupFileName: String = BackupManager.defaultFileName()
+    @State private var backupExportWarnings: [String] = []
     @State private var safetyCopies: [PreImportBackup] = []
     @State private var safetyCopyPendingRestore: PreImportBackup?
 
@@ -591,10 +592,13 @@ struct SettingsView: View {
 
     private func exportBackup() {
         do {
-            backupDocument = try BackupManager.createBackupDocument(context: modelContext)
+            let result: BackupExportResult = try BackupManager.createBackup(context: modelContext)
+            backupDocument = result.document
+            backupExportWarnings = result.report.warnings.map(\.message)
             backupFileName = BackupManager.defaultFileName()
             showFileExporter = true
         } catch {
+            backupExportWarnings = []
             presentBackupResult(message: error.localizedDescription)
         }
     }
@@ -602,9 +606,11 @@ struct SettingsView: View {
     private func handleExportResult(_ result: Result<URL, Error>) {
         switch result {
         case .success:
-            presentBackupResult(
-                message: "Exportación completada. El archivo incluye tus rutinas, ejercicios, sesiones de entrenamiento y ajustes del gimnasio."
-            )
+            var message: String = "Exportación completada. El archivo incluye tus rutinas, ejercicios, sesiones de entrenamiento y ajustes del gimnasio."
+            if !backupExportWarnings.isEmpty {
+                message += "\n\nAvisos de integridad:\n" + backupExportWarnings.map { "• \($0)" }.joined(separator: "\n")
+            }
+            presentBackupResult(message: message)
         case .failure(let error):
             presentBackupResult(message: error.localizedDescription)
         }
@@ -614,11 +620,16 @@ struct SettingsView: View {
         switch result {
         case .success(let url):
             do {
-                try BackupManager.restoreBackup(from: url, context: modelContext)
+                let result: BackupImportResult = try BackupManager.restoreBackup(from: url, context: modelContext)
                 reloadSafetyCopies()
-                presentBackupResult(
-                    message: "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo, y se ha guardado una copia automática de los datos anteriores."
-                )
+                var message: String = "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo, y se ha guardado una copia automática de los datos anteriores."
+                if !result.preservedProtectedRoutineIDs.isEmpty {
+                    message += " Se han conservado las \(result.preservedProtectedRoutineIDs.count) rutina(s) personal(es) protegida(s) de esta instalación."
+                }
+                if !result.report.warnings.isEmpty {
+                    message += "\n\nAvisos:\n" + result.report.warnings.map { "• \($0.message)" }.joined(separator: "\n")
+                }
+                presentBackupResult(message: message)
             } catch {
                 presentBackupResult(message: error.localizedDescription)
             }
@@ -633,11 +644,16 @@ struct SettingsView: View {
 
     private func performRestore(_ copy: PreImportBackup) {
         do {
-            try BackupManager.restoreBackup(from: copy.url, context: modelContext)
+            let result: BackupImportResult = try BackupManager.restoreBackup(from: copy.url, context: modelContext)
             reloadSafetyCopies()
-            presentBackupResult(
-                message: "Copia automática restaurada. Se han recuperado los datos tal y como estaban antes de esa importación."
-            )
+            var message: String = "Copia automática restaurada. Se han recuperado los datos tal y como estaban antes de esa importación."
+            if !result.preservedProtectedRoutineIDs.isEmpty {
+                message += " Se han conservado las \(result.preservedProtectedRoutineIDs.count) rutina(s) personal(es) protegida(s) de esta instalación."
+            }
+            if !result.report.warnings.isEmpty {
+                message += "\n\nAvisos:\n" + result.report.warnings.map { "• \($0.message)" }.joined(separator: "\n")
+            }
+            presentBackupResult(message: message)
         } catch {
             presentBackupResult(message: error.localizedDescription)
         }
