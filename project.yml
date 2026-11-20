@@ -45,6 +45,38 @@ targets:
         CFBundleDisplayName: AppGym
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        # Tipo propio de las rutinas compartidas. Registra la app como
+        # propietaria de `.appgymroutine` para abrirla desde AirDrop, WhatsApp,
+        # Archivos, Correo y cualquier app que comparta el archivo.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Rutina de AppGym
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.jordiferres.appgym.routine
+          - CFBundleTypeName: Split de AppGym
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.jordiferres.appgym.split
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.jordiferres.appgym.routine
+            UTTypeDescription: Rutina de AppGym
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - appgymroutine
+              public.mime-type: application/vnd.appgym.routine+json
+          - UTTypeIdentifier: com.jordiferres.appgym.split
+            UTTypeDescription: Split de AppGym
+            UTTypeConformsTo:
+              - public.json
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - appgymsplit
+              public.mime-type: application/vnd.appgym.split+json
+        LSSupportsOpeningDocumentsInPlace: true
         UILaunchScreen: {}
         NSSupportsLiveActivities: true
         UISupportedInterfaceOrientations:

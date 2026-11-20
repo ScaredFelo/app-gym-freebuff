@@ -20,6 +20,11 @@ public final class Routine {
     /// relaciones con las sesiones históricas.
     public var isArchived: Bool = false
 
+    // La carpeta de una rutina no se guarda aquí: vive en
+    // `RoutineFolder.routineIDsData`. `Routine` no cambia de forma entre la
+    // versión 5 y la 6 del esquema, así que la migración solo añade la entidad
+    // de carpetas y no toca la tabla de rutinas existente.
+
     @Relationship(deleteRule: .cascade)
     public var exercises: [RoutineExercise] = []
 

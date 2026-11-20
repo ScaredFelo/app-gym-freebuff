@@ -2693,23 +2693,24 @@ final class RoutinePersistenceTests: XCTestCase {
                 "Organización del entrenamiento",
                 "Objetivo semanal",
                 "Copia de seguridad",
-                "Copias automáticas"
+                "Copias automáticas",
+                "Compartir rutina"
             ]
         )
     }
 
     func testSettingsSectionCodesMatchTheirPosition() {
-        XCTAssertEqual(SettingsSection.allCases.count, 8)
+        XCTAssertEqual(SettingsSection.allCases.count, 9)
         XCTAssertEqual(
             SettingsSection.allCases.map(\.code),
-            ["RT.01", "RT.02", "RT.03", "RT.04", "RT.05", "RT.06", "RT.07", "RT.08"]
+            ["RT.01", "RT.02", "RT.03", "RT.04", "RT.05", "RT.06", "RT.07", "RT.08", "RT.09"]
         )
 
         for (index, section) in SettingsSection.allCases.enumerated() {
             XCTAssertEqual(section.position, index + 1)
         }
 
-        XCTAssertEqual(Set(SettingsSection.allCases.map(\.code)).count, 8)
+        XCTAssertEqual(Set(SettingsSection.allCases.map(\.code)).count, 9)
     }
 
     func testSettingsAccordionStartsClosed() {
@@ -3222,6 +3223,267 @@ final class RoutinePersistenceTests: XCTestCase {
 
         let plans: [AssistedWeekPlan] = try context.fetch(FetchDescriptor<AssistedWeekPlan>())
         XCTAssertTrue(plans.isEmpty)
+    }
+
+    // MARK: - Onboarding sin rutinas (crear más tarde)
+
+    func testOrganizationOffersLaterOptionOnlyInInitialSetup() {
+        let initial: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+        XCTAssertTrue(initial.availableModes.contains(.later))
+        XCTAssertEqual(initial.availableModes.count, RoutineOrganizationMode.allCases.count)
+        XCTAssertEqual(initial.availableModes.last, RoutineOrganizationMode.later)
+
+        // Ajustes → Cambiar rutina conserva sus tres modalidades.
+        let change: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .changeRoutine)
+        XCTAssertFalse(change.availableModes.contains(.later))
+        XCTAssertEqual(change.availableModes, [.createOwn, .templates, .automatic])
+
+        // La tarjeta mantiene el mismo código, título y descripción pedidos.
+        XCTAssertEqual(RoutineOrganizationMode.later.code, "ORG.D")
+        XCTAssertEqual(RoutineOrganizationMode.later.title, "Crear mis rutinas más tarde")
+        XCTAssertEqual(
+            RoutineOrganizationMode.later.summary,
+            "Puedes terminar la configuración ahora y crear tus rutinas cuando quieras desde la aplicación."
+        )
+        XCTAssertEqual(RoutineOrganizationMode.later.configurationTitle, "Crear mis rutinas más tarde")
+        XCTAssertFalse(RoutineOrganizationMode.later.symbolName.isEmpty)
+        XCTAssertEqual(RoutineOrganizationMode.fromStoredRawValue("later"), .later)
+    }
+
+    func testLaterOptionCannotBeSelectedFromChangeRoutine() {
+        let change: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .changeRoutine)
+        change.selectMode(.later)
+
+        XCTAssertNil(change.plan.mode)
+        XCTAssertFalse(change.canContinueFromOrganization)
+        XCTAssertFalse(change.completesWithoutRoutines)
+    }
+
+    func testSelectingLaterFinishesOnboardingWithoutCreatingRoutines() async throws {
+        let snapshot: DefaultsSnapshot = captureDefaults()
+        defer { restoreDefaults(snapshot) }
+
+        let context: ModelContext = try makeAssistedContext()
+        let configuration: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+        configuration.selectMode(.later)
+
+        XCTAssertTrue(configuration.canContinueFromOrganization)
+        XCTAssertTrue(configuration.completesWithoutRoutines)
+        // Ni el generador automático ni el constructor asistido se ejecutan.
+        XCTAssertNil(configuration.automatic.week)
+        XCTAssertNil(configuration.assisted.generatedWeek)
+        XCTAssertFalse(configuration.automatic.hasConsulted)
+
+        let saved: Bool = await configuration.save(preferences: .defaults, modelContext: context)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(configuration.lastResult?.mode, .later)
+        XCTAssertEqual(configuration.lastResult?.createdRoutineCount, 0)
+        XCTAssertEqual(configuration.lastResult?.archivedRoutineCount, 0)
+
+        // La lista queda vacía: no hay rutinas manuales, automáticas ni
+        // asistidas, ni se siembran las cinco iniciales.
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertTrue(routines.isEmpty)
+        let plans: [AssistedWeekPlan] = try context.fetch(FetchDescriptor<AssistedWeekPlan>())
+        XCTAssertTrue(plans.isEmpty)
+
+        // La elección se persiste y el onboarding se marca como completado.
+        XCTAssertEqual(UserSettingsManager.routineOrganizationMode, .later)
+        let onboarding: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        onboarding.completeSetupIfNeeded()
+        XCTAssertTrue(OnboardingService.isCompleted)
+    }
+
+    func testLaterOptionDoesNotArchiveExistingRoutines() async throws {
+        let snapshot: DefaultsSnapshot = captureDefaults()
+        defer { restoreDefaults(snapshot) }
+
+        let context: ModelContext = try makeAssistedContext()
+        let existing: Routine = Routine(
+            name: "Rutina previa",
+            isTemplate: true,
+            sortOrder: 0,
+            exercises: [],
+            source: .automatic
+        )
+        context.insert(existing)
+        try context.save()
+
+        let configuration: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+        configuration.selectMode(.later)
+        let saved: Bool = await configuration.save(preferences: .defaults, modelContext: context)
+        XCTAssertTrue(saved)
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 1)
+        XCTAssertFalse(existing.isArchived)
+        XCTAssertTrue(existing.isActivePlanRoutine)
+        XCTAssertEqual(configuration.lastResult?.archivedRoutineCount, 0)
+        XCTAssertEqual(configuration.lastResult?.createdRoutineCount, 0)
+    }
+
+    func testEmptyRoutineListCanCreateTheFirstManualRoutine() throws {
+        let context: ModelContext = try makeAssistedContext()
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Routine>()).isEmpty)
+
+        // Misma creación que ofrecen el botón «+» y el estado vacío.
+        let first: Routine = RoutineService.makeManualDraftRoutine(after: [])
+        XCTAssertEqual(first.name, "Nueva rutina")
+        XCTAssertEqual(first.sortOrder, 0)
+        XCTAssertEqual(first.source, .manual)
+        XCTAssertTrue(first.isTemplate)
+        XCTAssertTrue(first.exercises.isEmpty)
+        XCTAssertTrue(first.isActivePlanRoutine)
+        XCTAssertFalse(first.isArchived)
+
+        context.insert(first)
+        try context.save()
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 1)
+        XCTAssertEqual(routines.filter(\.isActivePlanRoutine).count, 1)
+
+        // La creación manual sigue sin límite máximo de rutinas.
+        let second: Routine = RoutineService.makeManualDraftRoutine(after: routines)
+        XCTAssertEqual(second.sortOrder, 1)
+    }
+
+    func testFreshInstallSeedsNoStarterRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        MockDataGenerator.seedIfNeeded(context: context)
+
+        let exercises: [Exercise] = try context.fetch(FetchDescriptor<Exercise>())
+        XCTAssertFalse(exercises.isEmpty)
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertTrue(routines.isEmpty)
+        XCTAssertEqual(MockDataGenerator.seededRoutineIDs.count, 5)
+    }
+
+    func testFinishedWithoutRoutinesSurvivesRelaunchWithoutOnboarding() async throws {
+        let snapshot: DefaultsSnapshot = captureDefaults()
+        defer { restoreDefaults(snapshot) }
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let storeURL: URL = directory.appendingPathComponent("default.store")
+
+        do {
+            let container: ModelContainer = try XCTUnwrap(StoreBootstrap.makeContainer(storeURL: storeURL).container)
+            let context: ModelContext = ModelContext(container)
+
+            let configuration: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+            configuration.selectMode(.later)
+            let saved: Bool = await configuration.save(preferences: .defaults, modelContext: context)
+            XCTAssertTrue(saved)
+
+            let onboarding: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+            onboarding.completeSetupIfNeeded()
+            XCTAssertTrue(OnboardingService.isCompleted)
+        }
+
+        // Reinicio: se abre el mismo store y el onboarding no vuelve a mostrarse.
+        let reopened: ModelContainer = try XCTUnwrap(StoreBootstrap.makeContainer(storeURL: storeURL).container)
+        let context: ModelContext = ModelContext(reopened)
+        XCTAssertTrue(OnboardingService.isCompleted)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Routine>()).isEmpty)
+    }
+
+    func testCreateOwnStillCreatesRoutinesAfterFinishingWithoutRoutines() async throws {
+        let snapshot: DefaultsSnapshot = captureDefaults()
+        defer { restoreDefaults(snapshot) }
+
+        let context: ModelContext = try makeAssistedContext()
+        let later: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+        later.selectMode(.later)
+        let savedLater: Bool = await later.save(preferences: .defaults, modelContext: context)
+        XCTAssertTrue(savedLater)
+        XCTAssertTrue(try context.fetch(FetchDescriptor<Routine>()).isEmpty)
+
+        // Después, desde Ajustes → Cambiar rutina, crea sus propias rutinas.
+        let own: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .changeRoutine)
+        own.selectMode(.createOwn)
+        own.plan.ownRoutineCount = 2
+        let savedOwn: Bool = await own.save(preferences: .defaults, modelContext: context)
+        XCTAssertTrue(savedOwn)
+        XCTAssertEqual(own.lastResult?.createdRoutineCount, 2)
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 2)
+        XCTAssertTrue(routines.allSatisfy { $0.isActivePlanRoutine })
+    }
+
+    func testBackupImportKeepsImportedRoutinesAndSkipsOrganizationStep() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada A", exercises: []),
+            makeBackupRoutine(name: "Importada B", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let onboarding: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        onboarding.prepareBackupImport(from: url, context: context)
+        _ = onboarding.confirmPreparedBackup(
+            context: context,
+            safetyCopyDirectory: directory.appendingPathComponent("copias", isDirectory: true)
+        )
+
+        // El flujo importado sigue sin preguntar por la organización y no
+        // aplica «crear más tarde»: conserva las rutinas del archivo.
+        XCTAssertTrue(onboarding.importedRoutinesReplaceOrganization)
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 2)
+        XCTAssertTrue(routines.allSatisfy { $0.isActivePlanRoutine })
+
+        let configuration: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+        XCTAssertNil(configuration.plan.mode)
+    }
+
+    // MARK: - Preferencias de usuario
+
+    private struct DefaultsSnapshot {
+        let keys: [String]
+        let values: [String: Any]
+    }
+
+    private func captureDefaults() -> DefaultsSnapshot {
+        let keys: [String] = [
+            UserSettingsManager.routineOrganizationModeKey,
+            UserSettingsManager.ownRoutineCountKey,
+            UserSettingsManager.automaticSplitDaysKey,
+            UserSettingsManager.automaticSplitLegsKey,
+            UserSettingsManager.automaticSplitUpperKey,
+            UserSettingsManager.automaticSplitExpressionKey,
+            UserSettingsManager.multipowerBarWeightKey,
+            UserSettingsManager.ezBarWeightKey,
+            UserSettingsManager.availablePlatesKey,
+            UserSettingsManager.isHeartRateTrackingEnabledKey,
+            UserSettingsManager.heartRateDeviceTypeKey,
+            UserSettingsManager.heartRateDeviceBrandKey,
+            UserSettingsManager.didCompleteOnboardingKey
+        ]
+
+        var values: [String: Any] = [:]
+        for key in keys {
+            if let value = UserDefaults.standard.object(forKey: key) {
+                values[key] = value
+            }
+        }
+
+        return DefaultsSnapshot(keys: keys, values: values)
+    }
+
+    private func restoreDefaults(_ snapshot: DefaultsSnapshot) {
+        for key in snapshot.keys {
+            if let value: Any = snapshot.values[key] {
+                UserDefaults.standard.set(value, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
     }
 
     private func configure(_ viewModel: AssistedSplitViewModel, selections: [AssistedDaySelection]) {

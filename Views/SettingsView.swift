@@ -16,6 +16,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case weeklyGoal
     case backup
     case safetyCopies
+    case shareRoutine
 
     var id: String { rawValue }
 
@@ -38,6 +39,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .weeklyGoal: return "Objetivo semanal"
         case .backup: return "Copia de seguridad"
         case .safetyCopies: return "Copias automáticas"
+        case .shareRoutine: return "Compartir rutina"
         }
     }
 }
@@ -136,6 +138,10 @@ struct SettingsView: View {
 
     /// Confirmación previa obligatoria antes de abrir Ajustes → Cambiar rutina.
     @State private var changeGate: RoutineChangeGate = RoutineChangeGate()
+
+    /// Compartir una rutina individual desde el selector con carpetas.
+    @State private var isShowingRoutineSharePicker: Bool = false
+    @State private var isShowingSplitSharePicker: Bool = false
 
     /// Copia de seguridad.
     @State private var showFileExporter: Bool = false
@@ -260,6 +266,12 @@ struct SettingsView: View {
                 }
             )
         }
+        .sheet(isPresented: $isShowingRoutineSharePicker) {
+            RoutineSharePickerView()
+        }
+        .sheet(isPresented: $isShowingSplitSharePicker) {
+            SplitSharePickerView()
+        }
         .alert("Cuidado: sobrescritura de datos", isPresented: $showImportWarningAlert) {
             Button("Cancelar", role: .cancel) {
                 // Sin acción: se conserva la base de datos actual.
@@ -324,6 +336,52 @@ struct SettingsView: View {
         )
     }
 
+    /// Configuración → Compartir rutina: abre el selector con la estructura
+    /// real de carpetas. El selector no modifica ningún dato.
+    private var shareRoutineContent: some View {
+        Group {
+            VStack(alignment: .leading, spacing: 8.0) {
+                Button {
+                    isShowingRoutineSharePicker = true
+                } label: {
+                    HStack(spacing: 7.0) {
+                        Image(systemName: "square.and.arrow.up.on.square")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                        Text("COMPARTIR RUTINA")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .tracking(1.0)
+                    }
+                }
+                .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentYellow))
+
+                Text("Elige una rutina de tus carpetas y compártela como archivo .appgymroutine. Solo se comparte la rutina: no incluye tu historial de entrenamientos ni modifica la rutina original.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    isShowingSplitSharePicker = true
+                } label: {
+                    HStack(spacing: 7.0) {
+                        Image(systemName: "folder.badge.gearshape")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                        Text("COMPARTIR SPLIT")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .tracking(1.0)
+                    }
+                }
+                .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
+
+                Text("Comparte una carpeta completa con todas sus rutinas activas como archivo .appgymsplit, en el mismo orden. No incluye historial ni modifica la carpeta original.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
     @ViewBuilder
     private func sectionContent(for section: SettingsSection) -> some View {
         switch section {
@@ -343,6 +401,8 @@ struct SettingsView: View {
             backupContent
         case .safetyCopies:
             safetyCopiesContent
+        case .shareRoutine:
+            shareRoutineContent
         }
     }
 

@@ -31,15 +31,20 @@ enum RoutineFlowContext: String, Sendable {
 
 // MARK: - Modalidades de organización
 
-/// Las tres formas de organizar el entrenamiento que ofrece AppGym.
+/// Las formas de organizar el entrenamiento que ofrece AppGym.
 ///
 /// En esta fase solo se persiste la elección y se prepara la navegación de
 /// cada modalidad. Los generadores (automático y asistido) se integran en las
 /// fases siguientes sin rehacer estas pantallas.
+///
+/// `later` no genera nada: cierra la configuración inicial con la lista de
+/// rutinas vacía. Solo se ofrece en el onboarding; Ajustes → Cambiar rutina
+/// siempre sustituye la organización actual por una nueva.
 enum RoutineOrganizationMode: String, CaseIterable, Codable, Sendable, Identifiable {
     case createOwn
     case templates
     case automatic
+    case later
 
     var id: String { rawValue }
 
@@ -52,6 +57,8 @@ enum RoutineOrganizationMode: String, CaseIterable, Codable, Sendable, Identifia
             return "ORG.B"
         case .automatic:
             return "ORG.C"
+        case .later:
+            return "ORG.D"
         }
     }
 
@@ -63,6 +70,8 @@ enum RoutineOrganizationMode: String, CaseIterable, Codable, Sendable, Identifia
             return "Utilizar plantillas"
         case .automatic:
             return "Generar mi split automáticamente"
+        case .later:
+            return "Crear mis rutinas más tarde"
         }
     }
 
@@ -75,6 +84,8 @@ enum RoutineOrganizationMode: String, CaseIterable, Codable, Sendable, Identifia
             return "Construye tu semana de entrenamiento utilizando las plantillas de ejercicios disponibles en AppGym."
         case .automatic:
             return "Indica cómo quieres entrenar y deja que AppGym construya una distribución semanal para ti."
+        case .later:
+            return "Puedes terminar la configuración ahora y crear tus rutinas cuando quieras desde la aplicación."
         }
     }
 
@@ -86,6 +97,8 @@ enum RoutineOrganizationMode: String, CaseIterable, Codable, Sendable, Identifia
             return "square.grid.3x3"
         case .automatic:
             return "wand.and.stars"
+        case .later:
+            return "clock.arrow.circlepath"
         }
     }
 
@@ -98,6 +111,8 @@ enum RoutineOrganizationMode: String, CaseIterable, Codable, Sendable, Identifia
             return "Utilizar plantillas"
         case .automatic:
             return "Generar mi split automáticamente"
+        case .later:
+            return "Crear mis rutinas más tarde"
         }
     }
 

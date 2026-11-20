@@ -87,6 +87,9 @@ enum BackupIssueCode: String, Codable, Equatable {
     case missingSessionHistory
     case invalidSessionData
     case invalidSettings
+    case duplicateFolderID
+    case missingFolderName
+    case unknownRoutineFolder
 }
 
 struct BackupIssue: Identifiable, Equatable {
@@ -271,6 +274,9 @@ struct RoutineBackupDTO: Codable {
     /// Estado de archivado. Opcional para copias anteriores: en una copia
     /// antigua se restaura como no archivada.
     var isArchived: Bool? = nil
+    /// Carpeta que contiene la rutina. Opcional para seguir leyendo copias
+    /// creadas antes de existir las carpetas: se restaura sin carpeta.
+    var folderID: UUID? = nil
 }
 
 /// Snapshot de una semana asistida. Es opcional en la raíz para seguir leyendo
@@ -283,6 +289,14 @@ struct AssistedWeekPlanBackupDTO: Codable {
     /// Datos originales del plan. Permite conservar un plan que no se puede
     /// decodificar en lugar de exportarlo silenciosamente como vacío.
     var daysData: Data? = nil
+}
+
+/// Snapshot de una carpeta de rutinas. Es opcional en la raíz para seguir
+/// leyendo copias creadas antes de existir las carpetas.
+struct RoutineFolderBackupDTO: Codable, Equatable {
+    var id: UUID
+    var name: String
+    var sortOrder: Int
 }
 
 // MARK: - DTOs de sesiones
@@ -362,6 +376,9 @@ struct AppBackupData: Codable {
     var sessions: [WorkoutSessionBackupDTO]
     var settings: SettingsBackupDTO
     var assistedWeeks: [AssistedWeekPlanBackupDTO]? = nil
+    /// Carpetas de la pestaña Rutinas. Opcional para compatibilidad hacia
+    /// atrás: un archivo antiguo se importa con todas las rutinas sin carpeta.
+    var folders: [RoutineFolderBackupDTO]? = nil
 
     /// Comprobaciones estructurales mínimas antes de sustituir la base de datos.
     /// Un archivo con fechas invertidas o tamaños absurdos se rechaza en lugar
@@ -374,6 +391,10 @@ struct AppBackupData: Codable {
         }
 
         for week in assistedWeeks ?? [] where week.days.count > 7 {
+            return false
+        }
+
+        if (folders ?? []).count > 1_000 {
             return false
         }
 
@@ -611,6 +632,9 @@ enum BackupManager {
         )
         let exercises: [Exercise] = (try? context.fetch(FetchDescriptor<Exercise>())) ?? []
         let assistedPlans: [AssistedWeekPlan] = (try? context.fetch(FetchDescriptor<AssistedWeekPlan>())) ?? []
+        let folders: [RoutineFolder] = (try? context.fetch(
+            FetchDescriptor<RoutineFolder>(sortBy: [SortDescriptor(\RoutineFolder.sortOrder)])
+        )) ?? []
 
         var issues: [BackupIssue] = []
         var exerciseSnapshotsByName: [String: ExerciseBackupDTO] = [:]
@@ -631,10 +655,25 @@ enum BackupManager {
             exerciseSnapshotsByID[exercise.id] = snapshot
         }
 
+        // La pertenencia se exporta como `folderID` en cada rutina, aunque en
+        // la base viva en la carpeta: el archivo sigue siendo plano y legible.
+        var folderIDByRoutineID: [UUID: UUID] = [:]
+        for folder in folders {
+            for routineID in folder.routineIDs where folderIDByRoutineID[routineID] == nil {
+                folderIDByRoutineID[routineID] = folder.id
+            }
+        }
+
         var routineDTOs: [RoutineBackupDTO] = []
         routineDTOs.reserveCapacity(routines.count)
         for routine in routines {
-            routineDTOs.append(makeRoutineDTO(routine, issues: &issues))
+            routineDTOs.append(
+                makeRoutineDTO(
+                    routine,
+                    folderID: folderIDByRoutineID[routine.id],
+                    issues: &issues
+                )
+            )
         }
         let sessionDTOs: [WorkoutSessionBackupDTO] = sessions.map { (session: WorkoutSession) -> WorkoutSessionBackupDTO in
             return makeSessionDTO(
@@ -669,12 +708,23 @@ enum BackupManager {
             routines: routineDTOs,
             sessions: sessionDTOs,
             settings: makeSettingsDTO(),
-            assistedWeeks: assistedDTOs
+            assistedWeeks: assistedDTOs,
+            folders: folders.map { (folder: RoutineFolder) -> RoutineFolderBackupDTO in
+                return RoutineFolderBackupDTO(
+                    id: folder.id,
+                    name: folder.name,
+                    sortOrder: folder.sortOrder
+                )
+            }
         )
         return BackupBuild(backup: backup, issues: issues)
     }
 
-    private static func makeRoutineDTO(_ routine: Routine, issues: inout [BackupIssue]) -> RoutineBackupDTO {
+    private static func makeRoutineDTO(
+        _ routine: Routine,
+        folderID: UUID?,
+        issues: inout [BackupIssue]
+    ) -> RoutineBackupDTO {
         let exercises: [RoutineExerciseBackupDTO] = routine.exercises
             .sorted { (lhs: RoutineExercise, rhs: RoutineExercise) -> Bool in
                 return lhs.sortOrder < rhs.sortOrder
@@ -713,7 +763,8 @@ enum BackupManager {
             sortOrder: routine.sortOrder,
             source: routine.source.rawValue,
             exercises: exercises,
-            isArchived: routine.isArchived
+            isArchived: routine.isArchived,
+            folderID: folderID
         )
     }
 
@@ -883,6 +934,25 @@ enum BackupManager {
             by: { (exercise: Exercise) -> String in normalizedName(exercise.name) }
         )
 
+        // Carpetas: identidad única y nombre utilizable.
+        var folderIDs: Set<UUID> = []
+        for folder in backup.folders ?? [] {
+            if !folderIDs.insert(folder.id).inserted {
+                add(
+                    .incompatible,
+                    .duplicateFolderID,
+                    "El UUID de carpeta \(folder.id.uuidString) aparece más de una vez en la copia."
+                )
+            }
+            if folder.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                add(
+                    .incompatible,
+                    .missingFolderName,
+                    "Hay una carpeta sin nombre en la copia de seguridad."
+                )
+            }
+        }
+
         // Rutinas y enlaces.
         var routineByID: [UUID: RoutineBackupDTO] = [:]
         var allRoutineExerciseIDs: Set<UUID> = []
@@ -988,6 +1058,14 @@ enum BackupManager {
                     .warning,
                     .invalidRoutineSource,
                     "La rutina «\(routine.name)» tiene una procedencia desconocida; se restaurará como manual.",
+                    routineID: routine.id
+                )
+            }
+            if let folderID = routine.folderID, !folderIDs.contains(folderID) {
+                add(
+                    .warning,
+                    .unknownRoutineFolder,
+                    "La rutina «\(routine.name)» pertenece a una carpeta que no está en la copia; se restaurará en la lista principal.",
                     routineID: routine.id
                 )
             }
@@ -1481,6 +1559,14 @@ enum BackupManager {
         with backup: AppBackupData,
         context: ModelContext
     ) throws -> [UUID] {
+        // `try?` para que una copia sobre una base sin el modelo de carpetas
+        // (por ejemplo, un store de prueba con un esquema anterior) siga
+        // restaurando rutinas y sesiones con normalidad.
+        let existingFolders: [RoutineFolder] = (try? context.fetch(FetchDescriptor<RoutineFolder>())) ?? []
+        for folder in existingFolders {
+            context.delete(folder)
+        }
+
         let assistedPlans: [AssistedWeekPlan] = try context.fetch(FetchDescriptor<AssistedWeekPlan>())
         for plan in assistedPlans {
             context.delete(plan)
@@ -1506,6 +1592,21 @@ enum BackupManager {
         var exerciseLookup: ExerciseLookup = try ExerciseLookup(context: context)
         var importedRoutineIDs: [UUID] = []
 
+        // Las carpetas se crean antes que las rutinas para poder asignar la
+        // pertenencia en la misma transacción. Una referencia a una carpeta que
+        // no está en el archivo se restaura sin carpeta.
+        var foldersByID: [UUID: RoutineFolder] = [:]
+        var routineIDsByFolder: [UUID: [UUID]] = [:]
+        for folderDTO in backup.folders ?? [] {
+            let folder: RoutineFolder = RoutineFolder(
+                id: folderDTO.id,
+                name: folderDTO.name,
+                sortOrder: folderDTO.sortOrder
+            )
+            context.insert(folder)
+            foldersByID[folder.id] = folder
+        }
+
         for routineDTO in backup.routines {
             let routine: Routine = Routine(
                 id: routineDTO.id,
@@ -1516,6 +1617,12 @@ enum BackupManager {
                 source: routineDTO.source.flatMap(RoutineSource.init(rawValue:)) ?? .manual
             )
             context.insert(routine)
+
+            // Una referencia a una carpeta que no está en el archivo se
+            // restaura sin carpeta (la validación ya lo avisa).
+            if let folderID: UUID = routineDTO.folderID, foldersByID[folderID] != nil {
+                routineIDsByFolder[folderID, default: []].append(routine.id)
+            }
             importedRoutineIDs.append(routine.id)
 
             var routineExercises: [RoutineExercise] = []
@@ -1544,6 +1651,12 @@ enum BackupManager {
                 routineExercises.append(routineExercise)
             }
             routine.exercises = routineExercises
+        }
+
+        // La pertenencia se reconstruye en la carpeta, en el orden en que las
+        // rutinas aparecen en el archivo (ordenadas por `sortOrder`).
+        for (folderID, routineIDs) in routineIDsByFolder {
+            foldersByID[folderID]?.routineIDs = routineIDs
         }
 
         for sessionDTO in backup.sessions {

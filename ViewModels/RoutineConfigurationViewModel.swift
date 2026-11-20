@@ -35,7 +35,26 @@ final class RoutineConfigurationViewModel: ObservableObject {
         return plan.mode != nil
     }
 
+    /// Modalidades de la pantalla de organización. «Crear mis rutinas más
+    /// tarde» solo se ofrece en la configuración inicial: Ajustes → Cambiar
+    /// rutina existe para sustituir la organización actual por una nueva.
+    var availableModes: [RoutineOrganizationMode] {
+        guard context == .initialSetup else {
+            return RoutineOrganizationMode.allCases.filter { (mode: RoutineOrganizationMode) -> Bool in
+                return mode != .later
+            }
+        }
+        return RoutineOrganizationMode.allCases
+    }
+
+    /// La modalidad «más tarde» no abre constructor, generador ni resumen: el
+    /// flujo termina directamente y la lista de rutinas queda vacía.
+    var completesWithoutRoutines: Bool {
+        return plan.mode == .later
+    }
+
     func selectMode(_ mode: RoutineOrganizationMode) {
+        guard availableModes.contains(mode) else { return }
         plan.mode = mode
     }
 
@@ -183,6 +202,28 @@ final class RoutineConfigurationViewModel: ObservableObject {
         guard let mode: RoutineOrganizationMode = plan.mode else { return [] }
 
         switch mode {
+        case .later:
+            return [
+                RoutineSummarySection(
+                    code: "ORG.04",
+                    title: "Rutinas",
+                    items: [
+                        RoutineSummaryItem(
+                            code: "count",
+                            label: "Rutinas a crear",
+                            value: "0"
+                        ),
+                        RoutineSummaryItem(
+                            code: "status",
+                            label: "Organización",
+                            value: "Sin definir"
+                        )
+                    ],
+                    note: "Terminarás la configuración sin rutinas. Podrás crear la primera desde la pestaña Rutinas o con Cambiar rutina en Ajustes."
+                ),
+                preferencesSection(preferences)
+            ]
+
         case .createOwn:
             return [
                 RoutineSummarySection(

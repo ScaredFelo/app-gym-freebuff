@@ -13,11 +13,11 @@ struct RoutineSelectionView: View {
         OnboardingStepLayout(
             chrome: chrome,
             title: "¿Cómo quieres organizar tu entrenamiento?",
-            subtitle: "Elige una modalidad. Podrás volver atrás y cambiarla antes de confirmar el resumen.",
+            subtitle: "Elige una modalidad. Podrás volver atrás y cambiarla antes de continuar.",
             footer: footer
         ) {
             VStack(spacing: 10.0) {
-                ForEach(RoutineOrganizationMode.allCases) { (mode: RoutineOrganizationMode) in
+                ForEach(viewModel.availableModes) { (mode: RoutineOrganizationMode) in
                     OnboardingChoiceCard(
                         code: mode.code,
                         title: mode.title,
@@ -32,10 +32,18 @@ struct RoutineSelectionView: View {
                 }
             }
 
-            OnboardingInfoNote(
-                text: "Las tres modalidades son excluyentes. «Utilizar plantillas» abre el constructor de siete días; la generación automática usa la matriz W/L/U. Las rutinas personales nunca se borran."
-            )
+            OnboardingInfoNote(text: noteText)
         }
+    }
+
+    private var noteText: String {
+        let base: String = "Las modalidades son excluyentes. «Utilizar plantillas» abre el constructor de siete días; la generación automática usa la matriz W/L/U."
+
+        if viewModel.availableModes.contains(.later) {
+            return base + " «Crear mis rutinas más tarde» termina la configuración sin generar ninguna rutina. Las rutinas personales nunca se borran."
+        }
+
+        return base + " Las rutinas personales nunca se borran."
     }
 
     private var footer: AnyView {

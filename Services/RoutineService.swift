@@ -88,6 +88,12 @@ enum RoutineService {
 
         do {
             switch mode {
+            case .later:
+                // Terminar la configuración sin rutinas: no se archiva, no se
+                // desactiva ningún plan y no se crea ninguna rutina. Solo se
+                // guardan las preferencias y la modalidad elegida.
+                break
+
             case .createOwn:
                 archivedCount = try archiveActiveRoutines(context: context, replacesOrganization: replacesOrganization)
                 try deactivateAssistedWeekPlans(context: context)
@@ -190,6 +196,37 @@ enum RoutineService {
         }
 
         return archived
+    }
+
+    /// Archiva las rutinas activas y desactiva el plan asistido vigente para
+    /// sustituir la organización por un split importado.
+    ///
+    /// Es la misma lógica de `apply(...)` con `replacesOrganization`, pero sin
+    /// crear rutinas, sin tocar ajustes y **sin guardar**: el llamador controla
+    /// la transacción completa. No borra nada y no protege ningún UUID.
+    @discardableResult
+    static func archiveActiveRoutinesForOrganizationReplacement(
+        context: ModelContext
+    ) throws -> Int {
+        let archived: Int = try archiveActiveRoutines(context: context, replacesOrganization: true)
+        try deactivateAssistedWeekPlans(context: context)
+        return archived
+    }
+
+    // MARK: - Creación manual
+
+    /// Borrador de rutina vacía para el botón «+» y el estado vacío de la
+    /// lista. No se inserta en el contexto: el editor la guarda al confirmar.
+    /// Funciona igual con la lista vacía, donde el orden es 0.
+    static func makeManualDraftRoutine(after routines: [Routine]) -> Routine {
+        let nextOrder: Int = (routines.map(\.sortOrder).max() ?? -1) + 1
+        return Routine(
+            name: "Nueva rutina",
+            isTemplate: true,
+            sortOrder: nextOrder,
+            exercises: [],
+            source: .manual
+        )
     }
 
     // MARK: - Creación de estructuras vacías

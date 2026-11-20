@@ -18,6 +18,76 @@
     <string>$(MARKETING_VERSION)</string>
     <key>CFBundleVersion</key>
     <string>$(CURRENT_PROJECT_VERSION)</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Rutina de AppGym</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.jordiferres.appgym.routine</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Split de AppGym</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.jordiferres.appgym.split</string>
+            </array>
+        </dict>
+    </array>
+    <key>LSSupportsOpeningDocumentsInPlace</key>
+    <true/>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Rutina de AppGym</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.jordiferres.appgym.routine</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>appgymroutine</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/vnd.appgym.routine+json</string>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.json</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Split de AppGym</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.jordiferres.appgym.split</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>appgymsplit</string>
+                </array>
+                <key>public.mime-type</key>
+                <string>application/vnd.appgym.split+json</string>
+            </dict>
+        </dict>
+    </array>
     <key>NSBluetoothAlwaysUsageDescription</key>
     <string>AppGym requiere acceso a Bluetooth para conectar con el sensor de pulso cardíaco.</string>
     <key>NSBluetoothPeripheralUsageDescription</key>

@@ -61,43 +61,17 @@ public final class MockDataGenerator {
             let existingCount: Int = try context.fetchCount(descriptor)
             guard existingCount == 0 else { return }
 
-            var exercisesByName: [String: Exercise] = [:]
             for definition in catalog {
                 let exercise: Exercise = makeExercise(from: definition)
                 context.insert(exercise)
-                exercisesByName[normalize(definition.name)] = exercise
             }
 
-            for (routineIndex, routineDefinition) in routines.enumerated() {
-                var routineExercises: [RoutineExercise] = []
-                var order: Int = 0
-
-                for entry in routineDefinition.entries {
-                    guard let exercise: Exercise = exercisesByName[normalize(entry.exerciseName)] else { continue }
-                    let routineExercise: RoutineExercise = RoutineExercise(
-                        exercise: exercise,
-                        defaultSets: entry.sets,
-                        targetRepsMin: entry.targetRepsMin,
-                        targetRepsMax: entry.targetRepsMax,
-                        sortOrder: order,
-                        restSeconds: entry.restSeconds
-                    )
-                    context.insert(routineExercise)
-                    routineExercises.append(routineExercise)
-                    order += 1
-                }
-
-                let routine: Routine = Routine(
-                    id: routineDefinition.id,
-                    name: routineDefinition.name,
-                    isTemplate: true,
-                    sortOrder: routineIndex,
-                    exercises: routineExercises,
-                    source: .automatic
-                )
-                context.insert(routine)
-            }
-
+            // Las cinco rutinas de ejemplo ya no se siembran. La organización
+            // del entrenamiento la elige el usuario en el onboarding —que
+            // puede terminarlo sin ninguna rutina—, así que una instalación
+            // nueva empieza con la lista vacía. Las definiciones de `routines`
+            // se conservan para sincronizar bases antiguas en
+            // `applyRoutineTableUpdateIfNeeded`.
             try context.save()
         } catch {
             print("Error seeding mock data: \(error)")

@@ -90,16 +90,43 @@ enum AppSchemaV5: VersionedSchema {
     }
 }
 
+/// Versión 6: añade las carpetas de rutinas.
+///
+/// La pertenencia se guarda dentro de la carpeta (`routineIDsData`, una lista
+/// de UUID serializada), no como relación ni como columna nueva en `Routine`.
+/// Así este paso solo **añade una entidad**: la tabla de rutinas de una
+/// instalación existente no cambia y ninguna regla `deleteRule` puede arrastrar
+/// rutinas o historial.
+///
+/// Al no existir pertenencia previa, todas las rutinas existentes aparecen
+/// inicialmente en la lista principal, sin carpeta, conservando su UUID.
+enum AppSchemaV6: VersionedSchema {
+    static var versionIdentifier: Schema.Version { Schema.Version(6, 0, 0) }
+
+    static var models: [any PersistentModel.Type] {
+        [
+            Exercise.self,
+            Routine.self,
+            RoutineExercise.self,
+            WorkoutSession.self,
+            WorkoutSetLog.self,
+            AssistedWeekPlan.self,
+            RoutineFolder.self
+        ]
+    }
+}
+
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self]
+        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self]
     }
     static var stages: [MigrationStage] {
         [
             .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
             .lightweight(fromVersion: AppSchemaV2.self, toVersion: AppSchemaV3.self),
             .lightweight(fromVersion: AppSchemaV3.self, toVersion: AppSchemaV4.self),
-            .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self)
+            .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
+            .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self)
         ]
     }
 }
@@ -133,7 +160,7 @@ enum StoreBootstrap {
     /// `storeURL` existe para las pruebas con un store temporal. En producción
     /// se usa la configuración por defecto de SwiftData.
     static func makeContainer(storeURL: URL? = nil) -> Outcome {
-        let schema = Schema(versionedSchema: AppSchemaV5.self)
+        let schema = Schema(versionedSchema: AppSchemaV6.self)
 
         do {
             let configuration: ModelConfiguration
@@ -207,6 +234,8 @@ struct AppGymApp: App {
 
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var bpmManager = BPMManager.shared
+    /// Recibe los archivos `.appgymroutine` abiertos desde otras apps.
+    @StateObject private var importCoordinator = RoutineImportCoordinator.shared
     @State private var didRunLaunchTasks = false
     /// Se lee al arrancar; el flujo de onboarding lo pone a `true` solo cuando
     /// el guardado final ha terminado correctamente.
@@ -255,6 +284,55 @@ struct AppGymApp: App {
             guard newPhase == .active,
                   Date().timeIntervalSince(WidgetStreakStore.load().lastUpdated) > 30.0 else { return }
             WidgetStreakStore.refresh(modelContext: container.mainContext)
+        }
+        .onOpenURL { (url: URL) in
+            importCoordinator.receive(url)
+        }
+        .sheet(
+            item: $importCoordinator.pendingRequest,
+            onDismiss: {
+                // Deslizar la hoja equivale a «No»: no se modifica nada.
+                importCoordinator.routineSheetDismissed()
+            }
+        ) { (request: RoutineImportRequest) in
+            RoutineImportConfirmationView(
+                request: request,
+                onCancel: { importCoordinator.cancel() },
+                onConfirm: { importCoordinator.confirm(in: container.mainContext) }
+            )
+        }
+        .sheet(
+            item: $importCoordinator.pendingSplit,
+            onDismiss: {
+                importCoordinator.splitSheetDismissed()
+            }
+        ) { (request: SplitImportRequest) in
+            SplitImportFlowView(
+                request: request,
+                onCancel: { importCoordinator.cancelSplit() },
+                onImportAsNewFolder: { (name: String) in
+                    importCoordinator.importSplit(asNewFolderNamed: name, in: container.mainContext)
+                },
+                onReplaceOrganization: {
+                    importCoordinator.replaceOrganizationWithSplit(in: container.mainContext)
+                }
+            )
+        }
+        .alert(
+            importCoordinator.notice?.title ?? "",
+            isPresented: Binding(
+                get: { importCoordinator.notice != nil },
+                set: { (isPresented: Bool) in
+                    if !isPresented { importCoordinator.dismissNotice() }
+                }
+            ),
+            presenting: importCoordinator.notice
+        ) { (_: RoutineImportNotice) in
+            Button("Entendido", role: .cancel) {
+                importCoordinator.dismissNotice()
+            }
+        } message: { (notice: RoutineImportNotice) in
+            Text(notice.message)
         }
     }
 

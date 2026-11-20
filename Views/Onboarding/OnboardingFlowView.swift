@@ -203,6 +203,15 @@ struct OnboardingFlowView: View {
     private func handleOrganizationContinue() {
         guard let mode: RoutineOrganizationMode = configuration.plan.mode else { return }
         OnboardingHaptics.selection()
+
+        // «Crear mis rutinas más tarde» no abre constructor, organizador ni
+        // generador: se guardan las preferencias, el onboarding queda
+        // completado y se entra directamente en la app.
+        guard !configuration.completesWithoutRoutines else {
+            confirmPlan()
+            return
+        }
+
         advance(to: step(for: mode))
     }
 
@@ -214,6 +223,10 @@ struct OnboardingFlowView: View {
             return .templateBuilder
         case .automatic:
             return .automaticConfiguration
+        case .later:
+            // No tiene pantalla de configuración ni resumen propio: el flujo
+            // termina antes de navegar a ningún paso.
+            return .summary
         }
     }
 
@@ -313,7 +326,8 @@ struct OnboardingFlowView: View {
     }
 
     private func modeStep() -> Step {
-        guard let mode: RoutineOrganizationMode = configuration.plan.mode else {
+        guard let mode: RoutineOrganizationMode = configuration.plan.mode,
+              mode != .later else {
             return .ownRoutines
         }
         return step(for: mode)

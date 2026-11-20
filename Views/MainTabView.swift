@@ -1,8 +1,20 @@
 import SwiftUI
 import SwiftData
 
+/// Pestañas de la app. Se expone para poder llevar al usuario a Rutinas tras
+/// importar un archivo compartido.
+public enum AppTab: Hashable {
+    case routines
+    case exercises
+    case progress
+    case settings
+}
+
 public struct MainTabView: View {
     @Environment(\.modelContext) private var modelContext
+
+    @StateObject private var importCoordinator = RoutineImportCoordinator.shared
+    @State private var selectedTab: AppTab = .routines
 
     /// Sesión + rutina restauradas como una sola unidad. Si cualquiera de las
     /// dos no existe, no se presenta nada (evita el `fullScreenCover` vacío que
@@ -21,13 +33,14 @@ public struct MainTabView: View {
     }
 
     public var body: some View {
-        TabView {
+        TabView(selection: $selectedTab) {
             NavigationStack {
                 RoutineListView()
             }
             .tabItem {
                 Label("Rutinas", systemImage: "figure.strengthtraining.traditional")
             }
+            .tag(AppTab.routines)
 
             NavigationStack {
                 ExerciseListView()
@@ -35,6 +48,7 @@ public struct MainTabView: View {
             .tabItem {
                 Label("Ejercicios", systemImage: "list.bullet")
             }
+            .tag(AppTab.exercises)
 
             NavigationStack {
                 AnalyticsView()
@@ -42,6 +56,7 @@ public struct MainTabView: View {
             .tabItem {
                 Label("Progreso", systemImage: "chart.line.uptrend.xyaxis")
             }
+            .tag(AppTab.progress)
 
             NavigationStack {
                 SettingsView()
@@ -49,6 +64,7 @@ public struct MainTabView: View {
             .tabItem {
                 Label("Configuración", systemImage: "gearshape.fill")
             }
+            .tag(AppTab.settings)
         }
         .tint(EndfieldPalette.accentYellow)
         .preferredColorScheme(.dark)
@@ -68,6 +84,11 @@ public struct MainTabView: View {
                 HealthKitManager.shared.requestAuthorization()
             }
             scheduleRestoreIfNeeded()
+        }
+        .onChange(of: importCoordinator.revealRoutines) { (_, reveal: Bool) in
+            guard reveal else { return }
+            selectedTab = .routines
+            importCoordinator.revealRoutines = false
         }
     }
 
