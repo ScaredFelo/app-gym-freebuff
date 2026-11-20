@@ -34,8 +34,7 @@ struct CreateOwnRoutinesView: View {
                     }
 
                     Stepper(
-                        value: $viewModel.plan.ownRoutineCount,
-                        in: RoutinePlanDraft.routineCountRange,
+                        value: routineCountBinding,
                         step: 1
                     ) {
                         Text("Ajustar número de rutinas: \(viewModel.plan.clampedRoutineCount)")
@@ -91,6 +90,17 @@ struct CreateOwnRoutinesView: View {
                 symbolName: "list.bullet.rectangle"
             )
         }
+    }
+
+    /// Sin límite superior: se pueden crear dos rutinas para el mismo día.
+    /// Solo se impide bajar por debajo de la rutina mínima.
+    private var routineCountBinding: Binding<Int> {
+        return Binding(
+            get: { viewModel.plan.clampedRoutineCount },
+            set: { (value: Int) in
+                viewModel.plan.ownRoutineCount = max(value, RoutinePlanDraft.minimumRoutineCount)
+            }
+        )
     }
 
     private var footer: AnyView {

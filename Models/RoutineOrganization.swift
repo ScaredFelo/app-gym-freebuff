@@ -113,14 +113,17 @@ enum RoutineOrganizationMode: String, CaseIterable, Codable, Sendable, Identifia
 /// No crea rutinas ni guarda nada: la selección de modalidad solo vive en
 /// memoria hasta que se pulsa «Confirmar y empezar».
 struct RoutinePlanDraft {
-    static let routineCountRange: ClosedRange<Int> = 1...7
+    /// Solo hay mínimo: un mismo día puede tener dos sesiones (mañana y tarde)
+    /// y el número de rutinas manuales no depende de los siete días de la
+    /// semana, así que no existe límite superior.
+    static let minimumRoutineCount: Int = 1
     static let defaultRoutineCount: Int = 3
 
     var mode: RoutineOrganizationMode?
     var ownRoutineCount: Int = RoutinePlanDraft.defaultRoutineCount
 
     var clampedRoutineCount: Int {
-        return min(max(ownRoutineCount, Self.routineCountRange.lowerBound), Self.routineCountRange.upperBound)
+        return max(ownRoutineCount, Self.minimumRoutineCount)
     }
 
     var isReadyToSave: Bool {

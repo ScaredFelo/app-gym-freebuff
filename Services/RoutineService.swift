@@ -6,12 +6,18 @@ import SwiftData
 ///
 /// Reglas de protección de datos:
 /// - Nunca elimina rutinas ni ejercicios del catálogo.
-/// - Solo se archivan (`isArchived`) las rutinas generadas anteriores. Las
-///   manuales y las cinco rutinas personales se conservan, y las sesiones
+/// - Solo se archivan (`isArchived`) rutinas activas: las generadas en el
+///   onboarding y, al cambiar la organización desde Ajustes, también las
+///   manuales y las cinco personales. Nunca se borran, así que las sesiones
 ///   históricas mantienen sus referencias.
 /// - Las sesiones, series, pesos y récords no se tocan.
 /// - Todo se guarda en una única transacción: ante un error se hace `rollback`
 ///   y la app se queda exactamente como estaba.
+///
+/// `replacesOrganization` solo se usa desde Ajustes → Cambiar rutina: la
+/// organización actual se sustituye entera, así que también dejan de estar
+/// activas sus rutinas manuales y las cinco personales. Las rutinas nunca se
+/// borran y el historial sigue apuntando a ellas.
 enum RoutineService {
 
     /// Resultado de intentar eliminar una rutina desde la interfaz.
@@ -73,7 +79,8 @@ enum RoutineService {
         preferences: OnboardingPreferences,
         context: ModelContext,
         generatedWeek: GeneratedWeek? = nil,
-        assistedWeek: AssistedWeekDraft? = nil
+        assistedWeek: AssistedWeekDraft? = nil,
+        replacesOrganization: Bool = false
     ) throws -> RoutineApplicationResult {
         guard let mode = plan.mode else {
             throw RoutineConfigurationError.missingOrganizationMode
@@ -92,7 +99,7 @@ enum RoutineService {
         do {
             switch mode {
             case .createOwn:
-                archivedCount = try archiveActiveRoutines(context: context)
+                archivedCount = try archiveActiveRoutines(context: context, replacesOrganization: replacesOrganization)
                 try deactivateAssistedWeekPlans(context: context)
                 createdCount = try createEmptyRoutines(plan: plan, context: context)
 
@@ -100,7 +107,7 @@ enum RoutineService {
                 guard let week = generatedWeek else {
                     throw RoutineConfigurationError.missingGeneratedPlan
                 }
-                archivedCount = try archiveActiveRoutines(context: context)
+                archivedCount = try archiveActiveRoutines(context: context, replacesOrganization: replacesOrganization)
                 try deactivateAssistedWeekPlans(context: context)
                 createdCount = try createGeneratedRoutines(
                     week: week,
@@ -116,10 +123,10 @@ enum RoutineService {
                     throw RoutineConfigurationError.missingAssistedWeek
                 }
 
-                // Se archiva el plan generado anterior (automático o asistido),
-                // pero nunca las rutinas manuales ni las cinco personales
-                // sembradas, que se excluyen por sus IDs estables.
-                archivedCount = try archiveActiveRoutines(context: context)
+                // Se archiva el plan anterior: en el onboarding solo el
+                // generado (automático o asistido); al cambiar la organización,
+                // todas las rutinas activas.
+                archivedCount = try archiveActiveRoutines(context: context, replacesOrganization: replacesOrganization)
                 let routines: [Routine] = try createGeneratedRoutines(
                     week: assistedWeek.week,
                     source: .assisted,
@@ -168,23 +175,27 @@ enum RoutineService {
 
     // MARK: - Archivado
 
-    /// Archiva las rutinas generadas del plan activo (`automatic` o `assisted`).
-    /// No las borra: el historial de sesiones sigue apuntando a sus IDs.
+    /// Archiva las rutinas del plan activo. No las borra: el historial de
+    /// sesiones sigue apuntando a sus IDs.
     ///
-    /// Las rutinas manuales se conservan aunque estén activas. La rutina
-    /// temporal del entreno libre (`isTemplate == false`) tampoco se archiva.
-    /// `source == .manual` es también el valor seguro para filas antiguas sin
-    /// procedencia: nunca se archivan por una migración. Las cinco rutinas
+    /// En el onboarding solo se archivan las generadas: las manuales se
+    /// conservan aunque estén activas y la rutina temporal del entreno libre
+    /// (`isTemplate == false`) nunca se archiva. `source == .manual` es también
+    /// el valor seguro para filas antiguas sin procedencia. Las cinco rutinas
     /// personales sembradas se excluyen por ID aunque su origen sea `automatic`.
-    private static func archiveActiveRoutines(context: ModelContext) throws -> Int {
+    ///
+    /// Al cambiar la organización desde Ajustes (`replacesOrganization`) se
+    /// archivan todas las rutinas activas, incluidas las manuales y las cinco
+    /// personales: forman parte de la organización que se sustituye. Solo se
+    /// desactivan; sus datos y su historial permanecen.
+    private static func archiveActiveRoutines(context: ModelContext, replacesOrganization: Bool) throws -> Int {
         let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
         var archived: Int = 0
 
-        // Las cinco rutinas personales sembradas tienen IDs estables y se
-        // conservan aunque su procedencia almacenada sea `automatic`.
-        for routine in routines where routine.isActivePlanRoutine
-            && routine.source != .manual
-            && !isProtectedPersonalRoutine(routine) {
+        for routine in routines where routine.isActivePlanRoutine {
+            if !replacesOrganization && (routine.source == .manual || isProtectedPersonalRoutine(routine)) {
+                continue
+            }
             routine.isArchived = true
             archived += 1
         }

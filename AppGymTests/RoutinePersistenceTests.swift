@@ -2038,6 +2038,856 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 0)
     }
 
+    // MARK: - C12: el onboarding omite la organización cuando importa rutinas
+
+    func testImportedBackupSkipsTrainingOrganizationStep() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "PUSH propia", exercises: []),
+            makeBackupRoutine(name: "PULL propia", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        XCTAssertFalse(viewModel.importedRoutinesReplaceOrganization)
+
+        viewModel.prepareBackupImport(from: url, context: context)
+        // Validar el archivo no basta: mientras no se aplique, el flujo normal
+        // sigue mostrando la selección de modalidad.
+        XCTAssertFalse(viewModel.importedRoutinesReplaceOrganization)
+
+        _ = viewModel.confirmPreparedBackup(
+            context: context,
+            safetyCopyDirectory: directory.appendingPathComponent("copias", isDirectory: true)
+        )
+
+        XCTAssertEqual(viewModel.backupState, .imported)
+        XCTAssertTrue(viewModel.importedRoutinesReplaceOrganization)
+    }
+
+    func testOnboardingWithoutImportKeepsOrganizationStep() throws {
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.selectPreviousUse(false)
+        viewModel.selectPersonalization(.useDefaults)
+
+        XCTAssertFalse(viewModel.importedRoutinesReplaceOrganization)
+        XCTAssertFalse(viewModel.shouldShowPersonalizationSteps)
+
+        let configuration: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+        XCTAssertFalse(configuration.canContinueFromOrganization)
+        configuration.selectMode(.createOwn)
+        XCTAssertTrue(configuration.canContinueFromOrganization)
+
+        // Desde Ajustes → Cambiar rutina tampoco se omite la modalidad.
+        let change: OnboardingViewModel = OnboardingViewModel(context: .changeRoutine)
+        XCTAssertFalse(change.importedRoutinesReplaceOrganization)
+    }
+
+    func testSuccessfulImportDoesNotGenerateAnotherSplit() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada A", exercises: []),
+            makeBackupRoutine(name: "Importada B", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: context)
+        _ = viewModel.confirmPreparedBackup(
+            context: context,
+            safetyCopyDirectory: directory.appendingPathComponent("copias", isDirectory: true)
+        )
+
+        XCTAssertTrue(viewModel.importedRoutinesReplaceOrganization)
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 2)
+        XCTAssertEqual(Set(routines.map(\.name)), Set(["Importada A", "Importada B"]))
+
+        // No se ha elegido modalidad ni se ha generado ningún plan adicional.
+        let configuration: RoutineConfigurationViewModel = RoutineConfigurationViewModel(context: .initialSetup)
+        XCTAssertNil(configuration.plan.mode)
+        XCTAssertNil(configuration.automatic.week)
+        XCTAssertNil(configuration.assisted.generatedWeek)
+    }
+
+    func testCancelledImportKeepsNormalFlowAndDatabase() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        context.insert(sentinel)
+        try context.save()
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Cancelada", exercises: [])
+        ])
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: context)
+        XCTAssertEqual(viewModel.backupState, .reviewing)
+
+        viewModel.cancelPreparedBackup()
+
+        XCTAssertEqual(viewModel.backupState, .idle)
+        XCTAssertNil(viewModel.preparedBackupPlan)
+        XCTAssertFalse(viewModel.importedRoutinesReplaceOrganization)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Routine>()), 1)
+    }
+
+    func testCorruptImportDoesNotFinishTheFlow() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        context.insert(sentinel)
+        try context.save()
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackupData(Data("esto no es JSON".utf8), in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: context)
+
+        XCTAssertNil(viewModel.preparedBackupPlan)
+        guard case .failed = viewModel.backupState else {
+            XCTFail("Se esperaba un estado de error: \(viewModel.backupState)")
+            return
+        }
+        XCTAssertFalse(viewModel.importedRoutinesReplaceOrganization)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Routine>()), 1)
+    }
+
+    func testIncompatibleImportDoesNotFinishTheFlow() throws {
+        let duplicateID: UUID = UUID()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(id: duplicateID, name: "Primera", exercises: []),
+            makeBackupRoutine(id: duplicateID, name: "Segunda", exercises: [])
+        ])
+
+        let context: ModelContext = try makeAssistedContext()
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        context.insert(sentinel)
+        try context.save()
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: context)
+
+        XCTAssertEqual(viewModel.backupState, .reviewing)
+        XCTAssertEqual(viewModel.preparedBackupPlan?.report.canImport, false)
+
+        let outcome: Result<BackupImportResult, Error> = viewModel.confirmPreparedBackup(
+            context: context,
+            safetyCopyDirectory: directory.appendingPathComponent("copias", isDirectory: true)
+        )
+        guard case .failure = outcome else {
+            XCTFail("Una copia incompatible no puede confirmarse")
+            return
+        }
+
+        guard case .failed = viewModel.backupState else {
+            XCTFail("Se esperaba un estado de error: \(viewModel.backupState)")
+            return
+        }
+        XCTAssertFalse(viewModel.importedRoutinesReplaceOrganization)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Routine>()), 1)
+    }
+
+    func testPersonalizationSurvivesBothPaths() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada", exercises: [])
+        ])
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: context)
+        _ = viewModel.confirmPreparedBackup(
+            context: context,
+            safetyCopyDirectory: directory.appendingPathComponent("copias", isDirectory: true)
+        )
+
+        // Los ajustes del archivo se muestran, y el usuario puede seguir
+        // personalizando sin que sus rutinas importadas cambien.
+        XCTAssertEqual(viewModel.multipowerBarWeight, 10.0, accuracy: 0.0001)
+        viewModel.adjustMultipowerBarWeight(by: 5.0)
+        viewModel.selectPersonalization(.useDefaults)
+
+        XCTAssertEqual(viewModel.preferences.clampedMultipowerBarWeight, 15.0, accuracy: 0.0001)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Routine>()), 1)
+
+        // Sin importación la personalización sigue igual: equipamiento y
+        // pulsaciones se piden en su propio paso.
+        let plain: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        plain.selectPersonalization(.customize)
+        let initialEZ: Double = plain.ezBarWeight
+        plain.adjustEZBarWeight(by: 2.5)
+
+        XCTAssertTrue(plain.shouldShowPersonalizationSteps)
+        XCTAssertEqual(plain.preferences.clampedEZBarWeight, min(initialEZ + 2.5, OnboardingPreferences.barWeightRange.upperBound), accuracy: 0.0001)
+        XCTAssertFalse(plain.importedRoutinesReplaceOrganization)
+    }
+
+    func testCompletingImportTwiceDoesNotDuplicateRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada A", exercises: []),
+            makeBackupRoutine(name: "Importada B", exercises: [])
+        ])
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: context)
+        _ = viewModel.confirmPreparedBackup(
+            context: context,
+            safetyCopyDirectory: directory.appendingPathComponent("copias-1", isDirectory: true)
+        )
+
+        let first: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(first.count, 2)
+
+        viewModel.prepareBackupImport(from: url, context: context)
+        _ = viewModel.confirmPreparedBackup(
+            context: context,
+            safetyCopyDirectory: directory.appendingPathComponent("copias-2", isDirectory: true)
+        )
+
+        let second: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(second.count, 2)
+        XCTAssertEqual(Set(second.map(\.id)), Set(first.map(\.id)))
+        XCTAssertEqual(Set(second.map(\.name)), Set(["Importada A", "Importada B"]))
+    }
+
+    // MARK: - C13: distribución manual sin límite de siete rutinas
+
+    func testManualDistributionCreatesSevenRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let result: RoutineApplicationResult = try applyOwnRoutines(count: 7, context: context)
+
+        XCTAssertEqual(result.createdRoutineCount, 7)
+
+        let routines: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(routines.count, 7)
+        XCTAssertEqual(routines.first?.name, "Rutina 01")
+        XCTAssertEqual(routines.last?.name, "Rutina 07")
+    }
+
+    func testManualDistributionCreatesEighthRoutine() throws {
+        let context: ModelContext = try makeAssistedContext()
+
+        var plan: RoutinePlanDraft = RoutinePlanDraft()
+        plan.ownRoutineCount = 8
+        XCTAssertEqual(plan.clampedRoutineCount, 8)
+
+        let result: RoutineApplicationResult = try applyOwnRoutines(count: 8, context: context)
+        XCTAssertEqual(result.createdRoutineCount, 8)
+
+        let routines: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(routines.count, 8)
+        XCTAssertEqual(routines.last?.name, "Rutina 08")
+    }
+
+    func testManualDistributionCreatesNinthRoutine() throws {
+        let context: ModelContext = try makeAssistedContext()
+        _ = try applyOwnRoutines(count: 9, context: context)
+
+        let routines: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(routines.count, 9)
+        XCTAssertEqual(routines.map(\.name).last, "Rutina 09")
+        XCTAssertEqual(routines.map(\.sortOrder), Array(0..<9))
+    }
+
+    func testManualDistributionCreatesMoreThanTenRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let result: RoutineApplicationResult = try applyOwnRoutines(count: 12, context: context)
+
+        XCTAssertEqual(result.createdRoutineCount, 12)
+
+        let routines: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(routines.count, 12)
+        XCTAssertEqual(routines.map(\.sortOrder), Array(0..<12))
+        XCTAssertEqual(routines.last?.name, "Rutina 12")
+    }
+
+    func testManualDistributionAllowsTwoRoutinesForTheSameDay() throws {
+        let context: ModelContext = try makeAssistedContext()
+        _ = try applyOwnRoutines(count: 2, context: context)
+
+        let routines: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(routines.count, 2)
+        XCTAssertNotEqual(routines[0].id, routines[1].id)
+
+        // Mañana y tarde del mismo día: dos rutinas distintas e identificables.
+        routines[0].name = "Lunes · mañana"
+        routines[1].name = "Lunes · tarde"
+        try context.save()
+
+        let reloaded: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(reloaded.map(\.name), ["Lunes · mañana", "Lunes · tarde"])
+        XCTAssertEqual(Set(reloaded.map(\.id)).count, 2)
+    }
+
+    func testEditingARoutineWithMoreThanSevenRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        _ = try applyOwnRoutines(count: 9, context: context)
+
+        let routines: [Routine] = try activeManualRoutines(in: context)
+        let target: Routine = try XCTUnwrap(routines.first { (routine: Routine) -> Bool in
+            return routine.name == "Rutina 09"
+        })
+
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        context.insert(exercise)
+        let link: RoutineExercise = RoutineExercise(
+            exercise: exercise,
+            defaultSets: 4,
+            targetRepsMin: 5,
+            targetRepsMax: 7,
+            sortOrder: 0,
+            defaultWeight: 90.0,
+            restSeconds: 180,
+            notes: "edición"
+        )
+        context.insert(link)
+        target.exercises = [link]
+        target.name = "Rutina 09 editada"
+        try context.save()
+
+        let reloaded: [Routine] = try activeManualRoutines(in: context)
+        let edited: Routine = try XCTUnwrap(reloaded.first { (routine: Routine) -> Bool in
+            return routine.id == target.id
+        })
+        XCTAssertEqual(edited.name, "Rutina 09 editada")
+        XCTAssertEqual(edited.exercises.count, 1)
+        XCTAssertEqual(edited.exercises.first?.defaultSets, 4)
+        XCTAssertEqual(edited.exercises.first?.restSeconds, 180)
+        XCTAssertEqual(edited.exercises.first?.exercise?.name, "Press banca")
+        XCTAssertEqual(reloaded.count, 9)
+    }
+
+    func testDeletingARoutineWithMoreThanSevenRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        _ = try applyOwnRoutines(count: 10, context: context)
+
+        let before: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(before.count, 10)
+
+        let target: Routine = before[3]
+        let expectedIDs: Set<UUID> = Set(before.filter { (routine: Routine) -> Bool in
+            return routine.id != target.id
+        }.map(\.id))
+
+        context.delete(target)
+        try context.save()
+
+        let after: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(after.count, 9)
+        XCTAssertEqual(Set(after.map(\.id)), expectedIDs)
+    }
+
+    func testReorderingADistributionWithMoreThanSevenRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        _ = try applyOwnRoutines(count: 9, context: context)
+
+        let before: [Routine] = try activeManualRoutines(in: context)
+        let originalIDs: [UUID] = before.map(\.id)
+
+        for (index, routine) in before.enumerated() {
+            routine.sortOrder = before.count - 1 - index
+        }
+        try context.save()
+
+        let after: [Routine] = try activeManualRoutines(in: context)
+        XCTAssertEqual(after.map(\.id), Array(originalIDs.reversed()))
+        XCTAssertEqual(after.map(\.sortOrder), Array(0..<9))
+    }
+
+    func testMoreThanSevenRoutinesSurviveAReload() throws {
+        let schema: Schema = Schema(versionedSchema: AppSchemaV5.self)
+        let configuration: ModelConfiguration = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container: ModelContainer = try ModelContainer(for: schema, configurations: [configuration])
+
+        let context: ModelContext = ModelContext(container)
+        _ = try applyOwnRoutines(count: 10, context: context)
+
+        // Un contexto nuevo sobre el mismo contenedor simula reabrir la base.
+        let reloaded: ModelContext = ModelContext(container)
+        let routines: [Routine] = try reloaded.fetch(FetchDescriptor<Routine>())
+            .sorted { (lhs: Routine, rhs: Routine) -> Bool in lhs.sortOrder < rhs.sortOrder }
+
+        XCTAssertEqual(routines.count, 10)
+        XCTAssertEqual(routines.map(\.sortOrder), Array(0..<10))
+        XCTAssertEqual(routines.first?.name, "Rutina 01")
+        XCTAssertEqual(routines.last?.name, "Rutina 10")
+    }
+
+    func testBackupRoundTripKeepsMoreThanSevenRoutines() throws {
+        let source: ModelContext = try makeAssistedContext()
+        _ = try applyOwnRoutines(count: 11, context: source)
+        let exported: [Routine] = try activeManualRoutines(in: source)
+        XCTAssertEqual(exported.count, 11)
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let copies: URL = directory.appendingPathComponent("copias", isDirectory: true)
+
+        try BackupManager.saveSafetyCopy(context: source, directory: copies)
+        let contents: [URL] = try FileManager.default.contentsOfDirectory(
+            at: copies,
+            includingPropertiesForKeys: nil
+        )
+        let file: URL = try XCTUnwrap(contents.first { (url: URL) -> Bool in
+            return url.lastPathComponent.hasPrefix("AppGym_PreImport_")
+        })
+
+        let destination: ModelContext = try makeAssistedContext()
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: file, context: destination)
+        XCTAssertTrue(plan.report.canImport)
+
+        _ = try BackupManager.restoreBackup(
+            using: plan,
+            context: destination,
+            safetyCopyDirectory: directory.appendingPathComponent("copias-destino", isDirectory: true)
+        )
+
+        let imported: [Routine] = try activeManualRoutines(in: destination)
+        XCTAssertEqual(imported.count, 11)
+        XCTAssertEqual(Set(imported.map(\.id)), Set(exported.map(\.id)))
+        XCTAssertEqual(imported.map(\.sortOrder), Array(0..<11))
+    }
+
+    func testManualDistributionKeepsEveryRoutineUUIDUnique() throws {
+        let context: ModelContext = try makeAssistedContext()
+        _ = try applyOwnRoutines(count: 12, context: context)
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 12)
+        XCTAssertEqual(Set(routines.map(\.id)).count, 12)
+    }
+
+    func testManualDistributionKeepsTheFiveProtectedRoutines() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let protectedIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(5))
+        XCTAssertEqual(protectedIDs.count, 5)
+
+        for (index, id) in protectedIDs.enumerated() {
+            let routine: Routine = Routine(
+                id: id,
+                name: "Protegida \(index + 1)",
+                isTemplate: true,
+                source: .automatic
+            )
+            context.insert(routine)
+        }
+        try context.save()
+
+        _ = try applyOwnRoutines(count: 10, context: context)
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        let protected: [Routine] = routines.filter { (routine: Routine) -> Bool in
+            return protectedIDs.contains(routine.id)
+        }
+
+        XCTAssertEqual(protected.count, 5)
+        XCTAssertTrue(protected.allSatisfy { (routine: Routine) -> Bool in
+            return routine.isActivePlanRoutine
+        })
+        XCTAssertEqual(routines.filter { (routine: Routine) -> Bool in
+            return routine.source == .manual && routine.isActivePlanRoutine
+        }.count, 10)
+    }
+
+    // MARK: - Cambiar rutina: confirmación y sustitución de la organización
+
+    func testChangeRoutinePromptUsesTheRequiredCopy() {
+        XCTAssertEqual(RoutineChangeMessages.title, "¿Cambiar la organización de tus rutinas?")
+        XCTAssertEqual(
+            RoutineChangeMessages.message,
+            "Al cambiar tu organización, las rutinas actuales serán sustituidas por las nuevas. Los datos y el historial de tus entrenamientos no se perderán, pero las rutinas actuales dejarán de estar disponibles."
+        )
+        XCTAssertEqual(RoutineChangeMessages.cancelTitle, "Cancelar")
+        XCTAssertEqual(RoutineChangeMessages.confirmTitle, "Continuar")
+    }
+
+    func testChangeRoutineGateRequiresConfirmationBeforeOpeningTheFlow() {
+        var gate: RoutineChangeGate = RoutineChangeGate()
+
+        XCTAssertFalse(gate.isAwaitingConfirmation)
+        XCTAssertFalse(gate.isPresentingFlow)
+
+        gate.requestChange()
+        XCTAssertTrue(gate.isAwaitingConfirmation)
+        XCTAssertFalse(gate.isPresentingFlow)
+
+        gate.cancel()
+        XCTAssertFalse(gate.isAwaitingConfirmation)
+        XCTAssertFalse(gate.isPresentingFlow)
+
+        gate.requestChange()
+        gate.confirm()
+        XCTAssertFalse(gate.isAwaitingConfirmation)
+        XCTAssertTrue(gate.isPresentingFlow)
+
+        gate.dismissFlow()
+        XCTAssertFalse(gate.isPresentingFlow)
+    }
+
+    func testCancellingRoutineChangeKeepsRoutinesAndHistoryIntact() throws {
+        let context: ModelContext = try makeAssistedContext()
+        try insertSession(in: context, routineName: "PUSH")
+        let routine: Routine = Routine(name: "PUSH", isTemplate: true, source: .manual)
+        context.insert(routine)
+        try context.save()
+
+        // «Cancelar» solo cierra el aviso: no abre el flujo ni llama a ningún
+        // servicio, así que la base no puede cambiar.
+        var gate: RoutineChangeGate = RoutineChangeGate()
+        gate.requestChange()
+        gate.cancel()
+
+        XCTAssertFalse(gate.isPresentingFlow)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Routine>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<WorkoutSetLog>()), 1)
+    }
+
+    func testChangeRoutineReplacesThePreviousOrganization() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let first: Routine = Routine(name: "Rutina 01", isTemplate: true, sortOrder: 0, source: .manual)
+        let second: Routine = Routine(name: "Rutina 02", isTemplate: true, sortOrder: 1, source: .manual)
+        context.insert(first)
+        context.insert(second)
+        try context.save()
+
+        let result: RoutineApplicationResult = try applyOwnRoutines(
+            count: 3,
+            context: context,
+            replacesOrganization: true
+        )
+
+        XCTAssertEqual(result.createdRoutineCount, 3)
+        XCTAssertEqual(result.archivedRoutineCount, 2)
+
+        let all: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        let active: [Routine] = all
+            .filter { (routine: Routine) -> Bool in routine.isActivePlanRoutine }
+            .sorted { (lhs: Routine, rhs: Routine) -> Bool in lhs.sortOrder < rhs.sortOrder }
+
+        // La lista activa contiene solo la organización nueva.
+        XCTAssertEqual(active.count, 3)
+        XCTAssertEqual(active.map(\.name), ["Rutina 01", "Rutina 02", "Rutina 03"])
+
+        // Las anteriores siguen existiendo, archivadas y con sus IDs.
+        XCTAssertEqual(all.count, 5)
+        for id in [first.id, second.id] {
+            let stored: Routine = try XCTUnwrap(all.first { (routine: Routine) -> Bool in routine.id == id })
+            XCTAssertTrue(stored.isArchived)
+            XCTAssertFalse(stored.isActivePlanRoutine)
+        }
+    }
+
+    func testChangeRoutineKeepsHistoricalSessionsAndSetLogs() throws {
+        let context: ModelContext = try makeAssistedContext()
+        try insertSession(in: context, routineName: "PUSH")
+        let previous: Routine = Routine(name: "PUSH", isTemplate: true, source: .manual)
+        context.insert(previous)
+        try context.save()
+
+        let before: WorkoutSession = try XCTUnwrap(
+            try context.fetch(FetchDescriptor<WorkoutSession>()).first
+        )
+        let startDate: Date = before.startDate
+        let endDate: Date = try XCTUnwrap(before.endDate)
+
+        _ = try applyOwnRoutines(count: 2, context: context, replacesOrganization: true)
+
+        let sessions: [WorkoutSession] = try context.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.routineName, "PUSH")
+        XCTAssertEqual(sessions.first?.startDate, startDate)
+        XCTAssertEqual(sessions.first?.endDate, endDate)
+        XCTAssertEqual(sessions.first?.totalVolumeKg, 800.0)
+
+        let logs: [WorkoutSetLog] = try context.fetch(FetchDescriptor<WorkoutSetLog>())
+        XCTAssertEqual(logs.count, 1)
+        let log: WorkoutSetLog = try XCTUnwrap(logs.first)
+        XCTAssertEqual(log.weight, 100.0)
+        XCTAssertEqual(log.reps, 8)
+        XCTAssertEqual(log.setNumber, 1)
+        XCTAssertEqual(log.isCompleted, true)
+        XCTAssertEqual(log.exercise?.name, "Press banca")
+        XCTAssertNotNil(log.session)
+    }
+
+    func testChangeRoutineArchivesProtectedRoutinesWithoutDeletingThem() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let protectedIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(2))
+        XCTAssertEqual(protectedIDs.count, 2)
+
+        for (index, id) in protectedIDs.enumerated() {
+            let routine: Routine = Routine(
+                id: id,
+                name: "Protegida \(index + 1)",
+                isTemplate: true,
+                source: .automatic
+            )
+            context.insert(routine)
+        }
+        try context.save()
+
+        _ = try applyOwnRoutines(count: 1, context: context, replacesOrganization: true)
+
+        let all: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(all.count, 3)
+
+        for id in protectedIDs {
+            let stored: Routine = try XCTUnwrap(all.first { (routine: Routine) -> Bool in routine.id == id })
+            XCTAssertTrue(stored.isArchived)
+            XCTAssertFalse(stored.isActivePlanRoutine)
+        }
+
+        XCTAssertEqual(all.filter { (routine: Routine) -> Bool in routine.isActivePlanRoutine }.count, 1)
+    }
+
+    func testChangeRoutineKeepsArchivedManualRoutinesUntouched() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let archived: Routine = Routine(
+            name: "Manual archivada",
+            isTemplate: true,
+            sortOrder: 40,
+            isArchived: true,
+            source: .manual
+        )
+        context.insert(archived)
+        try context.save()
+
+        _ = try applyOwnRoutines(count: 2, context: context, replacesOrganization: true)
+
+        let all: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(all.count, 3)
+
+        let stored: Routine = try XCTUnwrap(all.first { (routine: Routine) -> Bool in routine.id == archived.id })
+        XCTAssertTrue(stored.isArchived)
+        XCTAssertFalse(stored.isActivePlanRoutine)
+        XCTAssertEqual(stored.sortOrder, 40)
+    }
+
+    func testChangeRoutineFailureRestoresThePreviousOrganization() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let previous: Routine = Routine(name: "Organización anterior", isTemplate: true, source: .manual)
+        context.insert(previous)
+        try context.save()
+
+        // Ejercicio sin músculo primario: la importación de la semana falla
+        // después de archivar la organización anterior.
+        let broken = GeneratedExercise(
+            id: "broken",
+            name: "Ejercicio sin músculo",
+            sets: 3,
+            repsMin: 8,
+            repsMax: 12,
+            restSeconds: 90,
+            isCompound: true,
+            primaryMuscles: [],
+            secondaryMuscles: [],
+            equipment: .pendingClassification,
+            requiresStraps: false,
+            notes: "",
+            primaryMuscleText: "",
+            secondaryMuscleText: "",
+            unmappedMuscles: []
+        )
+        let brokenSession = GeneratedSession(
+            id: "broken-session",
+            index: 0,
+            routine: .legs,
+            variantSuffix: "",
+            name: "Legs",
+            exercises: [broken]
+        )
+        let brokenWeek = GeneratedWeek(
+            w: 1,
+            l: 1,
+            u: 0,
+            splitExpression: "Legs",
+            sessions: [brokenSession],
+            notices: [],
+            limitations: []
+        )
+
+        var plan: RoutinePlanDraft = RoutinePlanDraft()
+        plan.mode = .automatic
+
+        var preferences: OnboardingPreferences = OnboardingPreferences.defaults
+        preferences.availablePlates = [1.25, 2.5, 5.0, 10.0, 20.0]
+
+        XCTAssertThrowsError(
+            try RoutineService.apply(
+                plan: plan,
+                preferences: preferences,
+                context: context,
+                generatedWeek: brokenWeek,
+                replacesOrganization: true
+            )
+        )
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 1)
+
+        let restored: Routine = try XCTUnwrap(routines.first)
+        XCTAssertEqual(restored.name, "Organización anterior")
+        XCTAssertFalse(restored.isArchived)
+        XCTAssertTrue(restored.isActivePlanRoutine)
+    }
+
+    func testChangeRoutineDoesNotAffectTheOnboardingArchiveRules() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let manual: Routine = Routine(name: "Rutina manual", isTemplate: true, sortOrder: 0, source: .manual)
+        let generated: Routine = Routine(name: "Generada", isTemplate: true, sortOrder: 1, source: .automatic)
+        context.insert(manual)
+        context.insert(generated)
+        try context.save()
+
+        // En el onboarding (sin `replacesOrganization`) las manuales siguen
+        // activas: el cambio de comportamiento se limita a Cambiar rutina.
+        _ = try applyOwnRoutines(count: 1, context: context)
+
+        let all: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        let storedManual: Routine = try XCTUnwrap(all.first { (routine: Routine) -> Bool in routine.id == manual.id })
+        let storedGenerated: Routine = try XCTUnwrap(all.first { (routine: Routine) -> Bool in routine.id == generated.id })
+
+        XCTAssertFalse(storedManual.isArchived)
+        XCTAssertTrue(storedManual.isActivePlanRoutine)
+        XCTAssertTrue(storedGenerated.isArchived)
+    }
+
+    // MARK: - Configuración: orden, numeración y acordeón
+
+    func testSettingsSectionsFollowTheRequestedOrder() {
+        XCTAssertEqual(
+            SettingsSection.allCases.map(\.title),
+            [
+                "Equipamiento",
+                "Discos",
+                "Modo visual",
+                "Pulsaciones",
+                "Organización del entrenamiento",
+                "Objetivo semanal",
+                "Copia de seguridad",
+                "Copias automáticas"
+            ]
+        )
+    }
+
+    func testSettingsSectionCodesMatchTheirPosition() {
+        XCTAssertEqual(SettingsSection.allCases.count, 8)
+        XCTAssertEqual(
+            SettingsSection.allCases.map(\.code),
+            ["RT.01", "RT.02", "RT.03", "RT.04", "RT.05", "RT.06", "RT.07", "RT.08"]
+        )
+
+        for (index, section) in SettingsSection.allCases.enumerated() {
+            XCTAssertEqual(section.position, index + 1)
+        }
+
+        XCTAssertEqual(Set(SettingsSection.allCases.map(\.code)).count, 8)
+    }
+
+    func testSettingsAccordionStartsClosed() {
+        let state: SettingsAccordionState = SettingsAccordionState()
+
+        XCTAssertNil(state.expandedSection)
+        for section in SettingsSection.allCases {
+            XCTAssertFalse(state.isExpanded(section))
+        }
+    }
+
+    func testOpeningASettingsSectionClosesThePreviousOne() {
+        var state: SettingsAccordionState = SettingsAccordionState()
+
+        state.expand(.equipment)
+        XCTAssertTrue(state.isExpanded(.equipment))
+
+        state.expand(.backup)
+        XCTAssertTrue(state.isExpanded(.backup))
+        XCTAssertFalse(state.isExpanded(.equipment))
+        XCTAssertEqual(SettingsSection.allCases.filter { (section: SettingsSection) -> Bool in
+            return state.isExpanded(section)
+        }.count, 1)
+    }
+
+    func testTogglingTheOpenSettingsSectionClosesIt() {
+        var state: SettingsAccordionState = SettingsAccordionState()
+
+        state.toggle(.heartRate)
+        XCTAssertTrue(state.isExpanded(.heartRate))
+
+        state.toggle(.heartRate)
+        XCTAssertNil(state.expandedSection)
+        XCTAssertFalse(state.isExpanded(.heartRate))
+    }
+
+    func testSettingsAccordionNeverKeepsTwoSectionsOpen() {
+        var state: SettingsAccordionState = SettingsAccordionState()
+
+        for section in SettingsSection.allCases {
+            state.toggle(section)
+
+            let open: [SettingsSection] = SettingsSection.allCases.filter { (candidate: SettingsSection) -> Bool in
+                return state.isExpanded(candidate)
+            }
+            XCTAssertEqual(open, [section])
+        }
+    }
+
+    // MARK: - Helpers de distribución manual
+
+    @discardableResult
+    private func applyOwnRoutines(
+        count: Int,
+        context: ModelContext,
+        replacesOrganization: Bool = false
+    ) throws -> RoutineApplicationResult {
+        var plan: RoutinePlanDraft = RoutinePlanDraft()
+        plan.mode = .createOwn
+        plan.ownRoutineCount = count
+
+        var preferences: OnboardingPreferences = OnboardingPreferences.defaults
+        preferences.availablePlates = [1.25, 2.5, 5.0, 10.0, 20.0]
+
+        return try RoutineService.apply(
+            plan: plan,
+            preferences: preferences,
+            context: context,
+            replacesOrganization: replacesOrganization
+        )
+    }
+
+    private func activeManualRoutines(in context: ModelContext) throws -> [Routine] {
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        return routines
+            .filter { (routine: Routine) -> Bool in
+                return routine.source == .manual && routine.isActivePlanRoutine
+            }
+            .sorted { (lhs: Routine, rhs: Routine) -> Bool in
+                return lhs.sortOrder < rhs.sortOrder
+            }
+    }
+
     // MARK: - Helpers de backups
 
     @discardableResult

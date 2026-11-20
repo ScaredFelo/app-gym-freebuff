@@ -63,6 +63,13 @@ final class OnboardingViewModel: ObservableObject {
         return !selectedPlates.isEmpty
     }
 
+    /// `true` solo cuando el usuario ha importado una copia correctamente: la
+    /// organización del entrenamiento procede del archivo, así que el flujo no
+    /// pregunta por la modalidad ni genera un split adicional.
+    var importedRoutinesReplaceOrganization: Bool {
+        return context == .initialSetup && backupState == .imported
+    }
+
     var preferences: OnboardingPreferences {
         return OnboardingPreferences(
             multipowerBarWeight: OnboardingPreferences.clampBarWeight(multipowerBarWeight),

@@ -222,13 +222,14 @@ enum UserSettingsManager {
         return RoutineOrganizationMode.fromStoredRawValue(raw)
     }
 
-    /// Número de rutinas propias configuradas, acotado al rango permitido.
+    /// Número de rutinas propias configuradas. No hay límite superior: el
+    /// usuario puede crear más rutinas que días tiene la semana.
     static var configuredOwnRoutineCount: Int {
         guard UserDefaults.standard.object(forKey: ownRoutineCountKey) != nil else {
             return RoutinePlanDraft.defaultRoutineCount
         }
         let stored: Int = UserDefaults.standard.integer(forKey: ownRoutineCountKey)
-        return min(max(stored, RoutinePlanDraft.routineCountRange.lowerBound), RoutinePlanDraft.routineCountRange.upperBound)
+        return max(stored, RoutinePlanDraft.minimumRoutineCount)
     }
 
     // MARK: - Escritura agrupada (onboarding)

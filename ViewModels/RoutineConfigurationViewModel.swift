@@ -162,7 +162,8 @@ final class RoutineConfigurationViewModel: ObservableObject {
                 preferences: preferences,
                 context: modelContext,
                 generatedWeek: generatedWeek,
-                assistedWeek: assistedWeek
+                assistedWeek: assistedWeek,
+                replacesOrganization: context == .changeRoutine
             )
             lastResult = result
             didSave = true
@@ -201,7 +202,7 @@ final class RoutineConfigurationViewModel: ObservableObject {
                         RoutineSummaryItem(
                             code: "previous",
                             label: "Rutinas anteriores",
-                            value: context == .changeRoutine ? "Solo las generadas" : "—"
+                            value: context == .changeRoutine ? "Sustituidas" : "—"
                         )
                     ],
                     note: "Las rutinas se crean vacías. Añadirás los ejercicios manualmente desde la pestaña Rutinas."
@@ -232,7 +233,9 @@ final class RoutineConfigurationViewModel: ObservableObject {
                             value: week?.sessionNames.joined(separator: " / ") ?? "—"
                         )
                     ],
-                    note: "Los días de descanso se guardan sin generar sesión. Las rutinas personales no se archivan."
+                    note: context == .changeRoutine
+                        ? "Los días de descanso se guardan sin generar sesión. Al confirmar se sustituye la organización actual, sin borrar su historial."
+                        : "Los días de descanso se guardan sin generar sesión. Las rutinas personales no se archivan."
                 ),
                 preferencesSection(preferences)
             ]

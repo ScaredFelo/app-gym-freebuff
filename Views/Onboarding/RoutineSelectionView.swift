@@ -33,7 +33,7 @@ struct RoutineSelectionView: View {
             }
 
             OnboardingInfoNote(
-                text: "Las tres modalidades son excluyentes. «Utilizar plantillas» abre el constructor de siete días; la generación automática usa la matriz W/L/U. Las rutinas personales no se archivan ni se borran."
+                text: "Las tres modalidades son excluyentes. «Utilizar plantillas» abre el constructor de siete días; la generación automática usa la matriz W/L/U. Las rutinas personales nunca se borran."
             )
         }
     }

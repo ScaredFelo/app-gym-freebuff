@@ -40,7 +40,7 @@ struct RoutineSummaryView: View {
 
             OnboardingInfoNote(
                 text: context == .changeRoutine
-                    ? "Las rutinas generadas anteriores se archivan, no se borran. Las manuales y las cinco rutinas personales se conservan, junto con sesiones, pesos, series, repeticiones y récords."
+                    ? "Al confirmar, las rutinas de tu organización actual se sustituyen por las nuevas: dejan de estar activas pero no se borran, y sus sesiones, series, pesos, fechas y récords se conservan intactos."
                     : "Nada se guarda hasta que pulses «Confirmar y empezar». Si el guardado falla, tus datos actuales se mantienen como están."
             )
         }
@@ -131,7 +131,7 @@ struct AssistedRoutineSummaryView: View {
 
                 OnboardingInfoNote(
                     text: context == .changeRoutine
-                        ? "Al confirmar se archivan las rutinas generadas anteriores, nunca las manuales ni tus cinco rutinas personales. Su historial, sus pesos y sus récords se conservan intactos."
+                        ? "Al confirmar se sustituye la organización actual: sus rutinas dejan de estar activas, no se borran y todo su historial, pesos y récords se conservan intactos."
                         : "Nada se guarda hasta que pulses «Confirmar semana». Si el guardado falla, la operación se deshace completa y tus datos actuales se mantienen."
                 )
             } else {

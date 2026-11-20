@@ -32,7 +32,6 @@ struct OnboardingFlowView: View {
     @StateObject private var configuration: RoutineConfigurationViewModel
 
     @State private var path: [Step] = []
-    @State private var showsChangeConfirmation: Bool = false
 
     init(context: RoutineFlowContext, onFinished: @escaping () -> Void = {}) {
         self.context = context
@@ -57,15 +56,6 @@ struct OnboardingFlowView: View {
             }
         } message: {
             Text(configuration.errorMessage ?? "")
-        }
-        .alert("Confirmar cambio de rutina", isPresented: $showsChangeConfirmation) {
-            Button("Cancelar", role: .cancel) {}
-
-            Button("Aplicar cambio") {
-                confirmPlan()
-            }
-        } message: {
-            Text("Se archivarán las rutinas generadas anteriores y se aplicará la nueva organización. Las rutinas manuales y tus cinco rutinas personales se conservan, junto con tu historial, tus pesos y tus récords.")
         }
     }
 
@@ -112,7 +102,7 @@ struct OnboardingFlowView: View {
             HeartRateSetupView(
                 chrome: chrome(for: step),
                 viewModel: onboarding,
-                onContinue: { advance(to: .organization) }
+                onContinue: handleHeartRateContinue
             )
 
         case .organization:
@@ -155,7 +145,7 @@ struct OnboardingFlowView: View {
                             path.removeLast()
                         }
                     },
-                    onConfirm: requestConfirmation
+                    onConfirm: confirmPlan
                 )
             } else {
                 RoutineSummaryView(
@@ -164,7 +154,7 @@ struct OnboardingFlowView: View {
                     sections: configuration.summarySections(preferences: onboarding.preferences),
                     notices: configuration.activeNotices,
                     isSaving: configuration.isSaving,
-                    onConfirm: requestConfirmation
+                    onConfirm: confirmPlan
                 )
             }
         }
@@ -190,9 +180,23 @@ struct OnboardingFlowView: View {
         case .customize:
             advance(to: .equipment)
         case .useDefaults:
-            advance(to: .organization)
+            if onboarding.importedRoutinesReplaceOrganization {
+                finishWithImportedRoutines()
+            } else {
+                advance(to: .organization)
+            }
         case .undecided:
             break
+        }
+    }
+
+    /// Tras personalizar (equipamiento y pulsaciones), el usuario que ha
+    /// importado sus rutinas entra en la app sin elegir modalidad.
+    private func handleHeartRateContinue() {
+        if onboarding.importedRoutinesReplaceOrganization {
+            finishWithImportedRoutines()
+        } else {
+            advance(to: .organization)
         }
     }
 
@@ -215,12 +219,18 @@ struct OnboardingFlowView: View {
 
     // MARK: - Resumen y guardado
 
-    private func requestConfirmation() {
-        if context == .changeRoutine {
-            showsChangeConfirmation = true
-        } else {
-            confirmPlan()
-        }
+    /// Cierre del flujo cuando las rutinas vienen de una copia importada: se
+    /// guardan solo las preferencias de personalización y se entra en la app.
+    /// No se pregunta por la modalidad, no se ejecuta ningún generador y las
+    /// rutinas importadas no se archivan ni se sustituyen.
+    private func finishWithImportedRoutines() {
+        guard onboarding.importedRoutinesReplaceOrganization else { return }
+
+        OnboardingService.applyPreferences(onboarding.preferences)
+        BPMManager.shared.applySettings()
+        onboarding.completeSetupIfNeeded()
+        OnboardingHaptics.confirmation()
+        onFinished()
     }
 
     private func confirmPlan() {
@@ -287,6 +297,12 @@ struct OnboardingFlowView: View {
         if onboarding.shouldShowPersonalizationSteps {
             steps.append(.equipment)
             steps.append(.heartRate)
+        }
+
+        // Con rutinas importadas la organización ya procede del archivo: el
+        // flujo termina al personalizar, sin modalidad, constructor ni resumen.
+        if onboarding.importedRoutinesReplaceOrganization {
+            return steps
         }
 
         steps.append(.organization)

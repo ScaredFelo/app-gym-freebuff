@@ -2,6 +2,104 @@ import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
 
+// MARK: - Apartados de Configuración
+
+/// Apartados de Configuración en el orden en que se muestran. El código se
+/// deriva de la posición real, así que la numeración no puede desincronizarse
+/// al mover un apartado.
+enum SettingsSection: String, CaseIterable, Identifiable {
+    case equipment
+    case plates
+    case visualMode
+    case heartRate
+    case organization
+    case weeklyGoal
+    case backup
+    case safetyCopies
+
+    var id: String { rawValue }
+
+    /// Posición real dentro de la pantalla, empezando en 1.
+    var position: Int {
+        return (SettingsSection.allCases.firstIndex(of: self) ?? 0) + 1
+    }
+
+    var code: String {
+        return String(format: "RT.%02d", position)
+    }
+
+    var title: String {
+        switch self {
+        case .equipment: return "Equipamiento"
+        case .plates: return "Discos"
+        case .visualMode: return "Modo visual"
+        case .heartRate: return "Pulsaciones"
+        case .organization: return "Organización del entrenamiento"
+        case .weeklyGoal: return "Objetivo semanal"
+        case .backup: return "Copia de seguridad"
+        case .safetyCopies: return "Copias automáticas"
+        }
+    }
+}
+
+/// Estado del acordeón de Configuración: como mucho un apartado abierto.
+/// `nil` deja todos cerrados.
+struct SettingsAccordionState: Equatable {
+    private(set) var expandedSection: SettingsSection?
+
+    init(expandedSection: SettingsSection? = nil) {
+        self.expandedSection = expandedSection
+    }
+
+    func isExpanded(_ section: SettingsSection) -> Bool {
+        return expandedSection == section
+    }
+
+    mutating func expand(_ section: SettingsSection) {
+        expandedSection = section
+    }
+
+    mutating func collapse() {
+        expandedSection = nil
+    }
+
+    mutating func toggle(_ section: SettingsSection) {
+        expandedSection = (expandedSection == section) ? nil : section
+    }
+}
+
+/// Aviso obligatorio antes de abrir el flujo de cambio de rutina: hasta que el
+/// usuario no confirma, no se abre el flujo y no se modifica nada.
+struct RoutineChangeGate: Equatable {
+    private(set) var isAwaitingConfirmation: Bool = false
+    private(set) var isPresentingFlow: Bool = false
+
+    mutating func requestChange() {
+        isAwaitingConfirmation = true
+    }
+
+    mutating func cancel() {
+        isAwaitingConfirmation = false
+    }
+
+    mutating func confirm() {
+        isAwaitingConfirmation = false
+        isPresentingFlow = true
+    }
+
+    mutating func dismissFlow() {
+        isPresentingFlow = false
+    }
+}
+
+/// Textos únicos del aviso de cambio de rutina.
+enum RoutineChangeMessages {
+    static let title: String = "¿Cambiar la organización de tus rutinas?"
+    static let message: String = "Al cambiar tu organización, las rutinas actuales serán sustituidas por las nuevas. Los datos y el historial de tus entrenamientos no se perderán, pero las rutinas actuales dejarán de estar disponibles."
+    static let cancelTitle: String = "Cancelar"
+    static let confirmTitle: String = "Continuar"
+}
+
 struct SettingsView: View {
     @Environment(\.modelContext) private var modelContext
 
@@ -32,11 +130,12 @@ struct SettingsView: View {
     @AppStorage(UserSettingsManager.heartRateDeviceBrandKey)
     private var heartRateDeviceBrand: String = ""
 
-    /// Desplegable de discos: plegado por defecto.
-    @State private var arePlatesExpanded: Bool = false
+    /// Acordeón de Configuración: un único estado compartido decide qué
+    /// apartado está abierto (ninguno cuando es `nil`).
+    @State private var accordion: SettingsAccordionState = SettingsAccordionState()
 
-    /// Flujo Ajustes → Cambiar rutina.
-    @State private var isShowingRoutineFlow: Bool = false
+    /// Confirmación previa obligatoria antes de abrir Ajustes → Cambiar rutina.
+    @State private var changeGate: RoutineChangeGate = RoutineChangeGate()
 
     /// Copia de seguridad.
     @State private var showFileExporter: Bool = false
@@ -74,16 +173,14 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(spacing: 12.0) {
-                    equipmentPanel
-                    platesPanel
-                    weeklyGoalPanel
-                    routineOrganizationPanel
-                    visualModePanel
-                    heartRatePanel
-                    backupPanel
-
-                    if !safetyCopies.isEmpty {
-                        safetyCopiesPanel
+                    ForEach(SettingsSection.allCases) { (section: SettingsSection) in
+                        EndfieldDisclosure(
+                            code: section.code,
+                            title: section.title,
+                            isExpanded: expansionBinding(for: section)
+                        ) {
+                            sectionContent(for: section)
+                        }
                     }
                 }
                 .padding(.horizontal, 16.0)
@@ -93,10 +190,21 @@ struct SettingsView: View {
         .onAppear {
             reloadSafetyCopies()
         }
-        .fullScreenCover(isPresented: $isShowingRoutineFlow) {
+        .fullScreenCover(isPresented: routineFlowBinding) {
             OnboardingFlowView(context: .changeRoutine) {
-                isShowingRoutineFlow = false
+                changeGate.dismissFlow()
             }
+        }
+        .alert(RoutineChangeMessages.title, isPresented: awaitingRoutineChangeBinding) {
+            Button(RoutineChangeMessages.cancelTitle, role: .cancel) {
+                changeGate.cancel()
+            }
+
+            Button(RoutineChangeMessages.confirmTitle) {
+                changeGate.confirm()
+            }
+        } message: {
+            Text(RoutineChangeMessages.message)
         }
         .onChange(of: weeklyWorkoutGoal) { (_, newValue: Int) in
             let clamped: Int = min(
@@ -199,10 +307,73 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Acordeón
+
+    /// Todos los apartados comparten el mismo estado: abrir uno cierra el que
+    /// estuviera abierto y volver a pulsarlo lo cierra.
+    private func expansionBinding(for section: SettingsSection) -> Binding<Bool> {
+        return Binding(
+            get: { accordion.isExpanded(section) },
+            set: { (isExpanded: Bool) in
+                if isExpanded {
+                    accordion.expand(section)
+                } else {
+                    accordion.collapse()
+                }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func sectionContent(for section: SettingsSection) -> some View {
+        switch section {
+        case .equipment:
+            equipmentContent
+        case .plates:
+            platesContent
+        case .visualMode:
+            visualModeContent
+        case .heartRate:
+            heartRateContent
+        case .organization:
+            organizationContent
+        case .weeklyGoal:
+            weeklyGoalContent
+        case .backup:
+            backupContent
+        case .safetyCopies:
+            safetyCopiesContent
+        }
+    }
+
+    // MARK: - Confirmación de cambio de rutina
+
+    private var awaitingRoutineChangeBinding: Binding<Bool> {
+        return Binding(
+            get: { changeGate.isAwaitingConfirmation },
+            set: { (isPresented: Bool) in
+                if !isPresented {
+                    changeGate.cancel()
+                }
+            }
+        )
+    }
+
+    private var routineFlowBinding: Binding<Bool> {
+        return Binding(
+            get: { changeGate.isPresentingFlow },
+            set: { (isPresented: Bool) in
+                if !isPresented {
+                    changeGate.dismissFlow()
+                }
+            }
+        )
+    }
+
     // MARK: - Paneles
 
-    private var equipmentPanel: some View {
-        TacticalPanel(code: "EQP.01", title: "Equipamiento y discos", contentPadding: 12.0) {
+    private var equipmentContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 12.0) {
                 barWeightBlock(
                     title: "Peso barra Multipower",
@@ -241,13 +412,15 @@ struct SettingsView: View {
         }
     }
 
-    private var platesPanel: some View {
-        EndfieldDisclosure(
-            code: "PLT.02",
-            title: "Discos disponibles (\(availablePlates.count) activos)",
-            isExpanded: $arePlatesExpanded
-        ) {
+    private var platesContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 6.0) {
+                Text("\(availablePlates.count) DISCOS ACTIVOS")
+                    .font(EndfieldFont.label(9.0))
+                    .tracking(0.8)
+                    .foregroundStyle(EndfieldPalette.accentYellow)
+                    .fixedSize()
+
                 ForEach(UserSettingsManager.plateOptions, id: \.self) { (plate: Double) in
                     TacticalToggleRow(
                         code: "PLT",
@@ -275,8 +448,8 @@ struct SettingsView: View {
 
     // MARK: - Objetivo semanal
 
-    private var weeklyGoalPanel: some View {
-        TacticalPanel(code: "WKG.02", title: "Objetivo semanal", contentPadding: 12.0) {
+    private var weeklyGoalContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 8.0) {
                 HStack(spacing: 8.0) {
                     Text("Objetivo semanal (días/semana)")
@@ -315,8 +488,8 @@ struct SettingsView: View {
 
     // MARK: - Organización del entrenamiento
 
-    private var routineOrganizationPanel: some View {
-        TacticalPanel(code: "RT.06", title: "Organización del entrenamiento", contentPadding: 12.0) {
+    private var organizationContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 9.0) {
                 HStack(spacing: 8.0) {
                     Text("MODALIDAD ACTUAL")
@@ -337,7 +510,7 @@ struct SettingsView: View {
                 }
 
                 Button {
-                    isShowingRoutineFlow = true
+                    changeGate.requestChange()
                 } label: {
                     HStack(spacing: 7.0) {
                         Image(systemName: "arrow.triangle.2.circlepath")
@@ -349,9 +522,9 @@ struct SettingsView: View {
                     }
                 }
                 .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
-                .accessibilityHint("Abre la selección de modalidad y el resumen de confirmación")
+                .accessibilityHint("Muestra el aviso de confirmación antes de abrir el cambio de organización")
 
-                Text("Modifica tu organización de entrenamiento o crea un nuevo plan. Las rutinas anteriores se archivan y se conserva todo el historial.")
+                Text("Sustituye tu organización de entrenamiento por una nueva. Las rutinas actuales dejan de estar activas, pero no se borran: sus sesiones, pesos, series y récords se conservan.")
                     .font(EndfieldFont.mono(9.0))
                     .foregroundStyle(EndfieldPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -359,8 +532,8 @@ struct SettingsView: View {
         }
     }
 
-    private var visualModePanel: some View {
-        TacticalPanel(code: "UI.03", title: "Modo visual", contentPadding: 12.0) {
+    private var visualModeContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 8.0) {
                 TacticalToggleRow(
                     code: "UI",
@@ -378,8 +551,8 @@ struct SettingsView: View {
 
     // MARK: - Pulsaciones
 
-    private var heartRatePanel: some View {
-        TacticalPanel(code: "BPM.04", title: "Pulsaciones", contentPadding: 12.0) {
+    private var heartRateContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 12.0) {
                 TacticalToggleRow(
                     code: "BPM",
@@ -515,8 +688,8 @@ struct SettingsView: View {
         }
     }
 
-    private var backupPanel: some View {
-        TacticalPanel(code: "BK.04", title: "Copia de seguridad", contentPadding: 12.0) {
+    private var backupContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 8.0) {
                 BackupSettingsSectionView(
                     onExportTapped: { () -> Void in exportBackup() },
@@ -531,15 +704,22 @@ struct SettingsView: View {
         }
     }
 
-    private var safetyCopiesPanel: some View {
-        TacticalPanel(code: "BK.05", title: "Copias automáticas", contentPadding: 12.0) {
+    private var safetyCopiesContent: some View {
+        Group {
             VStack(alignment: .leading, spacing: 8.0) {
-                SafetyBackupSectionView(
-                    copies: safetyCopies,
-                    onRestoreTapped: { (copy: PreImportBackup) -> Void in
-                        safetyCopyPendingRestore = copy
-                    }
-                )
+                if safetyCopies.isEmpty {
+                    Text("Todavía no hay copias automáticas. Se guardan antes de cada importación.")
+                        .font(EndfieldFont.mono(9.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    SafetyBackupSectionView(
+                        copies: safetyCopies,
+                        onRestoreTapped: { (copy: PreImportBackup) -> Void in
+                            safetyCopyPendingRestore = copy
+                        }
+                    )
+                }
 
                 Text("Se guardan antes de cada importación. Restaurar una copia sustituye las rutinas y las sesiones actuales.")
                     .font(EndfieldFont.mono(9.0))
