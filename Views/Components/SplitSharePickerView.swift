@@ -195,7 +195,7 @@ struct SplitSharePickerView: View {
     private func folderRow(_ folder: RoutineFolder) -> some View {
         // Se numera con la lista completa de carpetas, como en la pestaña
         // Rutinas: la selección no cambia el código FL-xx.
-        let index: Int = RoutineSplitShareService.sortedFolders(folders).firstIndex { $0.id == folder.id } ?? 0
+        let index: Int = RoutineFolderService.sortedFolders(folders).firstIndex { $0.id == folder.id } ?? 0
         let count: Int = RoutineFolderService.activeRoutineCount(in: folder, routines: routines)
         let isExpanded: Bool = selection.isExpanded(folder.id)
         let state: SplitFolderSelectionState = selection.folderState(folder, routines: routines)
