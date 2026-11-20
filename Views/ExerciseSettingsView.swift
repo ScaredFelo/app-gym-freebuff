@@ -515,7 +515,7 @@ struct MuscleSelectionGrid: View {
                     .tracking(1.2)
                     .foregroundStyle(EndfieldPalette.textSecondary)
 
-                Text("\\(selection.count)")
+                Text("\(selection.count)")
                     .font(EndfieldFont.mono(9.0, weight: .bold))
                     .monospacedDigit()
                     .foregroundStyle(EndfieldPalette.textSecondary)

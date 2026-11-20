@@ -175,7 +175,7 @@ private struct RoutineCollectionScreen: View {
         folderToOpenID = folderID
     }
 
-    private var screenContent: some View {
+    private var listContent: some View {
         ZStack {
             TechnicalGridBackground()
 
@@ -210,6 +210,13 @@ private struct RoutineCollectionScreen: View {
         }
         .navigationTitle(navigationTitleText)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Barra de herramientas, entrenamiento y hojas de edición. La cadena de
+    /// modificadores se reparte en varias propiedades para que el compilador no
+    /// tenga que resolver una única expresión de doscientas líneas.
+    private var editableContent: some View {
+        listContent
         .alert(
             "No se pudo guardar",
             isPresented: Binding(
@@ -299,6 +306,11 @@ private struct RoutineCollectionScreen: View {
                 }
             }
         }
+    }
+
+    /// Confirmaciones de eliminación o archivado de rutinas y carpetas.
+    private var deletionContent: some View {
+        editableContent
         .alert(
             pendingDeletionArchives ? "Archivar rutina" : "Eliminar rutina",
             isPresented: Binding(
@@ -331,10 +343,15 @@ private struct RoutineCollectionScreen: View {
         } message: {
             Text(
                 pendingDeletionArchives
-                    ? "\"\\(routinePendingDeletion?.name ?? "")\" está referenciada por un plan asistido. Se archivará para conservar el historial y no se borrará."
-                    : "Se eliminará \"\\(routinePendingDeletion?.name ?? "")\". Esta acción no se puede deshacer."
+                    ? "\"\(routinePendingDeletion?.name ?? "")\" está referenciada por un plan asistido. Se archivará para conservar el historial y no se borrará."
+                    : "Se eliminará \"\(routinePendingDeletion?.name ?? "")\". Esta acción no se puede deshacer."
             )
         }
+    }
+
+    /// Avisos informativos de la pantalla.
+    private var screenContent: some View {
+        deletionContent
         .alert(
             "¿Eliminar carpeta?",
             isPresented: Binding(
