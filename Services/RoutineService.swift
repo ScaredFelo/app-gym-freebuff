@@ -7,9 +7,9 @@ import SwiftData
 /// Reglas de protección de datos:
 /// - Nunca elimina rutinas ni ejercicios del catálogo.
 /// - Solo se archivan (`isArchived`) rutinas activas: las generadas en el
-///   onboarding y, al cambiar la organización desde Ajustes, también las
-///   manuales y las cinco personales. Nunca se borran, así que las sesiones
-///   históricas mantienen sus referencias.
+///   onboarding y, al cambiar la organización desde Ajustes, todas las
+///   activas. Ninguna rutina tiene un trato especial por su UUID. Nunca se
+///   borran, así que las sesiones históricas mantienen sus referencias.
 /// - Las sesiones, series, pesos y récords no se tocan.
 /// - Todo se guarda en una única transacción: ante un error se hace `rollback`
 ///   y la app se queda exactamente como estaba.
@@ -22,27 +22,17 @@ enum RoutineService {
 
     /// Resultado de intentar eliminar una rutina desde la interfaz.
     enum DeletionPolicy: Equatable {
-        /// Se puede borrar: no está protegida ni referenciada por un plan.
+        /// Se puede borrar: no está referenciada por un plan.
         case delete
         /// Está referenciada por un plan asistido (activo o histórico). Se
         /// archiva para no dejar referencias huérfanas.
         case archiveReferenced
-        /// Es una de las cinco rutinas personales protegidas.
-        case protectedPersonal
-    }
-
-    static func isProtectedPersonalRoutine(_ routine: Routine) -> Bool {
-        return seededPersonalRoutineIDs.contains(routine.id)
     }
 
     /// Decide qué hacer antes de borrar una rutina. La comprobación de planes
     /// incluye también los históricos: `AssistedWeekPlan` guarda sus referencias
     /// por UUID y no debe quedar apuntando a una rutina inexistente.
     static func deletionPolicy(for routine: Routine, context: ModelContext) -> DeletionPolicy {
-        if isProtectedPersonalRoutine(routine) {
-            return .protectedPersonal
-        }
-
         let plans: [AssistedWeekPlan]
         do {
             plans = try context.fetch(FetchDescriptor<AssistedWeekPlan>())
@@ -181,19 +171,18 @@ enum RoutineService {
     /// En el onboarding solo se archivan las generadas: las manuales se
     /// conservan aunque estén activas y la rutina temporal del entreno libre
     /// (`isTemplate == false`) nunca se archiva. `source == .manual` es también
-    /// el valor seguro para filas antiguas sin procedencia. Las cinco rutinas
-    /// personales sembradas se excluyen por ID aunque su origen sea `automatic`.
+    /// el valor seguro para filas antiguas sin procedencia.
     ///
     /// Al cambiar la organización desde Ajustes (`replacesOrganization`) se
-    /// archivan todas las rutinas activas, incluidas las manuales y las cinco
-    /// personales: forman parte de la organización que se sustituye. Solo se
-    /// desactivan; sus datos y su historial permanecen.
+    /// archivan todas las rutinas activas, incluidas las manuales. Ninguna
+    /// rutina queda excluida por su UUID: solo se desactivan y sus datos y su
+    /// historial permanecen.
     private static func archiveActiveRoutines(context: ModelContext, replacesOrganization: Bool) throws -> Int {
         let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
         var archived: Int = 0
 
         for routine in routines where routine.isActivePlanRoutine {
-            if !replacesOrganization && (routine.source == .manual || isProtectedPersonalRoutine(routine)) {
+            if !replacesOrganization && routine.source == .manual {
                 continue
             }
             routine.isArchived = true

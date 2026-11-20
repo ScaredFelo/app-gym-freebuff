@@ -385,11 +385,6 @@ public struct RoutineListView: View {
 
     private func requestDeletion(of routine: Routine) {
         switch RoutineService.deletionPolicy(for: routine, context: modelContext) {
-        case .protectedPersonal:
-            routinePendingDeletion = nil
-            pendingDeletionArchives = false
-            routineNotice = "«\(routine.name)» es una rutina personal protegida y no se puede eliminar. Puedes editar sus ejercicios y su configuración."
-
         case .archiveReferenced:
             pendingDeletionArchives = true
             routinePendingDeletion = routine
@@ -419,12 +414,6 @@ public struct RoutineListView: View {
 
     private func deleteRoutine(_ routine: Routine) {
         switch RoutineService.deletionPolicy(for: routine, context: modelContext) {
-        case .protectedPersonal:
-            routinePendingDeletion = nil
-            pendingDeletionArchives = false
-            routineNotice = "«\(routine.name)» es una rutina personal protegida y no se puede eliminar. Puedes editar sus ejercicios y su configuración."
-            return
-
         case .archiveReferenced:
             archiveReferencedRoutine(routine)
             return

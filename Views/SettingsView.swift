@@ -154,8 +154,8 @@ struct SettingsView: View {
     @State private var reviewPlan: BackupImportPlan?
     @State private var reviewSuccessLead: String = ""
 
-    /// Cabeceras del mensaje final. La revisión compartida añade las rutinas
-    /// protegidas conservadas y los avisos de integridad.
+    /// Cabeceras del mensaje final. La revisión compartida añade los avisos de
+    /// integridad.
     private static let importSuccessLead: String = "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo, y se ha guardado una copia automática de los datos anteriores."
     private static let safetyCopySuccessLead: String = "Copia automática restaurada. Se han recuperado los datos tal y como estaban antes de esa importación."
 
@@ -1068,10 +1068,6 @@ struct BackupValidationReportView: View {
                 )
             }
 
-            if !plan.preservedProtectedRoutines.isEmpty {
-                preservedRoutinesPanel
-            }
-
             if plan.replacesSessionHistoryWithEmpty {
                 historyLossPanel
             }
@@ -1106,7 +1102,7 @@ struct BackupValidationReportView: View {
         case .corrupt:
             return "La copia contiene datos ilegibles. No se ha modificado ningún dato."
         case .requiresUserIntervention:
-            return "La copia entra en conflicto con tus rutinas protegidas y no se puede aplicar sin resolverlo antes. No se ha modificado ningún dato."
+            return "La copia contiene conflictos que impiden importarla sin revisarlos. No se ha modificado ningún dato."
         }
     }
 
@@ -1150,39 +1146,6 @@ struct BackupValidationReportView: View {
                             .font(EndfieldFont.mono(9.0))
                             .foregroundStyle(EndfieldPalette.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: Rutinas protegidas
-
-    private var preservedRoutinesPanel: some View {
-        TacticalPanel(code: "PRT.01", title: "Rutinas protegidas", contentPadding: 12.0) {
-            VStack(alignment: .leading, spacing: 6.0) {
-                Text("Estas rutinas personales se conservarán tal y como están en esta instalación. Las versiones del backup no las sustituirán, aunque el archivo las contenga.")
-                    .font(EndfieldFont.mono(9.0))
-                    .foregroundStyle(EndfieldPalette.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                ForEach(plan.preservedProtectedRoutines) { (routine: BackupPreservedRoutine) in
-                    HStack(alignment: .top, spacing: 6.0) {
-                        Image(systemName: "lock.fill")
-                            .font(EndfieldFont.mono(9.0, weight: .bold))
-                            .foregroundStyle(EndfieldPalette.accentYellow)
-
-                        VStack(alignment: .leading, spacing: 1.0) {
-                            Text(routine.name.uppercased())
-                                .font(EndfieldFont.label(9.0))
-                                .tracking(0.8)
-                                .foregroundStyle(EndfieldPalette.textPrimary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            Text(String(routine.id.uuidString.prefix(8)))
-                                .font(EndfieldFont.mono(8.0))
-                                .foregroundStyle(EndfieldPalette.textSecondary)
-                        }
                     }
                 }
             }
@@ -1359,9 +1322,6 @@ struct BackupImportReviewSheet: View {
 
     private static func successMessage(result: BackupImportResult, lead: String) -> String {
         var message: String = lead
-        if !result.preservedProtectedRoutineIDs.isEmpty {
-            message += " Se han conservado las \(result.preservedProtectedRoutineIDs.count) rutina(s) personal(es) protegida(s) de esta instalación."
-        }
         if !result.report.warnings.isEmpty {
             message += "\n\nAvisos:\n" + result.report.warnings.map { "• \($0.message)" }.joined(separator: "\n")
         }

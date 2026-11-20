@@ -298,74 +298,17 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(fetched.exercises.first?.exercise?.name, "Press banca")
     }
 
-    func testTableSyncPreservesProtectedRoutineContentAndConfiguration() throws {
-        let context: ModelContext = try makeAssistedContext()
-        let seedID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
-        let exercise: Exercise = Exercise(
-            name: "Press banca inclinado",
-            muscleGroup: .chest,
-            equipmentType: .dumbbell
-        )
-        context.insert(exercise)
-
-        let routine: Routine = Routine(
-            id: seedID,
-            name: "PUSH personal",
-            isTemplate: true,
-            sortOrder: 42,
-            exercises: [],
-            source: .automatic
-        )
-        context.insert(routine)
-        let link: RoutineExercise = RoutineExercise(
-            exercise: exercise,
-            defaultSets: 5,
-            targetRepsMin: 4,
-            targetRepsMax: 6,
-            sortOrder: 9,
-            defaultWeight: 82.5,
-            restSeconds: 222,
-            notes: "configuración personal",
-            hasCustomRest: true
-        )
-        context.insert(link)
-        routine.exercises = [link]
-        try context.save()
-
-        UserDefaults.standard.removeObject(forKey: MockDataGenerator.routineTableUpdateFlagKey)
-        defer {
-            UserDefaults.standard.removeObject(forKey: MockDataGenerator.routineTableUpdateFlagKey)
-        }
-        MockDataGenerator.applyRoutineTableUpdateIfNeeded(context: context)
-
-        let fetched: Routine = try XCTUnwrap(
-            try context.fetch(FetchDescriptor<Routine>()).first(where: { $0.id == seedID })
-        )
-        XCTAssertEqual(fetched.name, "PUSH personal")
-        XCTAssertEqual(fetched.sortOrder, 42)
-        XCTAssertEqual(fetched.source, .automatic)
-        XCTAssertEqual(fetched.exercises.count, 1)
-        XCTAssertEqual(fetched.exercises.first?.id, link.id)
-        XCTAssertEqual(fetched.exercises.first?.defaultSets, 5)
-        XCTAssertEqual(fetched.exercises.first?.targetRepsMin, 4)
-        XCTAssertEqual(fetched.exercises.first?.targetRepsMax, 6)
-        XCTAssertEqual(fetched.exercises.first?.sortOrder, 9)
-        XCTAssertEqual(fetched.exercises.first?.defaultWeight, 82.5)
-        XCTAssertEqual(fetched.exercises.first?.restSeconds, 222)
-        XCTAssertEqual(fetched.exercises.first?.notes, "configuración personal")
-        XCTAssertEqual(fetched.exercises.first?.exercise?.equipmentType, .dumbbell)
-    }
-
-    func testDeletionPolicyProtectsTheFivePersonalRoutines() throws {
+    func testDeletionPolicyAllowsSeededRoutineWhenUnreferenced() throws {
         let context: ModelContext = try makeAssistedContext()
         let seedID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
         let routine: Routine = Routine(id: seedID, name: "PUSH", isTemplate: true, source: .automatic)
         context.insert(routine)
         try context.save()
 
+        // El UUID de siembra ya no impide eliminarla.
         XCTAssertEqual(
             RoutineService.deletionPolicy(for: routine, context: context),
-            .protectedPersonal
+            .delete
         )
     }
 
@@ -618,7 +561,7 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(generated.restSeconds, expected.restSeconds)
     }
 
-    func testAssistedPersistenceKeepsPersonalRoutinesRestDaysAndHistory() throws {
+    func testAssistedPersistenceArchivesPreviousRoutinesAndKeepsRestDaysAndHistory() throws {
         let context: ModelContext = try makeAssistedContext()
         let personalID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
         let bench: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
@@ -673,12 +616,14 @@ final class RoutinePersistenceTests: XCTestCase {
         )
 
         let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
-        let preserved: Routine = try XCTUnwrap(routines.first { $0.id == personalID })
-        XCTAssertEqual(preserved.name, "PUSH")
-        XCTAssertEqual(preserved.source, .automatic)
-        XCTAssertFalse(preserved.isArchived)
-        XCTAssertEqual(preserved.exercises.count, 1)
-        XCTAssertEqual(preserved.exercises.first?.exercise?.name, "Press banca")
+        let previous: Routine = try XCTUnwrap(routines.first { $0.id == personalID })
+        XCTAssertEqual(previous.name, "PUSH")
+        XCTAssertEqual(previous.source, .automatic)
+        // Sin protecciones especiales se archiva como cualquier rutina generada
+        // anterior; no se borra y conserva sus ejercicios.
+        XCTAssertTrue(previous.isArchived)
+        XCTAssertEqual(previous.exercises.count, 1)
+        XCTAssertEqual(previous.exercises.first?.exercise?.name, "Press banca")
 
         let assisted: [Routine] = routines.filter { $0.source == .assisted && $0.isActivePlanRoutine }
         XCTAssertEqual(assisted.count, 4)
@@ -749,8 +694,8 @@ final class RoutinePersistenceTests: XCTestCase {
         let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
         XCTAssertEqual(routines.filter { $0.source == .assisted && $0.isActivePlanRoutine }.count, 0)
         XCTAssertEqual(routines.filter { $0.source == .assisted && $0.isArchived }.count, 3)
-        let preserved: Routine = try XCTUnwrap(routines.first { $0.id == personalID })
-        XCTAssertFalse(preserved.isArchived)
+        let previous: Routine = try XCTUnwrap(routines.first { $0.id == personalID })
+        XCTAssertTrue(previous.isArchived)
 
         let plans: [AssistedWeekPlan] = try context.fetch(FetchDescriptor<AssistedWeekPlan>())
         XCTAssertEqual(plans.count, 2)
@@ -852,7 +797,7 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(try context.fetch(FetchDescriptor<AssistedWeekPlan>()).count, 0)
     }
 
-    func testAssistedPersistencePreservesAllFiveSeededPersonalRoutines() throws {
+    func testAssistedPersistenceArchivesSeededRoutinesLikeAnyOtherRoutine() throws {
         let context: ModelContext = try makeAssistedContext()
         let bench: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
         context.insert(bench)
@@ -860,7 +805,7 @@ final class RoutinePersistenceTests: XCTestCase {
         for (index, id) in MockDataGenerator.seededRoutineIDs.enumerated() {
             let routine: Routine = Routine(
                 id: id,
-                name: "PERSONAL \(index)",
+                name: "INICIAL \(index)",
                 isTemplate: true,
                 sortOrder: index,
                 exercises: [],
@@ -901,8 +846,10 @@ final class RoutinePersistenceTests: XCTestCase {
         let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
         for id in MockDataGenerator.seededRoutineIDs {
             let routine: Routine = try XCTUnwrap(routines.first { $0.id == id })
-            XCTAssertFalse(routine.isArchived)
             XCTAssertEqual(routine.source, .automatic)
+            // Sin proteccion por UUID se archivan como cualquier generada.
+            XCTAssertTrue(routine.isArchived)
+            XCTAssertFalse(routine.isActivePlanRoutine)
             XCTAssertEqual(routine.exercises.count, 1)
             XCTAssertEqual(routine.exercises.first?.exercise?.name, "Press banca")
         }
@@ -1161,20 +1108,14 @@ final class RoutinePersistenceTests: XCTestCase {
         }
     }
 
-    func testBackupWithoutProtectedRoutinesKeepsTheFiveCurrentOnes() throws {
+    func testBackupWithoutSeededRoutinesReplacesThem() throws {
         let destination: ModelContext = try makeAssistedContext()
-        let protectedIDs: [UUID] = [
-            UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!,
-            UUID(uuidString: "6F0E1A10-0002-4000-8000-000000000002")!,
-            UUID(uuidString: "6F0E1A10-0003-4000-8000-000000000003")!,
-            UUID(uuidString: "6F0E1A10-0004-4000-8000-000000000004")!,
-            UUID(uuidString: "6F0E1A10-0005-4000-8000-000000000005")!
-        ]
-        let names: [String] = ["PUSH", "PULL", "LEGS", "UPPER", "LOWER"]
+        let seededIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(5))
+        XCTAssertEqual(seededIDs.count, 5)
         let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
         destination.insert(exercise)
-        for (index, id) in protectedIDs.enumerated() {
-            let routine: Routine = Routine(id: id, name: names[index], isTemplate: true, source: .automatic)
+        for (index, id) in seededIDs.enumerated() {
+            let routine: Routine = Routine(id: id, name: "INICIAL \(index)", isTemplate: true, source: .automatic)
             destination.insert(routine)
             let link: RoutineExercise = RoutineExercise(
                 exercise: exercise,
@@ -1184,7 +1125,7 @@ final class RoutinePersistenceTests: XCTestCase {
                 sortOrder: 0,
                 defaultWeight: 77.5,
                 restSeconds: 180,
-                notes: "configuración \(index)",
+                notes: "configuracion \(index)",
                 hasCustomRest: true
             )
             destination.insert(link)
@@ -1192,50 +1133,34 @@ final class RoutinePersistenceTests: XCTestCase {
         }
         try destination.save()
 
-        let backupSource: ModelContext = try makeAssistedContext()
-        let importedRoutine: Routine = Routine(name: "Importada", isTemplate: true, source: .manual)
-        backupSource.insert(importedRoutine)
-        let importedExercise: Exercise = Exercise(name: "Remo", muscleGroup: .lats)
-        backupSource.insert(importedExercise)
-        let importedLink: RoutineExercise = RoutineExercise(
-            exercise: importedExercise,
-            defaultSets: 3,
-            targetRepsMin: 8,
-            targetRepsMax: 10,
-            sortOrder: 0,
-            restSeconds: 120
-        )
-        backupSource.insert(importedLink)
-        importedRoutine.exercises = [importedLink]
-        try backupSource.save()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada", exercises: [])
+        ])
 
-        let export: BackupExportResult = try BackupManager.createBackup(context: backupSource)
         let directory: URL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let url: URL = try writeBackupData(export.document.data, in: directory)
+        let url: URL = try writeBackup(backup, in: directory)
 
         let result: BackupImportResult = try BackupManager.restoreBackup(
             from: url,
             context: destination,
             safetyCopyDirectory: directory.appendingPathComponent("safety", isDirectory: true)
         )
-        XCTAssertEqual(result.preservedProtectedRoutineIDs.count, 5)
 
         let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
-        for (index, id) in protectedIDs.enumerated() {
-            let preserved: Routine = try XCTUnwrap(routines.first { $0.id == id })
-            XCTAssertEqual(preserved.name, names[index])
-            XCTAssertEqual(preserved.exercises.count, 1)
-            XCTAssertEqual(preserved.exercises.first?.defaultWeight, 77.5)
-            XCTAssertEqual(preserved.exercises.first?.notes, "configuración \(index)")
+        XCTAssertEqual(routines.count, 1)
+        XCTAssertEqual(routines.first?.name, "Importada")
+        XCTAssertEqual(result.importedRoutineIDs, routines.map(\.id))
+        for id in seededIDs {
+            XCTAssertFalse(routines.contains { $0.id == id })
         }
-        XCTAssertTrue(routines.contains { $0.id == importedRoutine.id && $0.name == "Importada" })
     }
 
-    func testProtectedContentConflictBlocksImport() throws {
-        let pushID: UUID = UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!
+    func testSeededRoutineWithDifferentContentIsRestoredFromBackup() throws {
+        let pushID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
         let destination: ModelContext = try makeAssistedContext()
         let exercise: Exercise = Exercise(
+            id: UUID(),
             name: "Press banca",
             muscleGroup: .chest,
             equipmentType: .olympicBar,
@@ -1259,64 +1184,44 @@ final class RoutinePersistenceTests: XCTestCase {
         try destination.save()
 
         let backupExercise: ExerciseBackupDTO = makeBackupExercise(name: "Press banca", id: exercise.id)
-        let conflictingLink: RoutineExerciseBackupDTO = makeBackupLink(
+        let changedLink: RoutineExerciseBackupDTO = makeBackupLink(
             id: currentLink.id,
             exercise: backupExercise,
             exerciseID: exercise.id,
             sets: 3,
             rest: 150
         )
-        let conflicting: RoutineBackupDTO = makeBackupRoutine(
+        let changed: RoutineBackupDTO = makeBackupRoutine(
             id: pushID,
             name: "PUSH",
             source: "automatic",
             isArchived: false,
-            exercises: [conflictingLink]
+            exercises: [changedLink]
         )
 
         let directory: URL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let url: URL = try writeBackup(makeBackup(routines: [conflicting]), in: directory)
+        let url: URL = try writeBackup(makeBackup(routines: [changed]), in: directory)
 
-        XCTAssertThrowsError(
-            try BackupManager.restoreBackup(
-                from: url,
-                context: destination,
-                safetyCopyDirectory: directory.appendingPathComponent("safety", isDirectory: true)
-            )
-        ) { error in
-            guard let backupError = error as? BackupError,
-                  case .validationFailed(let report) = backupError else {
-                XCTFail("Se esperaba un error de validación: \(error)")
-                return
-            }
-            XCTAssertTrue(report.blockingIssues.contains { $0.code == .protectedRoutineContentConflict })
-        }
+        let result: BackupImportResult = try BackupManager.restoreBackup(
+            from: url,
+            context: destination,
+            safetyCopyDirectory: directory.appendingPathComponent("safety", isDirectory: true)
+        )
+        XCTAssertTrue(result.report.canImport)
 
         let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
-        let preserved: Routine = try XCTUnwrap(routines.first { $0.id == pushID })
-        XCTAssertEqual(preserved.exercises.first?.defaultSets, 4)
+        let restored: Routine = try XCTUnwrap(routines.first { $0.id == pushID })
+        XCTAssertEqual(restored.exercises.count, 1)
+        XCTAssertEqual(restored.exercises.first?.defaultSets, 3)
     }
 
-    func testProtectedRoutineNameConflictDoesNotReassignUUID() throws {
-        let pushID: UUID = UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!
+    func testSeededRoutineNameDoesNotBlockImport() throws {
+        let pushID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
         let otherID: UUID = UUID()
         let destination: ModelContext = try makeAssistedContext()
-        let currentExercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
-        destination.insert(currentExercise)
         let current: Routine = Routine(id: pushID, name: "PUSH", isTemplate: true, source: .automatic)
         destination.insert(current)
-        let currentLink: RoutineExercise = RoutineExercise(
-            exercise: currentExercise,
-            defaultSets: 4,
-            targetRepsMin: 6,
-            targetRepsMax: 8,
-            sortOrder: 0,
-            restSeconds: 150,
-            notes: "original"
-        )
-        destination.insert(currentLink)
-        current.exercises = [currentLink]
         try destination.save()
 
         let otherExercise: ExerciseBackupDTO = makeBackupExercise(name: "Remo", id: UUID())
@@ -1340,14 +1245,12 @@ final class RoutinePersistenceTests: XCTestCase {
             context: destination,
             safetyCopyDirectory: directory.appendingPathComponent("safety", isDirectory: true)
         )
-        XCTAssertTrue(result.report.warnings.contains { $0.code == .protectedRoutineNameConflict })
+        XCTAssertTrue(result.report.canImport)
 
         let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
-        let preserved: Routine = try XCTUnwrap(routines.first { $0.id == pushID })
-        XCTAssertEqual(preserved.name, "PUSH")
-        XCTAssertEqual(preserved.exercises.first?.notes, "original")
-        XCTAssertNotEqual(preserved.id, otherID)
-        XCTAssertTrue(routines.contains { $0.id == otherID })
+        XCTAssertEqual(routines.count, 1)
+        XCTAssertEqual(routines.first?.id, otherID)
+        XCTAssertFalse(routines.contains { $0.id == pushID })
     }
 
     func testInvalidJSONDoesNotModifyDatabase() throws {
@@ -1800,8 +1703,8 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(try safetyCopyFileCount(in: safety), 0)
     }
 
-    func testPreparedPlanKeepsHistoryLossIndicatorAndProtectedRoutineNames() throws {
-        let pushID: UUID = UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!
+    func testPreparedPlanReportsHistoryLossWithoutReservedRoutines() throws {
+        let pushID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
         let destination: ModelContext = try makeAssistedContext()
         let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
         destination.insert(exercise)
@@ -1832,20 +1735,20 @@ final class RoutinePersistenceTests: XCTestCase {
         let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
 
         XCTAssertTrue(plan.replacesSessionHistoryWithEmpty)
-        XCTAssertEqual(plan.preservedProtectedRoutineIDs, [pushID])
-        XCTAssertEqual(plan.preservedProtectedRoutines, [BackupPreservedRoutine(id: pushID, name: "PUSH")])
-        XCTAssertTrue(plan.report.warnings.contains { $0.code == .protectedRoutineMissingInBackup })
+        XCTAssertTrue(plan.report.canImport)
+        XCTAssertFalse(plan.report.issues.contains { (issue: BackupIssue) -> Bool in
+            return issue.message.localizedCaseInsensitiveContains("protegida")
+        })
 
-        let result: BackupImportResult = try BackupManager.restoreBackup(
+        _ = try BackupManager.restoreBackup(
             using: plan,
             context: destination,
             safetyCopyDirectory: safety
         )
-        XCTAssertEqual(result.preservedProtectedRoutineIDs, [pushID])
 
         let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
-        XCTAssertEqual(routines.first { $0.id == pushID }?.name, "PUSH")
-        XCTAssertEqual(routines.first { $0.id == pushID }?.exercises.first?.defaultSets, 4)
+        XCTAssertEqual(routines.map(\.name), ["Importada"])
+        XCTAssertFalse(routines.contains { $0.id == pushID })
     }
 
     func testOnboardingPreparationShowsWarningsWithoutImporting() throws {
@@ -1935,8 +1838,8 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(try safetyCopyFileCount(in: safety), 0)
     }
 
-    func testOnboardingPreparationListsProtectedRoutinesThatWillBePreserved() throws {
-        let pushID: UUID = UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!
+    func testOnboardingPreparationDoesNotReserveSeededRoutines() throws {
+        let pushID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
         let destination: ModelContext = try makeAssistedContext()
         let current: Routine = Routine(id: pushID, name: "PUSH", isTemplate: true, source: .automatic)
         destination.insert(current)
@@ -1953,10 +1856,9 @@ final class RoutinePersistenceTests: XCTestCase {
         let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
         viewModel.prepareBackupImport(from: url, context: destination)
 
-        XCTAssertEqual(
-            viewModel.preparedBackupPlan?.preservedProtectedRoutines,
-            [BackupPreservedRoutine(id: pushID, name: "PUSH")]
-        )
+        let plan: BackupImportPlan = try XCTUnwrap(viewModel.preparedBackupPlan)
+        XCTAssertTrue(plan.report.canImport)
+        XCTAssertFalse(plan.report.issues.contains { $0.message.localizedCaseInsensitiveContains("protegida") })
     }
 
     func testSelectingAnotherFileReplacesThePreparedPlan() throws {
@@ -2479,15 +2381,15 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(Set(routines.map(\.id)).count, 12)
     }
 
-    func testManualDistributionKeepsTheFiveProtectedRoutines() throws {
+    func testManualDistributionArchivesSeededRoutinesWithGeneralRules() throws {
         let context: ModelContext = try makeAssistedContext()
-        let protectedIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(5))
-        XCTAssertEqual(protectedIDs.count, 5)
+        let seededIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(5))
+        XCTAssertEqual(seededIDs.count, 5)
 
-        for (index, id) in protectedIDs.enumerated() {
+        for (index, id) in seededIDs.enumerated() {
             let routine: Routine = Routine(
                 id: id,
-                name: "Protegida \(index + 1)",
+                name: "INICIAL \(index + 1)",
                 isTemplate: true,
                 source: .automatic
             )
@@ -2498,17 +2400,20 @@ final class RoutinePersistenceTests: XCTestCase {
         _ = try applyOwnRoutines(count: 10, context: context)
 
         let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
-        let protected: [Routine] = routines.filter { (routine: Routine) -> Bool in
-            return protectedIDs.contains(routine.id)
+        let seeded: [Routine] = routines.filter { (routine: Routine) -> Bool in
+            return seededIDs.contains(routine.id)
         }
 
-        XCTAssertEqual(protected.count, 5)
-        XCTAssertTrue(protected.allSatisfy { (routine: Routine) -> Bool in
-            return routine.isActivePlanRoutine
+        XCTAssertEqual(seeded.count, 5)
+        // Son rutinas generadas: al crear la organizacion manual se archivan
+        // como cualquier otra, sin conservarlas por su UUID.
+        XCTAssertTrue(seeded.allSatisfy { (routine: Routine) -> Bool in
+            return routine.isArchived
         })
         XCTAssertEqual(routines.filter { (routine: Routine) -> Bool in
             return routine.source == .manual && routine.isActivePlanRoutine
         }.count, 10)
+        XCTAssertEqual(routines.count, 15)
     }
 
     // MARK: - Cambiar rutina: confirmación y sustitución de la organización
@@ -2633,15 +2538,15 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertNotNil(log.session)
     }
 
-    func testChangeRoutineArchivesProtectedRoutinesWithoutDeletingThem() throws {
+    func testChangeRoutineArchivesSeededRoutinesWithoutDeletingThem() throws {
         let context: ModelContext = try makeAssistedContext()
-        let protectedIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(2))
-        XCTAssertEqual(protectedIDs.count, 2)
+        let seededIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(2))
+        XCTAssertEqual(seededIDs.count, 2)
 
-        for (index, id) in protectedIDs.enumerated() {
+        for (index, id) in seededIDs.enumerated() {
             let routine: Routine = Routine(
                 id: id,
-                name: "Protegida \(index + 1)",
+                name: "INICIAL \(index + 1)",
                 isTemplate: true,
                 source: .automatic
             )
@@ -2654,7 +2559,7 @@ final class RoutinePersistenceTests: XCTestCase {
         let all: [Routine] = try context.fetch(FetchDescriptor<Routine>())
         XCTAssertEqual(all.count, 3)
 
-        for id in protectedIDs {
+        for id in seededIDs {
             let stored: Routine = try XCTUnwrap(all.first { (routine: Routine) -> Bool in routine.id == id })
             XCTAssertTrue(stored.isArchived)
             XCTAssertFalse(stored.isActivePlanRoutine)
@@ -2852,6 +2757,185 @@ final class RoutinePersistenceTests: XCTestCase {
             }
             XCTAssertEqual(open, [section])
         }
+    }
+
+    // MARK: - Rutinas de siembra sin protección especial
+
+    func testValidBackupWithAllSeededRoutinesIsNotBlocked() throws {
+        let seededIDs: [UUID] = Array(MockDataGenerator.seededRoutineIDs.prefix(5))
+        let names: [String] = ["PUSH", "PULL", "LEGS", "UPPER", "LOWER"]
+        var backupRoutines: [RoutineBackupDTO] = []
+        for (index, id) in seededIDs.enumerated() {
+            backupRoutines.append(
+                makeBackupRoutine(id: id, name: names[index], source: "automatic", exercises: [])
+            )
+        }
+
+        let destination: ModelContext = try makeAssistedContext()
+        let current: Routine = Routine(id: seededIDs[0], name: "PUSH personal", isTemplate: true, source: .automatic)
+        destination.insert(current)
+        try destination.save()
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(makeBackup(routines: backupRoutines), in: directory)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+        XCTAssertTrue(plan.report.canImport)
+
+        _ = try BackupManager.restoreBackup(
+            using: plan,
+            context: destination,
+            safetyCopyDirectory: directory.appendingPathComponent("safety", isDirectory: true)
+        )
+
+        let restored: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(restored.count, 5)
+        XCTAssertEqual(Set(restored.map(\.id)), Set(seededIDs))
+        XCTAssertEqual(restored.first { $0.id == seededIDs[0] }?.name, "PUSH")
+    }
+
+    func testSeededRoutineArchivedFlagFollowsTheBackup() throws {
+        let pushID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
+        let destination: ModelContext = try makeAssistedContext()
+        let current: Routine = Routine(
+            id: pushID,
+            name: "PUSH",
+            isTemplate: true,
+            isArchived: false,
+            source: .automatic
+        )
+        destination.insert(current)
+        try destination.save()
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(id: pushID, name: "PUSH", source: "automatic", isArchived: true, exercises: [])
+        ])
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        _ = try BackupManager.restoreBackup(
+            from: url,
+            context: destination,
+            safetyCopyDirectory: directory.appendingPathComponent("safety", isDirectory: true)
+        )
+
+        let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
+        let restored: Routine = try XCTUnwrap(routines.first { $0.id == pushID })
+        XCTAssertTrue(restored.isArchived)
+        XCTAssertFalse(restored.isActivePlanRoutine)
+    }
+
+    func testSeededRoutineCanBeArchivedNormally() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let seedID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
+        let routine: Routine = Routine(id: seedID, name: "PUSH", isTemplate: true, source: .automatic)
+        context.insert(routine)
+        try context.save()
+
+        routine.isArchived = true
+        try context.save()
+
+        let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+        let stored: Routine = try XCTUnwrap(routines.first { $0.id == seedID })
+        XCTAssertTrue(stored.isArchived)
+        XCTAssertFalse(stored.isActivePlanRoutine)
+        XCTAssertEqual(routines.count, 1)
+    }
+
+    func testSeededRoutineCanBeDeletedUnderGeneralRules() throws {
+        let context: ModelContext = try makeAssistedContext()
+        let seedID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
+        let routine: Routine = Routine(id: seedID, name: "PUSH", isTemplate: true, source: .automatic)
+        context.insert(routine)
+        try context.save()
+
+        XCTAssertEqual(RoutineService.deletionPolicy(for: routine, context: context), .delete)
+
+        context.delete(routine)
+        try context.save()
+
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Routine>()), 0)
+    }
+
+    func testUnsupportedBackupWithSeededRoutinesIsStillBlocked() throws {
+        let pushID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
+        let backup: AppBackupData = AppBackupData(
+            version: AppBackupData.currentVersion + 1,
+            exportDate: Date(timeIntervalSince1970: 1_700_000_000),
+            routines: [makeBackupRoutine(id: pushID, name: "PUSH", exercises: [])],
+            sessions: [],
+            settings: makeBackupSettings(),
+            assistedWeeks: nil
+        )
+
+        let destination: ModelContext = try makeAssistedContext()
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        destination.insert(sentinel)
+        try destination.save()
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+
+        XCTAssertThrowsError(
+            try BackupManager.restoreBackup(from: url, context: destination, safetyCopyDirectory: safety)
+        )
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 1)
+        XCTAssertEqual(try safetyCopyFileCount(in: safety), 0)
+    }
+
+    func testImportAppliesGeneralHistoryRules() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination, routineName: "Historial local")
+        let sentinel: Routine = Routine(name: "Rutina local", isTemplate: true, source: .manual)
+        destination.insert(sentinel)
+        try destination.save()
+
+        let backup: AppBackupData = makeBackup(
+            routines: [makeBackupRoutine(name: "Importada", exercises: [])],
+            sessions: [makeBackupSession(routineName: "Sesion importada")]
+        )
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        _ = try BackupManager.restoreBackup(
+            from: url,
+            context: destination,
+            safetyCopyDirectory: directory.appendingPathComponent("safety", isDirectory: true)
+        )
+
+        let sessions: [WorkoutSession] = try destination.fetch(FetchDescriptor<WorkoutSession>())
+        XCTAssertEqual(sessions.count, 1)
+        XCTAssertEqual(sessions.first?.routineName, "Sesion importada")
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSetLog>()), 0)
+    }
+
+    func testImportingTheSameBackupTwiceDoesNotDuplicateRoutines() throws {
+        let pushID: UUID = try XCTUnwrap(MockDataGenerator.seededRoutineIDs.first)
+        let destination: ModelContext = try makeAssistedContext()
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(id: pushID, name: "PUSH", exercises: [])
+        ])
+        let url: URL = try writeBackup(backup, in: directory)
+
+        for index in 0..<2 {
+            _ = try BackupManager.restoreBackup(
+                from: url,
+                context: destination,
+                safetyCopyDirectory: directory.appendingPathComponent("safety-\(index)", isDirectory: true)
+            )
+        }
+
+        let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 1)
+        XCTAssertEqual(routines.first?.id, pushID)
     }
 
     // MARK: - Helpers de distribución manual

@@ -78,10 +78,6 @@ enum BackupIssueCode: String, Codable, Equatable {
     case missingExerciseUUID
     case ambiguousExerciseName
     case invalidRoutineSource
-    case protectedRoutineMissingInBackup
-    case protectedRoutineContentConflict
-    case protectedRoutineNameConflict
-    case duplicateProtectedRoutineInCurrentStore
     case cannotReadCurrentData
     case corruptAssistedPlan
     case incompleteAssistedPlan
@@ -171,13 +167,6 @@ struct BackupExportResult {
     let report: BackupValidationReport
 }
 
-/// Rutina protegida que la importación conservará de la base actual, con el
-/// nombre que el usuario reconoce en la app.
-struct BackupPreservedRoutine: Identifiable, Equatable {
-    let id: UUID
-    let name: String
-}
-
 /// Plan de importación ya validado. No contiene cambios aplicados.
 struct BackupImportPlan: Identifiable {
     /// Identidad del plan. Permite descartar una preparación anterior cuando el
@@ -186,9 +175,6 @@ struct BackupImportPlan: Identifiable {
     let id: UUID = UUID()
     let backup: AppBackupData
     let report: BackupValidationReport
-    let preservedProtectedRoutineIDs: Set<UUID>
-    /// Rutinas personales que se conservarán de la base actual, ya con nombre.
-    let preservedProtectedRoutines: [BackupPreservedRoutine]
     /// `true` cuando aplicar este plan sustituiría un historial de sesiones
     /// existente por uno vacío. Se calcula en `prepareImport`, sin modificar
     /// SwiftData, y es el único dato que decide si hace falta confirmación.
@@ -198,7 +184,6 @@ struct BackupImportPlan: Identifiable {
 /// Resultado de una importación ya aplicada.
 struct BackupImportResult {
     let report: BackupValidationReport
-    let preservedProtectedRoutineIDs: Set<UUID>
     let importedRoutineIDs: [UUID]
 }
 
@@ -283,9 +268,8 @@ struct RoutineBackupDTO: Codable {
     /// procedencia. Sin valor se restaura como manual (no se archiva sola).
     var source: String? = nil
     var exercises: [RoutineExerciseBackupDTO]
-    /// Estado de archivado. Opcional para copias anteriores. En una copia
-    /// antigua se restaura como no archivada, salvo que la rutina protegida
-    /// actual se conserve y mantenga su estado.
+    /// Estado de archivado. Opcional para copias anteriores: en una copia
+    /// antigua se restaura como no archivada.
     var isArchived: Bool? = nil
 }
 
@@ -488,8 +472,10 @@ enum BackupManager {
 
     /// Lee, valida y prepara la importación sin modificar SwiftData.
     ///
-    /// La validación incluye la base actual porque una importación nunca puede
-    /// eliminar ni sustituir una de las cinco rutinas protegidas que ya exista.
+    /// La base actual solo se usa para validar las referencias de ejercicios y
+    /// para saber si la restauración vaciaría un historial existente. Ninguna
+    /// rutina concreta tiene un trato especial: las del archivo sustituyen a
+    /// todas las actuales, sin excepciones por UUID.
     static func prepareImport(from url: URL, context: ModelContext) throws -> BackupImportPlan {
         let data: Data = try readBackupData(from: url)
 
@@ -510,17 +496,11 @@ enum BackupManager {
             throw BackupError.invalidFile
         }
 
-        let currentProtectedRoutines: [Routine]
-        let currentRoutines: [Routine]
         let currentExercises: [Exercise]
         let currentSessionCount: Int
         do {
-            currentRoutines = try context.fetch(FetchDescriptor<Routine>())
             currentExercises = try context.fetch(FetchDescriptor<Exercise>())
             currentSessionCount = try context.fetchCount(FetchDescriptor<WorkoutSession>())
-            currentProtectedRoutines = currentRoutines.filter { (routine: Routine) -> Bool in
-                return seededPersonalRoutineIDs.contains(routine.id)
-            }
         } catch {
             let issue: BackupIssue = BackupIssue(
                 category: .conflict,
@@ -530,8 +510,6 @@ enum BackupManager {
             return BackupImportPlan(
                 backup: backup,
                 report: BackupValidationReport(issues: [issue]),
-                preservedProtectedRoutineIDs: [],
-                preservedProtectedRoutines: [],
                 // Sin poder leer la base actual no se puede afirmar que se
                 // pierda historial; la importación ya está bloqueada.
                 replacesSessionHistoryWithEmpty: false
@@ -541,21 +519,12 @@ enum BackupManager {
         let report: BackupValidationReport = validate(
             backup,
             currentExercises: currentExercises,
-            currentProtectedRoutines: currentProtectedRoutines,
             currentSessionCount: currentSessionCount
         )
-
-        let preservedProtectedRoutines: [BackupPreservedRoutine] = currentProtectedRoutines
-            .sorted { (lhs: Routine, rhs: Routine) -> Bool in lhs.sortOrder < rhs.sortOrder }
-            .map { (routine: Routine) -> BackupPreservedRoutine in
-                BackupPreservedRoutine(id: routine.id, name: routine.name)
-            }
 
         return BackupImportPlan(
             backup: backup,
             report: report,
-            preservedProtectedRoutineIDs: Set(currentProtectedRoutines.map(\.id)),
-            preservedProtectedRoutines: preservedProtectedRoutines,
             // Solo hay pérdida si hoy existen sesiones y la copia no trae
             // ninguna; el resto de combinaciones no necesita confirmación.
             replacesSessionHistoryWithEmpty: backup.sessions.isEmpty && currentSessionCount > 0
@@ -585,8 +554,8 @@ enum BackupManager {
     /// Aplica un plan ya preparado y mostrado al usuario.
     ///
     /// No vuelve a leer el archivo: así la restauración aplica exactamente el
-    /// resultado que el usuario ha revisado (avisos, rutinas protegidas y
-    /// pérdida de historial incluidos). Sigue validando que el plan sea
+    /// resultado que el usuario ha revisado (avisos y pérdida de historial
+    /// incluidos). Sigue validando que el plan sea
     /// importable y guarda la copia automática antes de tocar SwiftData.
     @discardableResult
     static func restoreBackup(
@@ -604,7 +573,6 @@ enum BackupManager {
         let importedRoutineIDs: [UUID] = try applyBackup(plan, context: context)
         return BackupImportResult(
             report: plan.report,
-            preservedProtectedRoutineIDs: plan.preservedProtectedRoutineIDs,
             importedRoutineIDs: importedRoutineIDs
         )
     }
@@ -874,7 +842,6 @@ enum BackupManager {
     private static func validate(
         _ backup: AppBackupData,
         currentExercises: [Exercise],
-        currentProtectedRoutines: [Routine],
         currentSessionCount: Int
     ) -> BackupValidationReport {
         var issues: [BackupIssue] = []
@@ -915,27 +882,6 @@ enum BackupManager {
             grouping: currentExercises,
             by: { (exercise: Exercise) -> String in normalizedName(exercise.name) }
         )
-
-        var currentProtectedByID: [UUID: Routine] = [:]
-        for routine in currentProtectedRoutines {
-            if currentProtectedByID[routine.id] != nil {
-                add(
-                    .conflict,
-                    .duplicateProtectedRoutineInCurrentStore,
-                    "La base actual contiene más de una rutina con el UUID protegido \(routine.id.uuidString). Para no elegir la incorrecta, la importación no se realizará.",
-                    routineID: routine.id
-                )
-            } else {
-                currentProtectedByID[routine.id] = routine
-            }
-        }
-
-        var currentProtectedByName: [String: Routine] = [:]
-        var currentProtectedLinkIDs: Set<UUID> = []
-        for routine in currentProtectedRoutines {
-            currentProtectedByName[normalizedName(routine.name)] = routine
-            currentProtectedLinkIDs.formUnion(routine.exercises.map(\.id))
-        }
 
         // Rutinas y enlaces.
         var routineByID: [UUID: RoutineBackupDTO] = [:]
@@ -1056,21 +1002,6 @@ enum BackupManager {
                         routineID: routine.id
                     )
                 }
-                if currentProtectedLinkIDs.contains(link.id) {
-                    // El mismo enlace de una rutina protegida que se conserva no
-                    // se reconstruye, así que repetir su UUID es correcto. En
-                    // cualquier otra rutina sí crearía una colisión.
-                    let belongsToPreservedRoutine: Bool = currentProtectedByID[routine.id]?
-                        .exercises.contains(where: { $0.id == link.id }) ?? false
-                    if !belongsToPreservedRoutine {
-                        add(
-                            .conflict,
-                            .duplicateRoutineExerciseID,
-                            "El UUID de enlace \(link.id.uuidString) ya pertenece a una rutina protegida de esta instalación y la copia lo usa en otra rutina.",
-                            routineID: routine.id
-                        )
-                    }
-                }
                 if link.targetSets < 0 {
                     add(
                         .incompatible,
@@ -1170,42 +1101,6 @@ enum BackupManager {
             }
         }
 
-        // Conflictos con las cinco rutinas protegidas actuales.
-        for current in currentProtectedRoutines {
-            guard let backupRoutine: RoutineBackupDTO = routineByID[current.id] else {
-                add(
-                    .warning,
-                    .protectedRoutineMissingInBackup,
-                    "La copia no contiene la rutina protegida «\(current.name)» (\(current.id.uuidString)). Se conservará la rutina actual con su UUID, ejercicios y configuración.",
-                    routineID: current.id
-                )
-                continue
-            }
-
-            let differences: [String] = protectedRoutineDifferences(backupRoutine, current)
-            if !differences.isEmpty {
-                let detail: String = differences.prefix(5).joined(separator: "; ")
-                add(
-                    .conflict,
-                    .protectedRoutineContentConflict,
-                    "La rutina protegida «\(current.name)» existe en la copia con el mismo UUID, pero su contenido no coincide: \(detail). No se sustituirá sin una decisión explícita.",
-                    routineID: current.id
-                )
-            }
-        }
-
-        for backupRoutine in backup.routines {
-            if let protected = currentProtectedByName[normalizedName(backupRoutine.name)],
-               protected.id != backupRoutine.id {
-                add(
-                    .warning,
-                    .protectedRoutineNameConflict,
-                    "La copia contiene una rutina llamada «\(backupRoutine.name)» con un UUID distinto al de la rutina protegida actual. No se reasignará por nombre; se conservará la protegida y se importará la de la copia como otra rutina.",
-                    routineID: backupRoutine.id
-                )
-            }
-        }
-
         // Ejercicios sin UUID en copias antiguas: si el nombre es ambiguo, no se
         // puede elegir una identidad de forma segura.
         for routine in backup.routines {
@@ -1224,10 +1119,8 @@ enum BackupManager {
         }
 
         // Planes asistidos. Solo cuentan las rutinas que existirán después de
-        // aplicar la importación: las del backup y las protegidas actuales que
-        // se conservan. Las rutinas actuales no protegidas se sustituyen.
+        // aplicar la importación: exactamente las del archivo.
         let availableRoutineIDs: Set<UUID> = Set(routineByID.keys)
-            .union(currentProtectedRoutines.map(\.id))
         var planIDs: Set<UUID> = []
         var activePlanCount: Int = 0
 
@@ -1314,7 +1207,7 @@ enum BackupManager {
                         add(
                             .incompatible,
                             .missingExerciseRelation,
-                            "El plan asistido \(plan.id.uuidString) referencia la rutina \(routineID.uuidString), que no existe en la copia ni en la base actual."
+                            "El plan asistido \(plan.id.uuidString) referencia la rutina \(routineID.uuidString), que no existe en la copia."
                         )
                     }
                     if day.routineName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1545,93 +1438,6 @@ enum BackupManager {
         return try? JSONDecoder().decode([AssistedWeekDayRecord].self, from: data)
     }
 
-    /// Compara el contenido que define una rutina protegida. Se comparan los
-    /// enlaces por UUID y los campos que el usuario puede configurar; nunca se
-    /// usa el nombre para decidir si dos rutinas son la misma.
-    private static func protectedRoutineDifferences(
-        _ backup: RoutineBackupDTO,
-        _ current: Routine
-    ) -> [String] {
-        var differences: [String] = []
-
-        if backup.name != current.name {
-            differences.append("nombre")
-        }
-        if backup.isTemplate != current.isTemplate {
-            differences.append("tipo de rutina")
-        }
-        if backup.sortOrder != current.sortOrder {
-            differences.append("orden de rutina")
-        }
-        if let backupSource = backup.source, backupSource != current.source.rawValue {
-            differences.append("procedencia")
-        }
-        if let backupArchived = backup.isArchived, backupArchived != current.isArchived {
-            differences.append("archivado")
-        }
-        if backup.exercises.count != current.exercises.count {
-            differences.append("número de ejercicios")
-        }
-
-        var currentLinksByID: [UUID: RoutineExercise] = [:]
-        for link in current.exercises {
-            if currentLinksByID[link.id] != nil {
-                differences.append("enlace duplicado \(link.id.uuidString)")
-            } else {
-                currentLinksByID[link.id] = link
-            }
-        }
-
-        var backupLinkIDs: Set<UUID> = []
-        for backupLink in backup.exercises {
-            backupLinkIDs.insert(backupLink.id)
-            guard let currentLink: RoutineExercise = currentLinksByID[backupLink.id] else {
-                differences.append("falta el enlace \(backupLink.id.uuidString)")
-                continue
-            }
-
-            if backupLink.sortOrder != currentLink.sortOrder { differences.append("orden de enlace") }
-            if backupLink.targetSets != currentLink.defaultSets { differences.append("series") }
-            if backupLink.targetRepsMin != currentLink.targetRepsMin
-                || backupLink.targetRepsMax != currentLink.targetRepsMax { differences.append("repeticiones") }
-            if backupLink.targetWeight != currentLink.defaultWeight { differences.append("peso") }
-            if backupLink.restSeconds != currentLink.restSeconds { differences.append("descanso") }
-            if backupLink.notes != currentLink.notes { differences.append("notas") }
-            if let backupCustomRest = backupLink.hasCustomRest,
-               backupCustomRest != currentLink.hasCustomRest {
-                differences.append("descanso personalizado")
-            }
-
-            let backupExerciseID: UUID? = backupLink.exerciseID ?? backupLink.exercise?.id
-            if let backupExerciseID {
-                if backupExerciseID != currentLink.exercise?.id {
-                    differences.append("ejercicio relacionado")
-                }
-            } else if let backupExercise = backupLink.exercise, let currentExercise = currentLink.exercise {
-                // Copia antigua sin UUID de ejercicio: para comparar una rutina
-                // protegida que se va a conservar se admite el nombre como
-                // última señal, sin usarlo para reasignar ninguna identidad.
-                if normalizedName(backupExercise.name) != normalizedName(currentExercise.name) {
-                    differences.append("ejercicio relacionado")
-                }
-            } else if backupLink.exercise != nil || currentLink.exercise != nil {
-                differences.append("ejercicio relacionado")
-            }
-            if let backupExercise = backupLink.exercise, let currentExercise = currentLink.exercise {
-                if backupExercise.name != currentExercise.name { differences.append("nombre del ejercicio") }
-                if backupExercise.equipmentTypeRaw != currentExercise.equipmentTypeRaw { differences.append("equipamiento del ejercicio") }
-                if backupExercise.targetRepsMin != currentExercise.targetRepsMin
-                    || backupExercise.targetRepsMax != currentExercise.targetRepsMax { differences.append("objetivo del ejercicio") }
-            }
-        }
-
-        for currentLink in current.exercises where !backupLinkIDs.contains(currentLink.id) {
-            differences.append("enlace sobrante \(currentLink.id.uuidString)")
-        }
-
-        return differences
-    }
-
     // MARK: - Restauración
 
     /// Reemplaza el contenido de la base de datos de forma atómica: no hay
@@ -1649,7 +1455,6 @@ enum BackupManager {
         do {
             importedRoutineIDs = try replaceExistingData(
                 with: plan.backup,
-                preservedProtectedRoutineIDs: plan.preservedProtectedRoutineIDs,
                 context: context
             )
             try context.save()
@@ -1674,7 +1479,6 @@ enum BackupManager {
 
     private static func replaceExistingData(
         with backup: AppBackupData,
-        preservedProtectedRoutineIDs: Set<UUID>,
         context: ModelContext
     ) throws -> [UUID] {
         let assistedPlans: [AssistedWeekPlan] = try context.fetch(FetchDescriptor<AssistedWeekPlan>())
@@ -1691,14 +1495,11 @@ enum BackupManager {
             context.delete(session)
         }
 
+        // Todas las rutinas actuales se sustituyen por las del archivo, sin
+        // excepciones por UUID. El historial de sesiones se restaura aparte, a
+        // partir de la copia, así que ninguna referencia queda colgando.
         let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
-        var currentProtectedIDs: Set<UUID> = preservedProtectedRoutineIDs
-        // Recalcular en el momento de aplicar evita borrar una rutina protegida
-        // que se hubiera añadido después de la fase de validación.
-        for routine in routines where seededPersonalRoutineIDs.contains(routine.id) {
-            currentProtectedIDs.insert(routine.id)
-        }
-        for routine in routines where !currentProtectedIDs.contains(routine.id) {
+        for routine in routines {
             context.delete(routine)
         }
 
@@ -1706,11 +1507,6 @@ enum BackupManager {
         var importedRoutineIDs: [UUID] = []
 
         for routineDTO in backup.routines {
-            // La rutina protegida actual nunca se borra ni se reconstruye. Si
-            // el backup contiene el mismo UUID, la validación ya comprobó que el
-            // contenido coincide; se conserva la instancia actual.
-            guard !currentProtectedIDs.contains(routineDTO.id) else { continue }
-
             let routine: Routine = Routine(
                 id: routineDTO.id,
                 name: routineDTO.name,

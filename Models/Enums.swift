@@ -79,7 +79,7 @@ public enum RoutineSource: String, Codable, CaseIterable, Sendable, Identifiable
     case automatic
     /// Rutina creada por el constructor asistido. Se archiva solo cuando se
     /// aplica otra semana asistida o se cambia de modalidad; nunca se confunde
-    /// con las rutinas manuales ni con las cinco rutinas personales sembradas.
+    /// con las rutinas manuales, que no se archivan al aplicar un plan nuevo.
     case assisted
     case manual
 

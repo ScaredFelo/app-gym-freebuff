@@ -1,10 +1,10 @@
 import Foundation
 import SwiftData
 
-/// Identificadores estables de las cinco rutinas personales sembradas. Se
-/// declaran fuera del `@MainActor` para que la transacción de `RoutineService`
-/// pueda protegerlas sin saltar de actor.
-let seededPersonalRoutineIDs: Set<UUID> = [
+/// Identificadores estables de las cinco rutinas iniciales sembradas. Solo
+/// sirven para reconocerlas al sembrar la base y en las migraciones: no
+/// otorgan ninguna protección ni trato especial frente al resto de rutinas.
+let seededRoutineIdentifiers: Set<UUID> = [
     UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!,
     UUID(uuidString: "6F0E1A10-0002-4000-8000-000000000002")!,
     UUID(uuidString: "6F0E1A10-0003-4000-8000-000000000003")!,
@@ -245,10 +245,7 @@ public final class MockDataGenerator {
 
         do {
             let exercises: [Exercise] = try context.fetch(FetchDescriptor<Exercise>())
-            guard let routines: [Routine] = try? context.fetch(FetchDescriptor<Routine>()) else { return }
-            let protectedExerciseIDs: Set<UUID> = exerciseIDsUsedByProtectedRoutines(routines)
-            for exercise in exercises where !exercise.hasCustomEquipment
-                && !protectedExerciseIDs.contains(exercise.id) {
+            for exercise in exercises where !exercise.hasCustomEquipment {
                 guard catalogNames.contains(ExerciseRules.normalizedName(exercise.name)) else { continue }
                 exercise.equipmentType = ExerciseRules.equipment(for: exercise.name)
             }
@@ -264,10 +261,10 @@ public final class MockDataGenerator {
     public static let legacyRoutineSourceFlagKey: String = "didClassifyLegacyRoutineSources_v1"
 
     /// Identificadores estables de las cinco rutinas sembradas. Son la única
-    /// señal inequívoca para reconocerlas: el nombre visible puede coincidir
-    /// con una rutina creada a mano.
+    /// señal inequívoca para reconocerlas al sembrar la base: el nombre visible
+    /// puede coincidir con una rutina creada a mano. No implican protección.
     static var seededRoutineIDs: Set<UUID> {
-        return seededPersonalRoutineIDs
+        return seededRoutineIdentifiers
     }
 
     /// Las filas anteriores a `sourceRaw` no tienen procedencia. El valor
@@ -298,8 +295,7 @@ public final class MockDataGenerator {
 
     /// Sincroniza una base ya existente con la tabla: renombra los ejercicios
     /// heredados, crea los que falten y ajusta equipamiento y descanso de los
-    /// ejercicios que no pertenecen a las cinco rutinas personales. Esas cinco
-    /// rutinas no se reescriben: su contenido es del usuario.
+    /// ejercicios del catálogo. Ninguna rutina queda excluida por su UUID.
     public static func applyRoutineTableUpdateIfNeeded(context: ModelContext) {
         let defaults: UserDefaults = UserDefaults.standard
         guard !defaults.bool(forKey: routineTableUpdateFlagKey) else { return }
@@ -310,19 +306,13 @@ public final class MockDataGenerator {
         do {
             let descriptor: FetchDescriptor<Exercise> = FetchDescriptor<Exercise>()
             var exercises: [Exercise] = try context.fetch(descriptor)
-            let existingRoutines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
-            let protectedExerciseIDs: Set<UUID> = exerciseIDsUsedByProtectedRoutines(existingRoutines)
 
             for legacy in legacyNames {
-                renameLegacyExercise(
-                    legacy,
-                    exercises: &exercises,
-                    protectedExerciseIDs: protectedExerciseIDs
-                )
+                renameLegacyExercise(legacy, exercises: &exercises)
             }
 
             ensureTableExercisesExist(context: context, exercises: &exercises)
-            applyTableSettings(to: exercises, protectedExerciseIDs: protectedExerciseIDs)
+            applyTableSettings(to: exercises)
             try rewriteRoutines(context: context, exercises: exercises)
 
             try context.save()
@@ -334,15 +324,13 @@ public final class MockDataGenerator {
 
     private static func renameLegacyExercise(
         _ legacy: (old: String, new: String, equipment: EquipmentType),
-        exercises: inout [Exercise],
-        protectedExerciseIDs: Set<UUID>
+        exercises: inout [Exercise]
     ) {
         let oldKey: String = normalize(legacy.old)
         let newKey: String = normalize(legacy.new)
         guard let exercise: Exercise = exercises.first(where: { (candidate: Exercise) -> Bool in
             return normalize(candidate.name) == oldKey
         }) else { return }
-        guard !protectedExerciseIDs.contains(exercise.id) else { return }
 
         let alreadyExists: Bool = exercises.contains { (candidate: Exercise) -> Bool in
             return candidate !== exercise && normalize(candidate.name) == newKey
@@ -375,19 +363,13 @@ public final class MockDataGenerator {
 
     /// Alinea equipamiento y descanso de los ejercicios de la tabla. Un
     /// descanso por bajada de BPM lo eligió el usuario y no se toca.
-    private static func applyTableSettings(
-        to exercises: [Exercise],
-        protectedExerciseIDs: Set<UUID>
-    ) {
+    private static func applyTableSettings(to exercises: [Exercise]) {
         for name in tableExerciseNames {
             guard let definition: CatalogExerciseDefinition = catalogDefinition(for: name),
                   let exercise: Exercise = exercises.first(where: { (candidate: Exercise) -> Bool in
                       return ExerciseDuplicateService.canonicalKey(for: candidate.name)
                           == ExerciseDuplicateService.canonicalKey(for: name)
                   }) else { continue }
-            // Un ejercicio compartido con una rutina personal protegida no se
-            // reconfigura: el usuario manda sobre su equipamiento y descanso.
-            guard !protectedExerciseIDs.contains(exercise.id) else { continue }
 
             if !exercise.hasCustomEquipment {
                 exercise.equipmentType = definition.equipmentType
@@ -400,8 +382,7 @@ public final class MockDataGenerator {
         }
     }
 
-    /// Rehace las rutinas de la tabla que no sean personales. Las cinco rutinas
-    /// protegidas se excluyen al principio, antes de tocar orden o ejercicios.
+    /// Rehace las rutinas de la tabla. Ninguna rutina queda excluida por su UUID.
     private static func rewriteRoutines(context: ModelContext, exercises: [Exercise]) throws {
         let descriptor: FetchDescriptor<Routine> = FetchDescriptor<Routine>()
         let existingRoutines: [Routine] = try context.fetch(descriptor)
@@ -414,11 +395,6 @@ public final class MockDataGenerator {
             guard let routine: Routine = existingRoutines.first(where: { (candidate: Routine) -> Bool in
                 return candidate.id == definition.id
             }) else { continue }
-
-            // Las cinco rutinas personales son del usuario. Aunque conserven el
-            // UUID de siembra, su contenido puede haber cambiado y no debe
-            // volver a las definiciones originales de la tabla.
-            guard !seededPersonalRoutineIDs.contains(routine.id) else { continue }
 
             routine.sortOrder = routineIndex
             // Solo se marca una rutina heredada si conserva el UUID estable
@@ -472,20 +448,6 @@ public final class MockDataGenerator {
 
             routine.exercises = entries
         }
-    }
-
-    /// Ejercicios usados por las cinco rutinas protegidas. La sincronización
-    /// del catálogo no los reconfigura ni los renombra por detrás del usuario.
-    private static func exerciseIDsUsedByProtectedRoutines(_ routines: [Routine]) -> Set<UUID> {
-        var ids: Set<UUID> = []
-        for routine in routines where seededPersonalRoutineIDs.contains(routine.id) {
-            for link in routine.exercises {
-                if let exerciseID = link.exercise?.id {
-                    ids.insert(exerciseID)
-                }
-            }
-        }
-        return ids
     }
 
     /// Nombres de ejercicio que aparecen en la tabla, sin repetir.
