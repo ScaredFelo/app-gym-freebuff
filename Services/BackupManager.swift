@@ -73,6 +73,9 @@ enum BackupIssueCode: String, Codable, Equatable {
     case invalidExerciseID
     case missingExerciseRelation
     case missingExerciseSnapshot
+    /// Copia antigua cuyo ejercicio no guardó UUID. Se puede restaurar
+    /// resolviendo por nombre solo si la coincidencia es única.
+    case missingExerciseUUID
     case ambiguousExerciseName
     case invalidRoutineSource
     case protectedRoutineMissingInBackup
