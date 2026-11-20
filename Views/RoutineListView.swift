@@ -882,10 +882,23 @@ private struct RoutineCollectionScreen: View {
 
 /// Tarjeta de carpeta compartida con la pestaña Rutinas y el selector de
 /// Configuración → Compartir rutina, para no duplicar su diseño.
+/// Indicador de la derecha de la tarjeta de carpeta.
+enum RoutineCardDisclosure: Equatable {
+    /// Pestaña Rutinas: la tarjeta abre la carpeta.
+    case navigation
+    /// Selector de splits contraído: la tarjeta despliega su contenido.
+    case collapsed
+    /// Selector de splits desplegado.
+    case expanded
+}
+
 struct RoutineFolderCardContent: View {
     let folder: RoutineFolder
     let index: Int
     let routineCount: Int
+    /// La pestaña Rutinas navega; el selector de splits despliega en la misma
+    /// pantalla. Por defecto se mantiene el comportamiento original.
+    var disclosure: RoutineCardDisclosure = .navigation
 
     var body: some View {
         HStack(spacing: 10.0) {
@@ -938,7 +951,7 @@ struct RoutineFolderCardContent: View {
 
             Spacer(minLength: 6.0)
 
-            Image(systemName: "chevron.right")
+            Image(systemName: disclosureSymbol)
                 .font(EndfieldFont.mono(10.0, weight: .bold))
                 .foregroundStyle(EndfieldPalette.textSecondary)
                 .fixedSize()
@@ -947,6 +960,15 @@ struct RoutineFolderCardContent: View {
         .padding(.vertical, 12.0)
         .padding(.trailing, 10.0)
         .contentShape(Rectangle())
+    }
+
+    private var disclosureSymbol: String {
+        switch disclosure {
+        case .navigation, .collapsed:
+            return "chevron.right"
+        case .expanded:
+            return "chevron.down"
+        }
     }
 }
 
