@@ -168,11 +168,28 @@ struct BackupExportResult {
     let report: BackupValidationReport
 }
 
+/// Rutina protegida que la importación conservará de la base actual, con el
+/// nombre que el usuario reconoce en la app.
+struct BackupPreservedRoutine: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+}
+
 /// Plan de importación ya validado. No contiene cambios aplicados.
-struct BackupImportPlan {
+struct BackupImportPlan: Identifiable {
+    /// Identidad del plan. Permite descartar una preparación anterior cuando el
+    /// usuario selecciona otro archivo y comprobar que el diálogo de
+    /// confirmación y la restauración usan el mismo resultado.
+    let id: UUID = UUID()
     let backup: AppBackupData
     let report: BackupValidationReport
     let preservedProtectedRoutineIDs: Set<UUID>
+    /// Rutinas personales que se conservarán de la base actual, ya con nombre.
+    let preservedProtectedRoutines: [BackupPreservedRoutine]
+    /// `true` cuando aplicar este plan sustituiría un historial de sesiones
+    /// existente por uno vacío. Se calcula en `prepareImport`, sin modificar
+    /// SwiftData, y es el único dato que decide si hace falta confirmación.
+    let replacesSessionHistoryWithEmpty: Bool
 }
 
 /// Resultado de una importación ya aplicada.
@@ -510,7 +527,11 @@ enum BackupManager {
             return BackupImportPlan(
                 backup: backup,
                 report: BackupValidationReport(issues: [issue]),
-                preservedProtectedRoutineIDs: []
+                preservedProtectedRoutineIDs: [],
+                preservedProtectedRoutines: [],
+                // Sin poder leer la base actual no se puede afirmar que se
+                // pierda historial; la importación ya está bloqueada.
+                replacesSessionHistoryWithEmpty: false
             )
         }
 
@@ -521,10 +542,20 @@ enum BackupManager {
             currentSessionCount: currentSessionCount
         )
 
+        let preservedProtectedRoutines: [BackupPreservedRoutine] = currentProtectedRoutines
+            .sorted { (lhs: Routine, rhs: Routine) -> Bool in lhs.sortOrder < rhs.sortOrder }
+            .map { (routine: Routine) -> BackupPreservedRoutine in
+                BackupPreservedRoutine(id: routine.id, name: routine.name)
+            }
+
         return BackupImportPlan(
             backup: backup,
             report: report,
-            preservedProtectedRoutineIDs: Set(currentProtectedRoutines.map(\.id))
+            preservedProtectedRoutineIDs: Set(currentProtectedRoutines.map(\.id)),
+            preservedProtectedRoutines: preservedProtectedRoutines,
+            // Solo hay pérdida si hoy existen sesiones y la copia no trae
+            // ninguna; el resto de combinaciones no necesita confirmación.
+            replacesSessionHistoryWithEmpty: backup.sessions.isEmpty && currentSessionCount > 0
         )
     }
 
@@ -541,6 +572,25 @@ enum BackupManager {
         safetyCopyDirectory overrideDirectory: URL? = nil
     ) throws -> BackupImportResult {
         let plan: BackupImportPlan = try prepareImport(from: url, context: context)
+        return try restoreBackup(
+            using: plan,
+            context: context,
+            safetyCopyDirectory: overrideDirectory
+        )
+    }
+
+    /// Aplica un plan ya preparado y mostrado al usuario.
+    ///
+    /// No vuelve a leer el archivo: así la restauración aplica exactamente el
+    /// resultado que el usuario ha revisado (avisos, rutinas protegidas y
+    /// pérdida de historial incluidos). Sigue validando que el plan sea
+    /// importable y guarda la copia automática antes de tocar SwiftData.
+    @discardableResult
+    static func restoreBackup(
+        using plan: BackupImportPlan,
+        context: ModelContext,
+        safetyCopyDirectory overrideDirectory: URL? = nil
+    ) throws -> BackupImportResult {
         guard plan.report.canImport else {
             throw BackupError.validationFailed(plan.report)
         }

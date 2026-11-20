@@ -17,6 +17,8 @@ final class OnboardingViewModel: ObservableObject {
 
     enum BackupState: Equatable {
         case idle
+        /// Copia validada pendiente de que el usuario revise los avisos.
+        case reviewing
         case importing
         case imported
         case failed(message: String)
@@ -33,6 +35,9 @@ final class OnboardingViewModel: ObservableObject {
     @Published var heartRateDeviceType: HeartRateDeviceType
     @Published var heartRateDeviceBrand: String
     @Published private(set) var backupState: BackupState = .idle
+    /// Plan validado del archivo seleccionado. Solo existe mientras el usuario
+    /// revisa los avisos; una selección nueva lo sustituye por completo.
+    @Published private(set) var preparedBackupPlan: BackupImportPlan?
 
     init(context: RoutineFlowContext) {
         self.context = context
@@ -116,21 +121,72 @@ final class OnboardingViewModel: ObservableObject {
 
     // MARK: - Importación de copia
 
-    func importBackup(from url: URL, context modelContext: ModelContext) {
-        backupState = .importing
+    /// Valida el archivo elegido sin modificar la base. El estado pasa a
+    /// `.reviewing` con el plan preparado, que es el que la pantalla muestra y
+    /// después aplica: nunca se prepara dos veces el mismo archivo.
+    func prepareBackupImport(from url: URL, context modelContext: ModelContext) {
+        // Cambiar de archivo invalida cualquier preparación anterior.
+        preparedBackupPlan = nil
+        backupState = .idle
 
-        switch OnboardingService.importBackup(from: url, context: modelContext) {
-        case .success:
-            // El archivo restaura ajustes en `UserDefaults`: el equipamiento y
-            // las pulsaciones mostrados pasan a reflejar los importados.
-            reloadPreferencesFromStorage()
-            backupState = .imported
+        switch OnboardingService.prepareBackup(from: url, context: modelContext) {
+        case .success(let plan):
+            preparedBackupPlan = plan
+            backupState = .reviewing
         case .failure(let error):
             backupState = .failed(message: error.localizedDescription)
         }
     }
 
+    /// Descarta el plan pendiente sin tocar ningún dato.
+    func cancelPreparedBackup() {
+        preparedBackupPlan = nil
+        if backupState == .reviewing {
+            backupState = .idle
+        }
+    }
+
+    /// Aplica el plan que el usuario acaba de revisar. Ignora cualquier segunda
+    /// llamada mientras se importa o si ya no hay plan preparado, de modo que no
+    /// pueden ejecutarse dos importaciones sobre la misma copia.
+    @discardableResult
+    func confirmPreparedBackup(
+        context modelContext: ModelContext,
+        safetyCopyDirectory: URL? = nil
+    ) -> Result<BackupImportResult, Error> {
+        guard backupState != .importing, let plan: BackupImportPlan = preparedBackupPlan else {
+            return .failure(BackupError.restoreFailed)
+        }
+
+        guard plan.report.canImport else {
+            preparedBackupPlan = nil
+            backupState = .failed(message: plan.report.localizedMessage)
+            return .failure(BackupError.validationFailed(plan.report))
+        }
+
+        backupState = .importing
+
+        switch OnboardingService.confirmBackup(
+            plan,
+            context: modelContext,
+            safetyCopyDirectory: safetyCopyDirectory
+        ) {
+        case .success(let result):
+            // El archivo restaura ajustes en `UserDefaults`: el equipamiento y
+            // las pulsaciones mostrados pasan a reflejar los importados.
+            preparedBackupPlan = nil
+            reloadPreferencesFromStorage()
+            backupState = .imported
+            return .success(result)
+        case .failure(let error):
+            preparedBackupPlan = nil
+            backupState = .failed(message: error.localizedDescription)
+            return .failure(error)
+        }
+    }
+
     func resetBackupState() {
+        preparedBackupPlan = nil
         backupState = .idle
     }
 

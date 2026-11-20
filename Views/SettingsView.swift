@@ -50,6 +50,16 @@ struct SettingsView: View {
     @State private var safetyCopies: [PreImportBackup] = []
     @State private var safetyCopyPendingRestore: PreImportBackup?
 
+    /// Importación validada pendiente de revisión. Mientras exista, la hoja de
+    /// revisión es la única vía para aplicar el archivo preparado.
+    @State private var reviewPlan: BackupImportPlan?
+    @State private var reviewSuccessLead: String = ""
+
+    /// Cabeceras del mensaje final. La revisión compartida añade las rutinas
+    /// protegidas conservadas y los avisos de integridad.
+    private static let importSuccessLead: String = "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo, y se ha guardado una copia automática de los datos anteriores."
+    private static let safetyCopySuccessLead: String = "Copia automática restaurada. Se han recuperado los datos tal y como estaban antes de esa importación."
+
     private var availablePlates: [Double] {
         return UserSettingsManager.parsePlates(availablePlatesRaw)
     }
@@ -126,6 +136,22 @@ struct SettingsView: View {
                 handleImportResult(result)
             }
         )
+        .sheet(item: $reviewPlan) { (plan: BackupImportPlan) in
+            BackupImportReviewSheet(
+                plan: plan,
+                successLead: reviewSuccessLead,
+                performsImport: {
+                    return performPreparedImport(plan)
+                },
+                onImported: { (_: BackupImportResult) in
+                    reviewPlan = nil
+                    reloadSafetyCopies()
+                },
+                onDismiss: {
+                    reviewPlan = nil
+                }
+            )
+        }
         .alert("Cuidado: sobrescritura de datos", isPresented: $showImportWarningAlert) {
             Button("Cancelar", role: .cancel) {
                 // Sin acción: se conserva la base de datos actual.
@@ -162,7 +188,10 @@ struct SettingsView: View {
                 safetyCopyPendingRestore = nil
 
                 if let pending: PreImportBackup = pending {
-                    performRestore(pending)
+                    beginImportReview(
+                        url: pending.url,
+                        successLead: Self.safetyCopySuccessLead
+                    )
                 }
             }
         } message: {
@@ -619,20 +648,7 @@ struct SettingsView: View {
     private func handleImportResult(_ result: Result<URL, Error>) {
         switch result {
         case .success(let url):
-            do {
-                let result: BackupImportResult = try BackupManager.restoreBackup(from: url, context: modelContext)
-                reloadSafetyCopies()
-                var message: String = "Importación completada. Se han restaurado las rutinas, las sesiones de entrenamiento y los ajustes del archivo, y se ha guardado una copia automática de los datos anteriores."
-                if !result.preservedProtectedRoutineIDs.isEmpty {
-                    message += " Se han conservado las \(result.preservedProtectedRoutineIDs.count) rutina(s) personal(es) protegida(s) de esta instalación."
-                }
-                if !result.report.warnings.isEmpty {
-                    message += "\n\nAvisos:\n" + result.report.warnings.map { "• \($0.message)" }.joined(separator: "\n")
-                }
-                presentBackupResult(message: message)
-            } catch {
-                presentBackupResult(message: error.localizedDescription)
-            }
+            beginImportReview(url: url, successLead: Self.importSuccessLead)
         case .failure(let error):
             presentBackupResult(message: error.localizedDescription)
         }
@@ -642,20 +658,22 @@ struct SettingsView: View {
         safetyCopies = BackupManager.availableSafetyCopies()
     }
 
-    private func performRestore(_ copy: PreImportBackup) {
+    /// Valida el archivo sin modificar SwiftData y abre la revisión compartida.
+    /// La restauración solo se ejecuta después de esa revisión, nunca antes.
+    private func beginImportReview(url: URL, successLead: String) {
         do {
-            let result: BackupImportResult = try BackupManager.restoreBackup(from: copy.url, context: modelContext)
-            reloadSafetyCopies()
-            var message: String = "Copia automática restaurada. Se han recuperado los datos tal y como estaban antes de esa importación."
-            if !result.preservedProtectedRoutineIDs.isEmpty {
-                message += " Se han conservado las \(result.preservedProtectedRoutineIDs.count) rutina(s) personal(es) protegida(s) de esta instalación."
-            }
-            if !result.report.warnings.isEmpty {
-                message += "\n\nAvisos:\n" + result.report.warnings.map { "• \($0.message)" }.joined(separator: "\n")
-            }
-            presentBackupResult(message: message)
+            reviewSuccessLead = successLead
+            reviewPlan = try BackupManager.prepareImport(from: url, context: modelContext)
         } catch {
             presentBackupResult(message: error.localizedDescription)
+        }
+    }
+
+    private func performPreparedImport(_ plan: BackupImportPlan) -> Result<BackupImportResult, Error> {
+        do {
+            return .success(try BackupManager.restoreBackup(using: plan, context: modelContext))
+        } catch {
+            return .failure(error)
         }
     }
 
@@ -830,5 +848,343 @@ struct BackupSettingsSectionView: View {
             }
             .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
         }
+    }
+}
+
+// MARK: - Revisión compartida de importaciones
+
+/// Textos únicos del aviso de pérdida de historial. Ajustes y onboarding usan
+/// los mismos, de modo que la consecuencia se explica igual en ambos flujos.
+enum BackupImportMessages {
+    static let historyLossTitle: String = "El backup no contiene historial"
+    static let historyLossMessage: String = "El backup seleccionado no contiene sesiones de entrenamiento. Si continúas, el historial actual será sustituido y dejará de aparecer en AppGym. Antes de continuar se guardará una copia de seguridad automática."
+}
+
+/// Presentación del resultado de `prepareImport`.
+///
+/// Es el único sistema de avisos de integridad de la app: lo usan tanto la
+/// importación desde Ajustes como la del onboarding. No modifica ningún dato;
+/// solo describe el plan que se aplicará si el usuario confirma.
+struct BackupValidationReportView: View {
+    let plan: BackupImportPlan
+
+    var body: some View {
+        VStack(spacing: 10.0) {
+            statusPanel
+
+            if !plan.report.blockingIssues.isEmpty {
+                issuePanel(
+                    title: "IMPORTACIÓN BLOQUEADA",
+                    issues: plan.report.blockingIssues,
+                    tint: EndfieldPalette.accentRed
+                )
+            }
+
+            if !plan.report.warnings.isEmpty {
+                issuePanel(
+                    title: "AVISOS DE INTEGRIDAD",
+                    issues: plan.report.warnings,
+                    tint: EndfieldPalette.accentYellow
+                )
+            }
+
+            if !plan.preservedProtectedRoutines.isEmpty {
+                preservedRoutinesPanel
+            }
+
+            if plan.replacesSessionHistoryWithEmpty {
+                historyLossPanel
+            }
+        }
+    }
+
+    // MARK: Estado general
+
+    private var statusTitle: String {
+        switch plan.report.status {
+        case .valid:
+            return "COPIA VÁLIDA"
+        case .validWithWarnings:
+            return "COPIA VÁLIDA CON AVISOS"
+        case .incompatible:
+            return "COPIA INCOMPATIBLE"
+        case .corrupt:
+            return "COPIA CORRUPTA"
+        case .requiresUserIntervention:
+            return "REQUIERE INTERVENCIÓN"
+        }
+    }
+
+    private var statusMessage: String {
+        switch plan.report.status {
+        case .valid:
+            return "La copia puede restaurarse tal y como está."
+        case .validWithWarnings:
+            return "La copia puede restaurarse, pero algunos datos pueden no recuperarse exactamente como estaban. Revisa los avisos antes de continuar."
+        case .incompatible:
+            return "Esta copia no es compatible con la versión actual de AppGym. No se ha modificado ningún dato."
+        case .corrupt:
+            return "La copia contiene datos ilegibles. No se ha modificado ningún dato."
+        case .requiresUserIntervention:
+            return "La copia entra en conflicto con tus rutinas protegidas y no se puede aplicar sin resolverlo antes. No se ha modificado ningún dato."
+        }
+    }
+
+    private var statusTint: Color {
+        return plan.report.canImport ? EndfieldPalette.accentCyan : EndfieldPalette.accentRed
+    }
+
+    private var statusPanel: some View {
+        TacticalPanel(code: "BK.02", title: "Revisión de la copia", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 6.0) {
+                Text(statusTitle)
+                    .font(EndfieldFont.label(10.0))
+                    .tracking(1.0)
+                    .foregroundStyle(statusTint)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(statusMessage)
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    // MARK: Incidencias
+
+    private func issuePanel(
+        title: String,
+        issues: [BackupIssue],
+        tint: Color
+    ) -> some View {
+        TacticalPanel(code: "BK.03", title: title, contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 6.0) {
+                ForEach(issues) { (issue: BackupIssue) in
+                    HStack(alignment: .top, spacing: 5.0) {
+                        Text("•")
+                            .font(EndfieldFont.mono(9.0, weight: .bold))
+                            .foregroundStyle(tint)
+
+                        Text(issue.message)
+                            .font(EndfieldFont.mono(9.0))
+                            .foregroundStyle(EndfieldPalette.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Rutinas protegidas
+
+    private var preservedRoutinesPanel: some View {
+        TacticalPanel(code: "PRT.01", title: "Rutinas protegidas", contentPadding: 12.0) {
+            VStack(alignment: .leading, spacing: 6.0) {
+                Text("Estas rutinas personales se conservarán tal y como están en esta instalación. Las versiones del backup no las sustituirán, aunque el archivo las contenga.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(plan.preservedProtectedRoutines) { (routine: BackupPreservedRoutine) in
+                    HStack(alignment: .top, spacing: 6.0) {
+                        Image(systemName: "lock.fill")
+                            .font(EndfieldFont.mono(9.0, weight: .bold))
+                            .foregroundStyle(EndfieldPalette.accentYellow)
+
+                        VStack(alignment: .leading, spacing: 1.0) {
+                            Text(routine.name.uppercased())
+                                .font(EndfieldFont.label(9.0))
+                                .tracking(0.8)
+                                .foregroundStyle(EndfieldPalette.textPrimary)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            Text(String(routine.id.uuidString.prefix(8)))
+                                .font(EndfieldFont.mono(8.0))
+                                .foregroundStyle(EndfieldPalette.textSecondary)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: Historial
+
+    private var historyLossPanel: some View {
+        TacticalPanel(code: "HST.01", title: "Historial de entrenamiento", contentPadding: 12.0) {
+            Text(BackupImportMessages.historyLossMessage)
+                .font(EndfieldFont.mono(9.0))
+                .foregroundStyle(EndfieldPalette.accentRed)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+}
+
+/// Revisión de una importación ya preparada, con el diálogo de pérdida de
+/// historial y la ejecución del plan mostrado.
+///
+/// La usan Ajustes y el onboarding. La confirmación nunca recalcula la
+/// validación: aplica exactamente el plan recibido.
+struct BackupImportReviewSheet: View {
+    let plan: BackupImportPlan
+    let successLead: String
+    /// El onboarding muestra su propio panel de éxito; Ajustes mantiene la
+    /// alerta de resultado que ya utilizaba.
+    var presentsResultAlert: Bool = true
+    let performsImport: () -> Result<BackupImportResult, Error>
+    let onImported: (BackupImportResult) -> Void
+    let onDismiss: () -> Void
+
+    @State private var isWorking: Bool = false
+    @State private var showsHistoryConfirmation: Bool = false
+    @State private var isShowingResultAlert: Bool = false
+    @State private var resultMessage: String = ""
+    @State private var importedResult: BackupImportResult?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                TechnicalGridBackground()
+
+                ScrollView {
+                    VStack(spacing: 10.0) {
+                        BackupValidationReportView(plan: plan)
+                        actions
+                    }
+                    .padding(.horizontal, 16.0)
+                    .padding(.vertical, 14.0)
+                }
+            }
+            .navigationTitle("IMPORTAR COPIA")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cerrar") {
+                        onDismiss()
+                    }
+                    .disabled(isWorking)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .tint(EndfieldPalette.accentYellow)
+        .interactiveDismissDisabled(isWorking)
+        .alert(BackupImportMessages.historyLossTitle, isPresented: $showsHistoryConfirmation) {
+            Button("Cancelar", role: .cancel) {
+                // Sin acción: no se ejecuta ninguna importación.
+            }
+
+            Button("Continuar", role: .destructive) {
+                runImport()
+            }
+        } message: {
+            Text(BackupImportMessages.historyLossMessage)
+        }
+        .alert("Copia de seguridad", isPresented: $isShowingResultAlert) {
+            Button("Entendido", role: .cancel) {
+                if let result: BackupImportResult = importedResult {
+                    onImported(result)
+                } else {
+                    onDismiss()
+                }
+            }
+        } message: {
+            Text(resultMessage)
+        }
+    }
+
+    // MARK: Acciones
+
+    private var actions: some View {
+        VStack(spacing: 8.0) {
+            if !plan.report.canImport {
+                Text("Esta copia no se puede importar. No se ha modificado ningún dato.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.accentRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if isWorking {
+                HStack(spacing: 8.0) {
+                    ProgressView()
+                        .tint(EndfieldPalette.accentCyan)
+
+                    Text("IMPORTANDO COPIA...")
+                        .font(EndfieldFont.label(9.0))
+                        .tracking(1.0)
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+
+            Button("CANCELAR") {
+                onDismiss()
+            }
+            .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.textSecondary))
+            .disabled(isWorking)
+
+            Button("IMPORTAR Y SUSTITUIR DATOS") {
+                requestImport()
+            }
+            .buttonStyle(
+                EndfieldSecondaryButtonStyle(
+                    tint: plan.report.canImport ? EndfieldPalette.accentRed : EndfieldPalette.textSecondary.opacity(0.6)
+                )
+            )
+            .disabled(!plan.report.canImport || isWorking)
+            .accessibilityHint("Aplica la copia revisada. Antes se guarda una copia automática de los datos actuales.")
+        }
+    }
+
+    /// Solo pide confirmación cuando el plan realmente sustituye un historial
+    /// existente por uno vacío. El resto de importaciones siguen su curso.
+    private func requestImport() {
+        guard plan.report.canImport, !isWorking else { return }
+
+        if plan.replacesSessionHistoryWithEmpty {
+            showsHistoryConfirmation = true
+        } else {
+            runImport()
+        }
+    }
+
+    private func runImport() {
+        guard plan.report.canImport, !isWorking else { return }
+
+        isWorking = true
+        let outcome: Result<BackupImportResult, Error> = performsImport()
+        isWorking = false
+
+        switch outcome {
+        case .success(let result):
+            if presentsResultAlert {
+                importedResult = result
+                resultMessage = Self.successMessage(result: result, lead: successLead)
+                isShowingResultAlert = true
+            } else {
+                onImported(result)
+            }
+
+        case .failure(let error):
+            if presentsResultAlert {
+                importedResult = nil
+                resultMessage = error.localizedDescription
+                isShowingResultAlert = true
+            } else {
+                onDismiss()
+            }
+        }
+    }
+
+    private static func successMessage(result: BackupImportResult, lead: String) -> String {
+        var message: String = lead
+        if !result.preservedProtectedRoutineIDs.isEmpty {
+            message += " Se han conservado las \(result.preservedProtectedRoutineIDs.count) rutina(s) personal(es) protegida(s) de esta instalación."
+        }
+        if !result.report.warnings.isEmpty {
+            message += "\n\nAvisos:\n" + result.report.warnings.map { "• \($0.message)" }.joined(separator: "\n")
+        }
+        return message
     }
 }

@@ -1597,7 +1597,500 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(restoredLog.exercise?.id, exercise.id)
     }
 
+    // MARK: - Confirmación de pérdida de historial y avisos (Prompt 06.1)
+
+    func testPrepareImportWithoutHistoryOnEitherSideDoesNotAskForConfirmation() throws {
+        let source: ModelContext = try makeAssistedContext()
+        let routine: Routine = Routine(name: "Copia sin historial", isTemplate: true, source: .manual)
+        source.insert(routine)
+        try source.save()
+
+        let export: BackupExportResult = try BackupManager.createBackup(context: source)
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackupData(export.document.data, in: directory)
+
+        let destination: ModelContext = try makeAssistedContext()
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+
+        XCTAssertTrue(plan.report.canImport)
+        XCTAssertFalse(plan.replacesSessionHistoryWithEmpty)
+        XCTAssertFalse(plan.report.issues.contains { $0.code == .missingSessionHistory })
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 0)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 0)
+    }
+
+    func testPrepareImportWithSessionsOnBothSidesDoesNotAskForConfirmation() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+
+        let source: ModelContext = try makeAssistedContext()
+        try insertSession(in: source, routineName: "LEGS")
+
+        let export: BackupExportResult = try BackupManager.createBackup(context: source)
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackupData(export.document.data, in: directory)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+
+        XCTAssertTrue(plan.report.canImport)
+        XCTAssertFalse(plan.replacesSessionHistoryWithEmpty)
+        XCTAssertFalse(plan.report.issues.contains { $0.code == .missingSessionHistory })
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+    }
+
+    func testPrepareImportDetectsThatExistingHistoryWouldBeReplacedByAnEmptyOne() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+
+        let source: ModelContext = try makeAssistedContext()
+        let routine: Routine = Routine(name: "Copia actual", isTemplate: true, source: .manual)
+        source.insert(routine)
+        try source.save()
+
+        let export: BackupExportResult = try BackupManager.createBackup(context: source)
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackupData(export.document.data, in: directory)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+
+        // La copia es importable, pero sustituiría un historial real por vacío.
+        XCTAssertTrue(plan.report.canImport)
+        XCTAssertTrue(plan.replacesSessionHistoryWithEmpty)
+        XCTAssertTrue(plan.report.warnings.contains { $0.code == .missingSessionHistory })
+
+        // Preparar nunca modifica la base ni crea copias automáticas.
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+    }
+
+    func testCancellingTheHistoryConfirmationLeavesDataUntouched() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        destination.insert(sentinel)
+        try destination.save()
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+        XCTAssertTrue(plan.replacesSessionHistoryWithEmpty)
+
+        // Cancelar la confirmación no ejecuta la restauración: nada cambia.
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 1)
+        XCTAssertEqual(try safetyCopyFileCount(in: safety), 0)
+    }
+
+    func testConfirmingThePreparedPlanRunsTheNormalImport() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+        XCTAssertTrue(plan.replacesSessionHistoryWithEmpty)
+
+        let result: BackupImportResult = try BackupManager.restoreBackup(
+            using: plan,
+            context: destination,
+            safetyCopyDirectory: safety
+        )
+
+        XCTAssertEqual(result.importedRoutineIDs.count, 1)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 0)
+        let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.count, 1)
+        XCTAssertEqual(routines.first?.name, "Importada")
+        XCTAssertEqual(try safetyCopyFileCount(in: safety), 1)
+    }
+
+    func testPreparedImportAbortsWhenTheSafetyCopyCannotBeWritten() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        destination.insert(sentinel)
+        try destination.save()
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let blockedDirectory: URL = directory.appendingPathComponent("no-es-directorio")
+        try Data("archivo, no carpeta".utf8).write(to: blockedDirectory)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+
+        XCTAssertThrowsError(
+            try BackupManager.restoreBackup(
+                using: plan,
+                context: destination,
+                safetyCopyDirectory: blockedDirectory
+            )
+        ) { error in
+            guard let backupError = error as? BackupError,
+                  case .safetyCopyFailed = backupError else {
+                XCTFail("Se esperaba safetyCopyFailed: \(error)")
+                return
+            }
+        }
+
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 1)
+    }
+
+    func testPlanThatCannotBeImportedNeverCreatesASafetyCopyOrChangesData() throws {
+        let duplicateID: UUID = UUID()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(id: duplicateID, name: "Primera", exercises: []),
+            makeBackupRoutine(id: duplicateID, name: "Segunda", exercises: [])
+        ])
+
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        destination.insert(sentinel)
+        try destination.save()
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+        XCTAssertFalse(plan.report.canImport)
+        XCTAssertTrue(plan.report.blockingIssues.contains { $0.code == .duplicateRoutineID })
+
+        // Aplicar un plan bloqueado ni copia ni sustituye nada: el rollback del
+        // Prompt 06 queda intacto porque no se llega a escribir.
+        XCTAssertThrowsError(
+            try BackupManager.restoreBackup(
+                using: plan,
+                context: destination,
+                safetyCopyDirectory: safety
+            )
+        ) { error in
+            guard let backupError = error as? BackupError,
+                  case .validationFailed = backupError else {
+                XCTFail("Se esperaba validationFailed: \(error)")
+                return
+            }
+        }
+
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 1)
+        XCTAssertEqual(try safetyCopyFileCount(in: safety), 0)
+    }
+
+    func testPreparedPlanKeepsHistoryLossIndicatorAndProtectedRoutineNames() throws {
+        let pushID: UUID = UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!
+        let destination: ModelContext = try makeAssistedContext()
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        destination.insert(exercise)
+        let current: Routine = Routine(id: pushID, name: "PUSH", isTemplate: true, source: .automatic)
+        destination.insert(current)
+        let link: RoutineExercise = RoutineExercise(
+            exercise: exercise,
+            defaultSets: 4,
+            targetRepsMin: 6,
+            targetRepsMax: 8,
+            sortOrder: 0,
+            restSeconds: 150
+        )
+        destination.insert(link)
+        current.exercises = [link]
+        try destination.save()
+        try insertSession(in: destination)
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+
+        let plan: BackupImportPlan = try BackupManager.prepareImport(from: url, context: destination)
+
+        XCTAssertTrue(plan.replacesSessionHistoryWithEmpty)
+        XCTAssertEqual(plan.preservedProtectedRoutineIDs, [pushID])
+        XCTAssertEqual(plan.preservedProtectedRoutines, [BackupPreservedRoutine(id: pushID, name: "PUSH")])
+        XCTAssertTrue(plan.report.warnings.contains { $0.code == .protectedRoutineMissingInBackup })
+
+        let result: BackupImportResult = try BackupManager.restoreBackup(
+            using: plan,
+            context: destination,
+            safetyCopyDirectory: safety
+        )
+        XCTAssertEqual(result.preservedProtectedRoutineIDs, [pushID])
+
+        let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
+        XCTAssertEqual(routines.first { $0.id == pushID }?.name, "PUSH")
+        XCTAssertEqual(routines.first { $0.id == pushID }?.exercises.first?.defaultSets, 4)
+    }
+
+    func testOnboardingPreparationShowsWarningsWithoutImporting() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Copia del onboarding", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: destination)
+
+        XCTAssertEqual(viewModel.backupState, .reviewing)
+        let plan: BackupImportPlan = try XCTUnwrap(viewModel.preparedBackupPlan)
+        XCTAssertTrue(plan.report.canImport)
+        XCTAssertTrue(plan.replacesSessionHistoryWithEmpty)
+        XCTAssertTrue(plan.report.warnings.contains { $0.code == .missingSessionHistory })
+
+        // La revisión no ha aplicado nada: el historial sigue en la base.
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 0)
+    }
+
+    func testOnboardingBlocksCorruptBackupBeforeImporting() throws {
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = directory.appendingPathComponent("invalido.json")
+        try Data("esto no es JSON".utf8).write(to: url)
+
+        let destination: ModelContext = try makeAssistedContext()
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        destination.insert(sentinel)
+        try destination.save()
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: destination)
+
+        XCTAssertNil(viewModel.preparedBackupPlan)
+        guard case .failed = viewModel.backupState else {
+            XCTFail("Se esperaba un estado de error: \(viewModel.backupState)")
+            return
+        }
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 1)
+    }
+
+    func testOnboardingBlocksIncompatibleBackupAndDoesNotApplyIt() throws {
+        let duplicateID: UUID = UUID()
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(id: duplicateID, name: "Primera", exercises: []),
+            makeBackupRoutine(id: duplicateID, name: "Segunda", exercises: [])
+        ])
+
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+        let sentinel: Routine = Routine(name: "No tocar", isTemplate: true, source: .manual)
+        destination.insert(sentinel)
+        try destination.save()
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: destination)
+
+        XCTAssertEqual(viewModel.backupState, .reviewing)
+        XCTAssertEqual(viewModel.preparedBackupPlan?.report.canImport, false)
+
+        let outcome: Result<BackupImportResult, Error> = viewModel.confirmPreparedBackup(
+            context: destination,
+            safetyCopyDirectory: safety
+        )
+        guard case .failure = outcome else {
+            XCTFail("Una copia bloqueada no puede confirmarse")
+            return
+        }
+
+        XCTAssertNil(viewModel.preparedBackupPlan)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<Routine>()), 1)
+        XCTAssertEqual(try safetyCopyFileCount(in: safety), 0)
+    }
+
+    func testOnboardingPreparationListsProtectedRoutinesThatWillBePreserved() throws {
+        let pushID: UUID = UUID(uuidString: "6F0E1A10-0001-4000-8000-000000000001")!
+        let destination: ModelContext = try makeAssistedContext()
+        let current: Routine = Routine(id: pushID, name: "PUSH", isTemplate: true, source: .automatic)
+        destination.insert(current)
+        try destination.save()
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Rutina importada", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: destination)
+
+        XCTAssertEqual(
+            viewModel.preparedBackupPlan?.preservedProtectedRoutines,
+            [BackupPreservedRoutine(id: pushID, name: "PUSH")]
+        )
+    }
+
+    func testSelectingAnotherFileReplacesThePreparedPlan() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+
+        let backupWithoutHistory: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Sin historial", exercises: [])
+        ])
+        let backupWithHistory: AppBackupData = makeBackup(
+            routines: [makeBackupRoutine(name: "Con historial", exercises: [])],
+            sessions: [makeBackupSession()]
+        )
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstURL: URL = try writeBackup(backupWithoutHistory, in: directory)
+        let secondURL: URL = try writeBackup(backupWithHistory, in: directory)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: firstURL, context: destination)
+        let firstPlan: BackupImportPlan = try XCTUnwrap(viewModel.preparedBackupPlan)
+        XCTAssertTrue(firstPlan.replacesSessionHistoryWithEmpty)
+
+        // Elegir otro archivo invalida la preparación anterior por completo.
+        viewModel.prepareBackupImport(from: secondURL, context: destination)
+        let secondPlan: BackupImportPlan = try XCTUnwrap(viewModel.preparedBackupPlan)
+        XCTAssertNotEqual(firstPlan.id, secondPlan.id)
+        XCTAssertFalse(secondPlan.replacesSessionHistoryWithEmpty)
+
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+        _ = try BackupManager.restoreBackup(using: secondPlan, context: destination, safetyCopyDirectory: safety)
+
+        let routines: [Routine] = try destination.fetch(FetchDescriptor<Routine>())
+        XCTAssertTrue(routines.contains { $0.name == "Con historial" })
+        XCTAssertFalse(routines.contains { $0.name == "Sin historial" })
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 1)
+    }
+
+    func testOnboardingDoesNotStartASecondImport() throws {
+        let destination: ModelContext = try makeAssistedContext()
+        try insertSession(in: destination)
+
+        let backup: AppBackupData = makeBackup(routines: [
+            makeBackupRoutine(name: "Importada", exercises: [])
+        ])
+
+        let directory: URL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url: URL = try writeBackup(backup, in: directory)
+        let safety: URL = directory.appendingPathComponent("safety", isDirectory: true)
+
+        let viewModel: OnboardingViewModel = OnboardingViewModel(context: .initialSetup)
+        viewModel.prepareBackupImport(from: url, context: destination)
+
+        let first: Result<BackupImportResult, Error> = viewModel.confirmPreparedBackup(
+            context: destination,
+            safetyCopyDirectory: safety
+        )
+        guard case .success = first else {
+            XCTFail("La primera importación debe completarse: \(first)")
+            return
+        }
+        XCTAssertEqual(viewModel.backupState, .imported)
+
+        // El plan ya se ha consumido: una segunda confirmación no importa otra vez.
+        let second: Result<BackupImportResult, Error> = viewModel.confirmPreparedBackup(
+            context: destination,
+            safetyCopyDirectory: safety
+        )
+        guard case .failure = second else {
+            XCTFail("No debe existir un segundo plan pendiente")
+            return
+        }
+
+        XCTAssertEqual(viewModel.backupState, .imported)
+        XCTAssertNil(viewModel.preparedBackupPlan)
+        XCTAssertEqual(try safetyCopyFileCount(in: safety), 1)
+        XCTAssertEqual(try destination.fetchCount(FetchDescriptor<WorkoutSession>()), 0)
+    }
+
     // MARK: - Helpers de backups
+
+    @discardableResult
+    private func insertSession(in context: ModelContext, routineName: String = "PUSH") throws -> WorkoutSession {
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        context.insert(exercise)
+
+        let session: WorkoutSession = WorkoutSession(
+            startDate: Date(timeIntervalSince1970: 1_700_200_000),
+            endDate: Date(timeIntervalSince1970: 1_700_203_600),
+            totalVolumeKg: 800.0,
+            routineName: routineName
+        )
+        context.insert(session)
+
+        let log: WorkoutSetLog = WorkoutSetLog(
+            date: Date(timeIntervalSince1970: 1_700_200_100),
+            workoutStartDate: session.startDate,
+            weight: 100.0,
+            reps: 8,
+            targetRepsMin: 6,
+            targetRepsMax: 10,
+            isCompleted: true,
+            setNumber: 1,
+            exercise: exercise,
+            session: session
+        )
+        context.insert(log)
+        session.setsCompleted = [log]
+        try context.save()
+        return session
+    }
+
+    private func makeBackupSession(routineName: String = "PUSH") -> WorkoutSessionBackupDTO {
+        return WorkoutSessionBackupDTO(
+            id: UUID(),
+            routineName: routineName,
+            startDate: Date(timeIntervalSince1970: 1_700_500_000),
+            endDate: Date(timeIntervalSince1970: 1_700_503_600),
+            totalVolumeKg: 0.0,
+            exercises: [],
+            bpmSamples: []
+        )
+    }
+
+    private func safetyCopyFileCount(in directory: URL) throws -> Int {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return 0 }
+        let contents: [URL] = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        return contents.filter { $0.lastPathComponent.hasPrefix("AppGym_PreImport_") }.count
+    }
 
     private func makeBackupExercise(name: String, id: UUID?) -> ExerciseBackupDTO {
         return ExerciseBackupDTO(

@@ -4,8 +4,11 @@ import UniformTypeIdentifiers
 
 /// Importación opcional de la copia de seguridad durante el onboarding.
 ///
-/// Reutiliza `BackupManager.restoreBackup` a través de `OnboardingService`, con
-/// confirmación de sobrescritura, mensaje de éxito o error y reintento.
+/// Reutiliza el motor de `BackupManager` a través de `OnboardingService`, con
+/// confirmación de sobrescritura, revisión de integridad antes de aplicar el
+/// archivo, mensaje de éxito o error y reintento. La revisión es la misma que
+/// usa Ajustes (`BackupImportReviewSheet`), incluido el aviso de pérdida de
+/// historial.
 struct BackupImportStepView: View {
     let chrome: OnboardingChrome
     @ObservedObject var viewModel: OnboardingViewModel
@@ -59,12 +62,45 @@ struct BackupImportStepView: View {
                 showsFileImporter = true
             }
         } message: {
-            Text("Al importar un archivo se sobrescribirán las rutinas y las sesiones de entrenamiento actuales. ¿Quieres continuar?")
+            Text("Al importar un archivo se sobrescribirán las rutinas y las sesiones de entrenamiento actuales. Después podrás revisar los avisos antes de aplicarlo. ¿Quieres continuar?")
         }
         .fileImporter(
             isPresented: $showsFileImporter,
             allowedContentTypes: [.json],
             onCompletion: handleImportResult
+        )
+        .sheet(isPresented: reviewBinding) {
+            if let plan: BackupImportPlan = viewModel.preparedBackupPlan {
+                BackupImportReviewSheet(
+                    plan: plan,
+                    successLead: "",
+                    presentsResultAlert: false,
+                    performsImport: {
+                        return viewModel.confirmPreparedBackup(context: modelContext)
+                    },
+                    onImported: { (_: BackupImportResult) in
+                        // El view model ya ha pasado a `.imported` y el panel de
+                        // éxito del paso sustituye al formulario.
+                    },
+                    onDismiss: {
+                        viewModel.cancelPreparedBackup()
+                    }
+                )
+            }
+        }
+    }
+
+    /// La hoja existe mientras haya un plan preparado sin aplicar. Se mantiene
+    /// abierta durante la importación y se cierra cuando el view model descarta
+    /// el plan (éxito o error), para que nunca quede una importación pendiente.
+    private var reviewBinding: Binding<Bool> {
+        return Binding(
+            get: { viewModel.preparedBackupPlan != nil },
+            set: { (isPresented: Bool) in
+                if !isPresented {
+                    viewModel.cancelPreparedBackup()
+                }
+            }
         )
     }
 
@@ -79,6 +115,20 @@ struct BackupImportStepView: View {
         switch viewModel.backupState {
         case .idle:
             EmptyView()
+
+        case .reviewing:
+            HStack(spacing: 6.0) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .foregroundStyle(EndfieldPalette.accentCyan)
+
+                Text("COPIA VALIDADA — REVISA LOS AVISOS")
+                    .font(EndfieldFont.label(9.0))
+                    .tracking(1.0)
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .accessibilityElement(children: .combine)
 
         case .importing:
             HStack(spacing: 8.0) {
@@ -164,7 +214,9 @@ struct BackupImportStepView: View {
     private func handleImportResult(_ result: Result<URL, Error>) {
         switch result {
         case .success(let url):
-            viewModel.importBackup(from: url, context: modelContext)
+            // Validar y revisar antes de aplicar: el archivo no toca la base
+            // hasta que el usuario confirma en la hoja de revisión.
+            viewModel.prepareBackupImport(from: url, context: modelContext)
 
         case .failure(let error):
             // Cancelar el selector no es un error que deba mostrarse.
