@@ -116,16 +116,35 @@ enum AppSchemaV6: VersionedSchema {
     }
 }
 
+/// Plan de migración de SwiftData.
+///
+/// Solo se registran las etapas que cambian de verdad la forma del esquema:
+///
+/// - `AppSchemaV1 -> AppSchemaV5`: añade la entidad `AssistedWeekPlan`.
+/// - `AppSchemaV5 -> AppSchemaV6`: añade la entidad `RoutineFolder`.
+///
+/// `AppSchemaV2`, `AppSchemaV3` y `AppSchemaV4` siguen definidas (las usan los
+/// tests y documentan qué revisión introdujo cada campo), pero **no** llevan
+/// etapa ni se listan en `schemas`: sus tres enums devuelven la misma lista de
+/// modelos vivos que `AppSchemaV1`, así que SwiftData les asigna el mismo
+/// checksum de versión. Tres etapas encadenadas entre esquemas idénticos hacen
+/// abortar el contenedor con `NSInvalidArgumentException: Duplicate version
+/// checksums across stages detected` (el fallo de arranque del run #72).
+///
+/// Un store con la forma de V1-V4 se resuelve como `AppSchemaV1` por checksum y
+/// migra `V1 -> V5 -> V6`, que es exactamente lo que hacía `V4 -> V5 -> V6`: no
+/// hay datos históricos que dependieran de migrar entre esas revisiones.
+///
+/// Al añadir una versión futura: si cambia la forma del esquema, añádela a
+/// `schemas` con su etapa; si no la cambia, no añadas etapa, porque un checksum
+/// repetido impide abrir el contenedor.
 enum AppMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [AppSchemaV1.self, AppSchemaV2.self, AppSchemaV3.self, AppSchemaV4.self, AppSchemaV5.self, AppSchemaV6.self]
+        [AppSchemaV1.self, AppSchemaV5.self, AppSchemaV6.self]
     }
     static var stages: [MigrationStage] {
         [
-            .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV2.self),
-            .lightweight(fromVersion: AppSchemaV2.self, toVersion: AppSchemaV3.self),
-            .lightweight(fromVersion: AppSchemaV3.self, toVersion: AppSchemaV4.self),
-            .lightweight(fromVersion: AppSchemaV4.self, toVersion: AppSchemaV5.self),
+            .lightweight(fromVersion: AppSchemaV1.self, toVersion: AppSchemaV5.self),
             .lightweight(fromVersion: AppSchemaV5.self, toVersion: AppSchemaV6.self)
         ]
     }
