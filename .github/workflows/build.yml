@@ -8,12 +8,18 @@ on:
 permissions:
   contents: write
 
-# Un solo job: el mismo runner de macOS compila, empaqueta y publica el estado.
-# No hay artefactos intermedios, asi que el resumen del run y la rama
-# ci-status se escriben siempre que el workflow llegue a este runner.
+# Un solo job: el mismo runner de macOS compila, ejecuta XCTest, empaqueta y
+# publica el estado. No hay artefactos intermedios, asi que el resumen del run
+# y la rama ci-status se escriben siempre que el workflow llegue a este runner.
+#
+# Orden: build Release -> IPA -> upload IPA -> XCTest -> upload .xcresult ->
+# verificacion del recuento -> estado. El IPA se genera igual que antes aunque
+# los tests fallen, pero solo se considera validado si XCTest termina bien.
 jobs:
   build:
     runs-on: macos-15
+    # Build Release + 284 tests en simulador + empaquetado.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout repo
@@ -75,24 +81,204 @@ jobs:
           name: AppGym-Unsigned-IPA
           path: AppGym.ipa
 
+      # Ejecuta los 284 XCTest del target AppGymTests sobre un simulador.
+      #
+      # Sin `-sdk iphoneos` y sin flags de firma: el simulador firma ad-hoc y el
+      # bundle de tests necesita ese host. `set -o pipefail` propaga el codigo de
+      # salida de xcodebuild (65 cuando falla algun test) a traves de `tee`.
+      #
+      # El destino se resuelve por UDID porque el nombre del iPhone depende de la
+      # version de Xcode que traiga la imagen macos-15 (iPhone 16 con Xcode 16,
+      # iPhone 17 con Xcode 26); un nombre fijo romperia el workflow.
+      - name: Run XCTest
+        id: tests
+        timeout-minutes: 30
+        env:
+          RESULT_BUNDLE: ${{ runner.temp }}/TestResults.xcresult
+        run: |
+          set -o pipefail
+          udid="$(xcrun simctl list devices available \
+            | grep -E '^[[:space:]]+iPhone' \
+            | head -1 \
+            | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')"
+          if [ -z "$udid" ]; then
+            echo "::error::No hay simuladores de iPhone disponibles en este runner."
+            xcrun simctl list devices available
+            exit 1
+          fi
+          echo "Simulador elegido: $udid"
+
+          # -resultBundlePath exige que la ruta no exista todavia.
+          rm -rf "$RESULT_BUNDLE"
+
+          xcodebuild test \
+            -project AppGym.xcodeproj \
+            -scheme AppGym \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$udid" \
+            -only-testing:AppGymTests \
+            -parallel-testing-enabled NO \
+            -derivedDataPath /tmp/DerivedDataTests \
+            -resultBundlePath "$RESULT_BUNDLE" \
+            COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee test.log
+
+      # Se sube aunque los tests fallen: el .xcresult es la evidencia completa
+      # (fallos con linea, logs y adjuntos). Se guarda en $RUNNER_TEMP, fuera
+      # del arbol del repo, asi que no ensucia el checkout ni .gitignore.
+      - name: Upload Test Results (.xcresult)
+        id: upload_tests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppGym-TestResults
+          path: ${{ runner.temp }}/TestResults.xcresult
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Puerta de calidad obligatoria: 284 tests ejecutados, 0 fallidos, 0
+      # omitidos. Cualquier desviacion hace fallar este paso y, con ello, el job.
+      # Es fail-closed: si no hay .xcresult o no se puede leer, tambien falla.
+      - name: Verify XCTest counts
+        id: verify_tests
+        if: always()
+        env:
+          RESULT_BUNDLE: ${{ runner.temp }}/TestResults.xcresult
+          COUNTS_FILE: ${{ runner.temp }}/test-counts.txt
+          EXPECTED_TESTS: "284"
+        run: |
+          set +e
+          if [ ! -d "$RESULT_BUNDLE" ]; then
+            echo "::error::No se genero el .xcresult: XCTest no llego a ejecutarse."
+            exit 1
+          fi
+
+          summary_json="$RUNNER_TEMP/test-summary.json"
+          xcrun xcresulttool get test-results summary \
+            --path "$RESULT_BUNDLE" --compact > "$summary_json" 2>"$RUNNER_TEMP/test-summary.err"
+          if [ $? -ne 0 ]; then
+            echo "::error::No se pudo leer el resumen del .xcresult con xcresulttool."
+            cat "$RUNNER_TEMP/test-summary.err"
+            exit 1
+          fi
+
+          # python3 es el interprete del sistema de la imagen macOS: no se
+          # instala ninguna dependencia adicional.
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "::error::python3 no disponible: no se puede validar el recuento de tests."
+            exit 1
+          fi
+
+          status=0
+          python3 - "$summary_json" "$EXPECTED_TESTS" "$COUNTS_FILE" <<'PY' || status=$?
+          import json
+          import sys
+
+          summary_path, expected_raw, counts_path = sys.argv[1], sys.argv[2], sys.argv[3]
+          expected = int(expected_raw)
+
+          try:
+              with open(summary_path, "r", encoding="utf-8") as handle:
+                  data = json.load(handle)
+          except Exception as error:
+              print(f"::error::No se pudo interpretar el resumen de XCTest: {error}")
+              sys.exit(1)
+
+          def count(key):
+              try:
+                  return int(data.get(key))
+              except (TypeError, ValueError):
+                  return 0
+
+          passed = count("passedTests")
+          failed = count("failedTests")
+          skipped = count("skippedTests")
+          try:
+              total = int(data.get("totalTestCount"))
+          except (TypeError, ValueError):
+              # Respaldo si la version de xcresulttool no expone totalTestCount.
+              total = passed + failed + skipped
+
+          with open(counts_path, "w", encoding="utf-8", newline="\n") as handle:
+              handle.write(f"total={total}\npassed={passed}\nfailed={failed}\nskipped={skipped}\n")
+
+          print(f"XCTest: ejecutados={total} pasados={passed} fallidos={failed} omitidos={skipped}")
+          print(f"Requerido: ejecutados={expected}, fallidos=0, omitidos=0")
+
+          problems = []
+          if total < expected:
+              problems.append(f"tests ejecutados {total}: inferior a los {expected} requeridos")
+          elif total > expected:
+              problems.append(f"tests ejecutados {total}: superior a los {expected} requeridos (actualiza EXPECTED_TESTS si es intencionado)")
+          if failed != 0:
+              problems.append(f"tests fallidos: {failed}")
+          if skipped != 0:
+              problems.append(f"tests omitidos: {skipped}")
+
+          for problem in problems:
+              print(f"::error::{problem}")
+
+          sys.exit(1 if problems else 0)
+          PY
+
+          tests_total="$(sed -n 's/^total=//p' "$COUNTS_FILE" 2>/dev/null)"
+          tests_passed="$(sed -n 's/^passed=//p' "$COUNTS_FILE" 2>/dev/null)"
+          tests_failed="$(sed -n 's/^failed=//p' "$COUNTS_FILE" 2>/dev/null)"
+          tests_skipped="$(sed -n 's/^skipped=//p' "$COUNTS_FILE" 2>/dev/null)"
+
+          {
+            echo "## XCTest"
+            echo ""
+            echo "| metrica | valor | requerido |"
+            echo "| --- | --- | --- |"
+            echo "| ejecutados | ${tests_total:--} | $EXPECTED_TESTS |"
+            echo "| pasados | ${tests_passed:--} | - |"
+            echo "| fallidos | ${tests_failed:--} | 0 |"
+            echo "| omitidos | ${tests_skipped:--} | 0 |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Recuento de XCTest no valido: el workflow no puede darse por satisfactorio."
+          fi
+          exit "$status"
+
       # Se ejecuta aunque el build falle: el estado queda en el resumen del run
-      # y, si el token puede escribir, en la rama ci-status.
+      # y, si el token puede escribir, en la rama ci-status. `result` solo es
+      # success si el build, el empaquetado, XCTest y su verificacion pasan.
       - name: Publish status
         if: always()
         continue-on-error: true
         env:
           BUILD_STEP: ${{ steps.build.outcome }}
           PACKAGE_STEP: ${{ steps.package.outcome }}
+          TESTS_STEP: ${{ steps.tests.outcome }}
+          VERIFY_STEP: ${{ steps.verify_tests.outcome }}
+          EXPECTED_TESTS: "284"
           CI_STATUS_TOKEN: ${{ secrets.CI_STATUS_TOKEN }}
         run: |
           set +e
           status_file="$RUNNER_TEMP/ci-status.txt"
+          counts_file="$RUNNER_TEMP/test-counts.txt"
           date_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-          if [ "$BUILD_STEP" = "success" ] && [ "$PACKAGE_STEP" = "success" ]; then
+          if [ "$BUILD_STEP" = "success" ] && [ "$PACKAGE_STEP" = "success" ] \
+            && [ "$TESTS_STEP" = "success" ] && [ "$VERIFY_STEP" = "success" ]; then
             result="success"
           else
             result="failure"
+          fi
+
+          tests_total=""; tests_passed=""; tests_failed=""; tests_skipped=""
+          if [ -f "$counts_file" ]; then
+            tests_total="$(sed -n 's/^total=//p' "$counts_file")"
+            tests_passed="$(sed -n 's/^passed=//p' "$counts_file")"
+            tests_failed="$(sed -n 's/^failed=//p' "$counts_file")"
+            tests_skipped="$(sed -n 's/^skipped=//p' "$counts_file")"
+          fi
+
+          if [ "$result" = "success" ]; then
+            ipa_state="si ($TESTS_STEP tests, $tests_total/$EXPECTED_TESTS ejecutados, 0 fallidos)"
+          else
+            ipa_state="no: build, empaquetado o XCTest no han terminado satisfactoriamente"
           fi
 
           {
@@ -105,7 +291,13 @@ jobs:
 
           errors=""
           if [ "$result" != "success" ]; then
-            if [ -f build.log ]; then
+            if [ "$TESTS_STEP" != "success" ] && [ -f test.log ]; then
+              # Fallo en XCTest: los errores de test no estan en build.log.
+              errors="$(grep -E 'error:|Testing failed:|\*\* TEST .* FAILED' test.log | head -200)"
+              if [ -z "$errors" ]; then
+                errors="$(tail -100 test.log)"
+              fi
+            elif [ -f build.log ]; then
               errors="$(grep -i "error:" build.log | head -200)"
               if [ -z "$errors" ]; then
                 errors="$(tail -100 build.log)"
@@ -123,6 +315,12 @@ jobs:
             echo "| job | $result |"
             echo "| paso build | $BUILD_STEP |"
             echo "| paso empaquetado | $PACKAGE_STEP |"
+            echo "| paso tests | $TESTS_STEP |"
+            echo "| paso verificacion | $VERIFY_STEP |"
+            echo "| tests ejecutados | ${tests_total:--} / $EXPECTED_TESTS |"
+            echo "| tests fallidos | ${tests_failed:--} |"
+            echo "| tests omitidos | ${tests_skipped:--} |"
+            echo "| IPA validado | $ipa_state |"
             echo "| commit | $GITHUB_SHA |"
             echo "| run | $GITHUB_RUN_ID |"
             echo "| fecha | $date_utc |"
