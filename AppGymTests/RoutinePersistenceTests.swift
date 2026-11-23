@@ -132,10 +132,10 @@ final class RoutinePersistenceTests: XCTestCase {
         XCTAssertEqual(exercises.filter { $0.name == "Press banca" }.count, 1)
 
         let generatedSource = try XCTUnwrap(week.sessions.first?.exercises.first)
-        let generated: Exercise = try XCTUnwrap(exercises.first(where: { $0.name == generatedSource.name }))
-        XCTAssertEqual(generated.catalogPrimaryMusclesText, generatedSource.primaryMuscleText)
-        XCTAssertEqual(generated.catalogSecondaryMusclesText, generatedSource.secondaryMuscleText)
-        XCTAssertFalse(generated.catalogPrimaryMusclesText.isEmpty)
+        let generatedExercise: Exercise = try XCTUnwrap(exercises.first(where: { $0.name == generatedSource.name }))
+        XCTAssertEqual(generatedExercise.catalogPrimaryMusclesText, generatedSource.primaryMuscleText)
+        XCTAssertEqual(generatedExercise.catalogSecondaryMusclesText, generatedSource.secondaryMuscleText)
+        XCTAssertFalse(generatedExercise.catalogPrimaryMusclesText.isEmpty)
     }
 
     func testRollbackRestoresArchiveFlagsAndLeavesHistoryUntouched() throws {
@@ -978,8 +978,8 @@ final class RoutinePersistenceTests: XCTestCase {
         let oldLink: RoutineExerciseBackupDTO = makeBackupLink(
             exercise: oldExercise,
             exerciseID: nil,
-            hasCustomRest: nil,
-            rest: 105
+            rest: 105,
+            hasCustomRest: nil
         )
         let oldRoutine: RoutineBackupDTO = makeBackupRoutine(
             name: "Rutina antigua",
