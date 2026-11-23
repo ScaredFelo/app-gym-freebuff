@@ -12,9 +12,10 @@ permissions:
 # publica el estado. No hay artefactos intermedios, asi que el resumen del run
 # y la rama ci-status se escriben siempre que el workflow llegue a este runner.
 #
-# Orden: build Release -> IPA -> upload IPA -> XCTest -> upload .xcresult ->
-# verificacion del recuento -> estado. El IPA se genera igual que antes aunque
-# los tests fallen, pero solo se considera validado si XCTest termina bien.
+# Orden: build Release -> IPA -> upload IPA -> XCTest -> upload .xcresult y
+# test.log -> verificacion del recuento -> estado. El IPA se genera igual que
+# antes aunque los tests fallen, pero solo se considera validado si XCTest
+# termina bien.
 jobs:
   build:
     runs-on: macos-15
@@ -111,6 +112,14 @@ jobs:
           # -resultBundlePath exige que la ruta no exista todavia.
           rm -rf "$RESULT_BUNDLE"
 
+          # Timeouts por test (disponibles desde Xcode 12; la imagen macos-15
+          # trae Xcode 16.4 por defecto). Por defecto XCTest los tiene
+          # desactivados, asi que su margen de 600 s nunca actuaba y el unico
+          # limite era el reloj del paso: al agotarse se mataba xcodebuild y el
+          # .xcresult quedaba ilegible. Con esto, un test que se pasa de tiempo
+          # falla con su nombre, XCTest captura un spindump, reinicia el runner
+          # y continua la suite. El minimo es 60 s y se redondea al minuto; el
+          # maximo de 300 s acota cualquier excepcion al valor por defecto.
           xcodebuild test \
             -project AppGym.xcodeproj \
             -scheme AppGym \
@@ -118,6 +127,9 @@ jobs:
             -destination "platform=iOS Simulator,id=$udid" \
             -only-testing:AppGymTests \
             -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
             -derivedDataPath /tmp/DerivedDataTests \
             -resultBundlePath "$RESULT_BUNDLE" \
             COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee test.log
@@ -132,6 +144,22 @@ jobs:
         with:
           name: AppGym-TestResults
           path: ${{ runner.temp }}/TestResults.xcresult
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Se conserva tambien el log crudo de xcodebuild. test.log tiene una linea
+      # por prueba ("Test Case '-[Clase test]' started" y luego "passed (Ns)"),
+      # asi que identifica el ultimo test iniciado y la duracion individual
+      # incluso cuando el paso Run XCTest se corta por timeout y el .xcresult
+      # queda sin resumen. `always()` lo sube tambien si el paso anterior se
+      # cancela al agotar sus 30 minutos (que es justo el caso a diagnosticar).
+      - name: Upload XCTest log (test.log)
+        id: upload_test_log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppGym-TestLog
+          path: test.log
           if-no-files-found: warn
           retention-days: 14
 
