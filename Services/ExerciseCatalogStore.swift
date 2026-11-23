@@ -65,20 +65,6 @@ struct ExerciseCatalogStore {
         return level[ExerciseCatalogStore.key(routine: routine, suffix: suffix)]
     }
 
-    /// Número de variantes distintas disponibles para una rutina.
-    func availableVariants(for routine: CatalogRoutine) -> Int {
-        var count: Int = 0
-        for level in 1...3 {
-            guard let variants: [String: CatalogRoutineVariant] = variantsByLevel[level] else { continue }
-            for suffix in ExerciseCatalogStore.suffixes(for: level) {
-                if variants[ExerciseCatalogStore.key(routine: routine, suffix: suffix)] != nil {
-                    count += 1
-                }
-            }
-        }
-        return count
-    }
-
     static func suffixes(for occurrences: Int) -> [String] {
         switch occurrences {
         case 1:

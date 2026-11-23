@@ -139,6 +139,7 @@ final class RoutineImportTests: XCTestCase {
 
         let invalid: URL = try writeRaw("{ \"format\": \"appgym.routine\" }")
         coordinator.receive(invalid)
+        coordinator.waitForPendingImport()
         XCTAssertNil(coordinator.pendingRequest)
         XCTAssertNotNil(coordinator.notice)
 
@@ -146,6 +147,7 @@ final class RoutineImportTests: XCTestCase {
 
         let valid: URL = try writeFile(makePayload(name: "Empuje"))
         coordinator.receive(valid)
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingRequest)
         XCTAssertNil(coordinator.notice)
@@ -164,6 +166,7 @@ final class RoutineImportTests: XCTestCase {
         defer { removeDirectory(of: url) }
 
         coordinator.receive(url)
+        coordinator.waitForPendingImport()
         XCTAssertNotNil(coordinator.pendingRequest)
 
         coordinator.cancel()
@@ -181,6 +184,7 @@ final class RoutineImportTests: XCTestCase {
         defer { removeDirectory(of: url) }
 
         coordinator.receive(url)
+        coordinator.waitForPendingImport()
         coordinator.confirm(in: context)
         // La hoja se cierra y solo entonces se publica el aviso.
         coordinator.cancelIfPending()
@@ -465,6 +469,7 @@ final class RoutineImportTests: XCTestCase {
         let now: Date = Date()
         coordinator.receive(url, now: now)
         coordinator.receive(url, now: now.addingTimeInterval(1.0))
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingRequest)
         XCTAssertEqual(coordinator.queuedCount, 0)
@@ -482,6 +487,7 @@ final class RoutineImportTests: XCTestCase {
         let now: Date = Date()
         coordinator.receive(first, now: now)
         coordinator.receive(second, now: now.addingTimeInterval(1.0))
+        coordinator.waitForPendingImport()
 
         XCTAssertEqual(coordinator.pendingRequest?.routineName, "Empuje")
         XCTAssertEqual(coordinator.queuedCount, 1)
@@ -489,6 +495,7 @@ final class RoutineImportTests: XCTestCase {
         coordinator.cancel()
         // La siguiente importación arranca cuando la hoja termina de cerrarse.
         coordinator.routineSheetDismissed()
+        coordinator.waitForPendingImport()
 
         XCTAssertEqual(coordinator.pendingRequest?.routineName, "Tirón")
         XCTAssertEqual(coordinator.queuedCount, 0)

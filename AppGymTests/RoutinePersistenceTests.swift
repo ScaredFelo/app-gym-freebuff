@@ -1,6 +1,7 @@
 import XCTest
 import Foundation
 import SwiftData
+import UserNotifications
 
 @testable import AppGym
 
@@ -3523,5 +3524,350 @@ final class RoutinePersistenceTests: XCTestCase {
             withIntermediateDirectories: true
         )
         return directory
+    }
+}
+
+// MARK: - Borrado seguro de ejercicios
+
+/// Pruebas de `ExerciseDeletionService`.
+///
+/// El borrado de un ejercicio nunca puede eliminar series históricas ni dejar
+/// una rutina apuntando a un ejercicio inexistente: en esos casos se bloquea
+/// sin modificar ningún dato.
+@MainActor
+final class ExerciseDeletionServiceTests: XCTestCase {
+
+    func testDeletingAnUnusedExerciseRemovesOnlyThatExercise() throws {
+        let context: ModelContext = try makeContext()
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        context.insert(exercise)
+        try context.save()
+
+        let outcome: ExerciseDeletionService.Outcome = ExerciseDeletionService.delete(
+            exercise,
+            context: context
+        )
+
+        XCTAssertEqual(outcome, .deleted)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Exercise>()), 0)
+    }
+
+    func testExerciseUsedByARoutineIsNotDeleted() throws {
+        let context: ModelContext = try makeContext()
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        context.insert(exercise)
+
+        let routine: Routine = Routine(name: "PUSH", sortOrder: 0)
+        context.insert(routine)
+        let link: RoutineExercise = RoutineExercise(exercise: exercise, sortOrder: 0)
+        context.insert(link)
+        routine.exercises = [link]
+        try context.save()
+
+        let outcome: ExerciseDeletionService.Outcome = ExerciseDeletionService.delete(
+            exercise,
+            context: context
+        )
+
+        XCTAssertEqual(outcome, .blockedByRoutines(["PUSH"]))
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Exercise>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<RoutineExercise>()), 1)
+        XCTAssertEqual(routine.exercises.count, 1)
+        XCTAssertEqual(routine.exercises.first?.exercise?.id, exercise.id)
+    }
+
+    func testExerciseWithHistoryIsNotDeletedAndKeepsTheSessionUntouched() throws {
+        let context: ModelContext = try makeContext()
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        context.insert(exercise)
+
+        let session: WorkoutSession = WorkoutSession(routineName: "PUSH")
+        context.insert(session)
+        let log: WorkoutSetLog = WorkoutSetLog(
+            weight: 80.0,
+            reps: 8,
+            isCompleted: true,
+            setNumber: 1,
+            exercise: exercise,
+            session: session
+        )
+        context.insert(log)
+        session.setsCompleted = [log]
+        session.totalVolumeKg = 640.0
+        try context.save()
+
+        let outcome: ExerciseDeletionService.Outcome = ExerciseDeletionService.delete(
+            exercise,
+            context: context
+        )
+
+        XCTAssertEqual(outcome, .blockedByHistory(1))
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Exercise>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<WorkoutSetLog>()), 1)
+        XCTAssertEqual(log.exercise?.id, exercise.id)
+        XCTAssertEqual(session.totalVolumeKg, 640.0)
+        XCTAssertEqual(session.setsCompleted.count, 1)
+    }
+
+    func testDeletingAnUnreferencedExerciseKeepsOtherHistory() throws {
+        let context: ModelContext = try makeContext()
+
+        let used: Exercise = Exercise(name: "Remo con barra", muscleGroup: .upperBack)
+        let unused: Exercise = Exercise(name: "Ejercicio nuevo", muscleGroup: .biceps)
+        context.insert(used)
+        context.insert(unused)
+
+        let session: WorkoutSession = WorkoutSession(routineName: "PULL")
+        context.insert(session)
+        let log: WorkoutSetLog = WorkoutSetLog(
+            weight: 60.0,
+            reps: 10,
+            isCompleted: true,
+            setNumber: 1,
+            exercise: used,
+            session: session
+        )
+        context.insert(log)
+        session.setsCompleted = [log]
+        try context.save()
+
+        let outcome: ExerciseDeletionService.Outcome = ExerciseDeletionService.delete(
+            unused,
+            context: context
+        )
+
+        XCTAssertEqual(outcome, .deleted)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<Exercise>()), 1)
+        XCTAssertEqual(try context.fetchCount(FetchDescriptor<WorkoutSetLog>()), 1)
+    }
+
+    private func makeContext() throws -> ModelContext {
+        let schema: Schema = Schema(versionedSchema: AppSchemaV6.self)
+        let configuration: ModelConfiguration = ModelConfiguration(isStoredInMemoryOnly: true)
+        let container: ModelContainer = try ModelContainer(
+            for: schema,
+            configurations: [configuration]
+        )
+        return ModelContext(container)
+    }
+}
+
+// MARK: - Guardar como rutina nueva
+
+/// Pruebas de la copia de vínculos al guardar un entrenamiento como rutina
+/// nueva: no puede perderse ningún ajuste personalizado.
+@MainActor
+final class RoutineCopyTests: XCTestCase {
+
+    func testCopyKeepsCustomRestAndConfiguration() {
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        let link: RoutineExercise = RoutineExercise(
+            exercise: exercise,
+            defaultSets: 4,
+            targetRepsMin: 6,
+            targetRepsMax: 8,
+            sortOrder: 2,
+            defaultWeight: 60.0,
+            restSeconds: 150,
+            notes: "nota",
+            hasCustomRest: true
+        )
+
+        let copy: RoutineExercise = ActiveWorkoutViewModel.copyOfRoutineExercise(link)
+
+        XCTAssertNotEqual(copy.id, link.id)
+        XCTAssertEqual(copy.hasCustomRest, true)
+        XCTAssertEqual(copy.restSeconds, 150)
+        XCTAssertEqual(copy.defaultSets, 4)
+        XCTAssertEqual(copy.targetRepsMin, 6)
+        XCTAssertEqual(copy.targetRepsMax, 8)
+        XCTAssertEqual(copy.defaultWeight, 60.0)
+        XCTAssertEqual(copy.sortOrder, 2)
+        XCTAssertEqual(copy.notes, "nota")
+        XCTAssertEqual(copy.exercise?.id, exercise.id)
+    }
+
+    func testCopyKeepsTheAbsenceOfCustomRest() {
+        let link: RoutineExercise = RoutineExercise(
+            exercise: Exercise(name: "Dominadas", muscleGroup: .lats),
+            restSeconds: 120,
+            hasCustomRest: false
+        )
+
+        let copy: RoutineExercise = ActiveWorkoutViewModel.copyOfRoutineExercise(link)
+
+        XCTAssertFalse(copy.hasCustomRest)
+    }
+}
+
+// MARK: - Aviso de fin de descanso (concurrencia)
+
+/// Pruebas del token de generación que protege el aviso de descanso.
+///
+/// Reproducen de forma determinista la condición de carrera: la respuesta del
+/// permiso puede llegar después de cancelar, pausar o sustituir el descanso, y
+/// en ningún caso puede programar un aviso.
+final class RestNotificationManagerTests: XCTestCase {
+
+    private final class AuthorizationGate {
+        private var completions: [(UNAuthorizationStatus) -> Void] = []
+
+        var requestedCount: Int { completions.count }
+
+        func register(_ completion: @escaping (UNAuthorizationStatus) -> Void) {
+            completions.append(completion)
+        }
+
+        func complete(at index: Int, with status: UNAuthorizationStatus) {
+            guard completions.indices.contains(index) else { return }
+            completions[index](status)
+        }
+    }
+
+    private final class Recorder {
+        var added: [NotificationManager.RestNotification] = []
+        var removedPending: [String] = []
+        var removedDelivered: [String] = []
+        private var addCompletions: [(Error?) -> Void] = []
+
+        func recordAdd(
+            _ notification: NotificationManager.RestNotification,
+            completion: @escaping (Error?) -> Void
+        ) {
+            added.append(notification)
+            addCompletions.append(completion)
+        }
+
+        func completeAdd(at index: Int, error: Error? = nil) {
+            guard addCompletions.indices.contains(index) else { return }
+            addCompletions[index](error)
+        }
+    }
+
+    private let now: Date = Date(timeIntervalSince1970: 1_700_000_000)
+
+    private func makeManager(
+        gate: AuthorizationGate,
+        recorder: Recorder
+    ) -> NotificationManager {
+        let dependencies: NotificationManager.Dependencies = NotificationManager.Dependencies(
+            authorizationStatus: { completion in
+                gate.register(completion)
+            },
+            add: { notification, completion in
+                recorder.recordAdd(notification, completion: completion)
+            },
+            removePending: { identifier in
+                recorder.removedPending.append(identifier)
+            },
+            removeDelivered: { identifier in
+                recorder.removedDelivered.append(identifier)
+            },
+            now: { self.now }
+        )
+        return NotificationManager(dependencies: dependencies)
+    }
+
+    func testCancellingBeforeThePermissionResponseNeverSchedules() {
+        let gate: AuthorizationGate = AuthorizationGate()
+        let recorder: Recorder = Recorder()
+        let manager: NotificationManager = makeManager(gate: gate, recorder: recorder)
+
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(90.0))
+        XCTAssertEqual(gate.requestedCount, 1)
+
+        manager.cancelRestFinishedNotification()
+        gate.complete(at: 0, with: .authorized)
+
+        XCTAssertTrue(recorder.added.isEmpty)
+    }
+
+    func testPausingBeforeThePermissionResponseNeverSchedules() {
+        let gate: AuthorizationGate = AuthorizationGate()
+        let recorder: Recorder = Recorder()
+        let manager: NotificationManager = makeManager(gate: gate, recorder: recorder)
+
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(60.0))
+        // `pauseRest()` del ViewModel cancela el aviso y cierra la generación.
+        manager.cancelRestFinishedNotification()
+        gate.complete(at: 0, with: .authorized)
+
+        XCTAssertTrue(recorder.added.isEmpty)
+    }
+
+    func testSubstitutingTheRestInvalidatesThePreviousRequest() {
+        let gate: AuthorizationGate = AuthorizationGate()
+        let recorder: Recorder = Recorder()
+        let manager: NotificationManager = makeManager(gate: gate, recorder: recorder)
+
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(90.0))
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(30.0))
+        XCTAssertEqual(gate.requestedCount, 2)
+
+        // Respuesta del descanso sustituido: no programa nada.
+        gate.complete(at: 0, with: .authorized)
+        XCTAssertTrue(recorder.added.isEmpty)
+
+        // Respuesta del descanso vigente: programa solo este.
+        gate.complete(at: 1, with: .authorized)
+        XCTAssertEqual(recorder.added.count, 1)
+        XCTAssertEqual(recorder.added.first?.timeInterval ?? 0.0, 30.0, accuracy: 0.001)
+    }
+
+    func testRegistrationFinishedAfterPauseIsRemoved() {
+        let gate: AuthorizationGate = AuthorizationGate()
+        let recorder: Recorder = Recorder()
+        let manager: NotificationManager = makeManager(gate: gate, recorder: recorder)
+
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(90.0))
+        gate.complete(at: 0, with: .authorized)
+        XCTAssertEqual(recorder.added.count, 1)
+
+        manager.cancelRestFinishedNotification()
+        let removalsAfterCancel: Int = recorder.removedPending.count
+
+        // El registro en el centro de notificaciones termina después de la
+        // pausa: el aviso recién creado debe retirarse.
+        recorder.completeAdd(at: 0)
+        XCTAssertGreaterThan(recorder.removedPending.count, removalsAfterCancel)
+    }
+
+    func testDeniedPermissionDoesNotSchedule() {
+        let gate: AuthorizationGate = AuthorizationGate()
+        let recorder: Recorder = Recorder()
+        let manager: NotificationManager = makeManager(gate: gate, recorder: recorder)
+
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(90.0))
+        gate.complete(at: 0, with: .denied)
+
+        XCTAssertTrue(recorder.added.isEmpty)
+    }
+
+    func testRestThatAlreadyEndedDoesNotRequestPermission() {
+        let gate: AuthorizationGate = AuthorizationGate()
+        let recorder: Recorder = Recorder()
+        let manager: NotificationManager = makeManager(gate: gate, recorder: recorder)
+
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(-5.0))
+
+        XCTAssertEqual(gate.requestedCount, 0)
+        XCTAssertTrue(recorder.added.isEmpty)
+    }
+
+    func testSchedulingAfterCancellingStillWorks() {
+        let gate: AuthorizationGate = AuthorizationGate()
+        let recorder: Recorder = Recorder()
+        let manager: NotificationManager = makeManager(gate: gate, recorder: recorder)
+
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(90.0))
+        manager.cancelRestFinishedNotification()
+        manager.scheduleRestFinishedNotification(endingAt: now.addingTimeInterval(45.0))
+
+        gate.complete(at: 0, with: .authorized)
+        XCTAssertTrue(recorder.added.isEmpty)
+
+        gate.complete(at: 1, with: .authorized)
+        XCTAssertEqual(recorder.added.count, 1)
+        XCTAssertEqual(recorder.added.first?.timeInterval ?? 0.0, 45.0, accuracy: 0.001)
     }
 }

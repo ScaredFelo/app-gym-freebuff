@@ -89,6 +89,12 @@ final class RoutineImportCoordinator: ObservableObject {
     /// presentar la siguiente importación encima de la que aún se está
     /// despidiendo.
     private var isSheetClosing: Bool = false
+    /// Cierto mientras se lee y valida un archivo. La lectura y el `JSONDecoder`
+    /// de hasta 10 MB se ejecutan fuera del hilo principal: `onOpenURL` no debe
+    /// bloquear la interfaz.
+    private(set) var isLoading: Bool = false
+    /// Carga en curso, para poder esperarla de forma determinista.
+    private var loadTask: Task<Void, Never>?
     /// Aviso que se publica cuando la hoja de confirmación ya se ha cerrado.
     /// Así el alert no compite con la animación de cierre.
     private var noticeAfterDismiss: RoutineImportNotice?
@@ -105,6 +111,7 @@ final class RoutineImportCoordinator: ObservableObject {
             || pendingSplit != nil
             || notice != nil
             || isSheetClosing
+            || isLoading
     }
 
     // MARK: - Recepción
@@ -149,23 +156,13 @@ final class RoutineImportCoordinator: ObservableObject {
     private func process(_ file: IncomingFile) {
         switch file {
         case .routine(let url):
-            do {
-                pendingRequest = try RoutineImportService.makeRequest(fromFileAt: url)
-            } catch {
-                notice = RoutineImportNotice.failure(
-                    message: (error as? LocalizedError)?.errorDescription
-                        ?? "El archivo no es válido."
-                )
+            startLoading {
+                return .routine(try RoutineImportService.makeRequest(fromFileAt: url))
             }
 
         case .split(let url):
-            do {
-                pendingSplit = try SplitImportService.makeRequest(fromFileAt: url)
-            } catch {
-                notice = RoutineImportNotice.failure(
-                    message: (error as? LocalizedError)?.errorDescription
-                        ?? "El archivo no es válido."
-                )
+            startLoading {
+                return .split(try SplitImportService.makeRequest(fromFileAt: url))
             }
 
         case .unsupported:
@@ -173,6 +170,59 @@ final class RoutineImportCoordinator: ObservableObject {
                 message: RoutineImportError.unsupportedFileType.errorDescription
                     ?? "El archivo no es válido."
             )
+        }
+    }
+
+    /// Resultado ya validado de una carga, para publicarlo en el hilo
+    /// principal.
+    private enum LoadedImport {
+        case routine(RoutineImportRequest)
+        case split(SplitImportRequest)
+    }
+
+    /// Error ya traducido a un mensaje mostrable, listo para viajar entre la
+    /// tarea de fondo y el hilo principal.
+    private struct ImportLoadError: Error, Sendable {
+        let message: String
+    }
+
+    /// Lee, decodifica y valida el archivo en segundo plano y publica el
+    /// resultado en el hilo principal.
+    ///
+    /// El acceso de seguridad del archivo lo abre y lo cierra el propio
+    /// servicio dentro de la tarea de fondo, así que la lectura nunca depende de
+    /// que la URL siga disponible después.
+    private func startLoading(
+        _ load: @escaping @Sendable () throws -> LoadedImport
+    ) {
+        isLoading = true
+
+        loadTask = Task { @MainActor [weak self] in
+            let result: Result<LoadedImport, ImportLoadError> = await Task.detached(priority: .userInitiated) {
+                do {
+                    return .success(try load())
+                } catch {
+                    let message: String = (error as? LocalizedError)?.errorDescription
+                        ?? "El archivo no es válido."
+                    return .failure(ImportLoadError(message: message))
+                }
+            }.value
+
+            guard let self else { return }
+
+            self.isLoading = false
+            self.loadTask = nil
+
+            switch result {
+            case .success(.routine(let request)):
+                self.pendingRequest = request
+
+            case .success(.split(let request)):
+                self.pendingSplit = request
+
+            case .failure(let failure):
+                self.notice = RoutineImportNotice.failure(message: failure.message)
+            }
         }
     }
 

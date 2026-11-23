@@ -34,6 +34,102 @@ enum PersistenceService {
     }
 }
 
+// MARK: - Borrado de ejercicios
+
+/// Borrado seguro de un ejercicio del catálogo.
+///
+/// `Exercise.logs` usa `deleteRule: .cascade` y los análisis históricos
+/// (volumen semanal, series por sesión, récords y ficha del ejercicio) se
+/// calculan a partir de esas series. Borrar un ejercicio en uso eliminaría el
+/// historial de entrenamientos pasados, así que el borrado solo se permite
+/// cuando no hay nada que perder:
+///
+/// - si el ejercicio pertenece a alguna rutina, no se borra: la rutina se
+///   quedaría con un enlace sin ejercicio;
+/// - si tiene series registradas, no se borra: el historial cambiaría;
+/// - si no está referenciado por nada, se borra y se guarda.
+///
+/// Ninguna de las comprobaciones modifica datos: cuando se bloquea, la base
+/// queda exactamente como estaba.
+enum ExerciseDeletionService {
+    enum Outcome: Equatable {
+        case deleted
+        /// Está en uso por una o varias rutinas (se listan sus nombres).
+        case blockedByRoutines([String])
+        /// Tiene series registradas en el historial.
+        case blockedByHistory(Int)
+        /// No se pudo comprobar si está en uso: se conserva por seguridad.
+        case blockedUnknown
+        case saveFailed
+
+        /// Mensaje para la alerta de la interfaz. `nil` cuando se ha borrado.
+        func message(for exercise: Exercise) -> String? {
+            switch self {
+            case .deleted:
+                return nil
+            case .blockedByRoutines(let names):
+                let list: String = names.joined(separator: ", ")
+                let isSingle: Bool = names.count == 1
+                let usedIn: String = isSingle ? "la rutina" : "las rutinas"
+                let removeFrom: String = isSingle ? "esa rutina" : "esas rutinas"
+                return "«\(exercise.name)» se usa en \(usedIn) \(list). Elimínalo primero de \(removeFrom) para poder borrarlo. No se ha modificado ningún dato."
+            case .blockedByHistory(let count):
+                let series: String = count == 1 ? "1 serie registrada" : "\(count) series registradas"
+                return "«\(exercise.name)» tiene \(series) en el historial. Borrarlo eliminaría esos datos y cambiaría el volumen y las estadísticas de entrenamientos pasados, así que no se ha borrado. Puedes renombrarlo si no quieres usarlo."
+            case .blockedUnknown:
+                return "No se ha podido comprobar si «\(exercise.name)» está en uso, así que no se ha borrado."
+            case .saveFailed:
+                return "No se ha podido eliminar «\(exercise.name)». Vuelve a intentarlo."
+            }
+        }
+    }
+
+    static func delete(_ exercise: Exercise, context: ModelContext) -> Outcome {
+        switch referencingRoutineNames(of: exercise, context: context) {
+        case .failure:
+            return .blockedUnknown
+        case .success(let names):
+            if !names.isEmpty {
+                return .blockedByRoutines(names)
+            }
+        }
+
+        let historyCount: Int = exercise.logs.count
+        guard historyCount == 0 else { return .blockedByHistory(historyCount) }
+
+        context.delete(exercise)
+        guard PersistenceService.saveOrRollback(context, operation: "eliminar el ejercicio") else {
+            return .saveFailed
+        }
+        return .deleted
+    }
+
+    /// Rutinas cuyos enlaces apuntan al ejercicio. Se leen las rutinas
+    /// completas porque `RoutineExercise` no tiene referencia inversa a su
+    /// rutina; el catálogo de rutinas es pequeño y el borrado es una acción
+    /// puntual. Ante un error de lectura se devuelve `failure` para no borrar
+    /// sobre una comprobación incompleta.
+    private static func referencingRoutineNames(
+        of exercise: Exercise,
+        context: ModelContext
+    ) -> Result<[String], Error> {
+        do {
+            let routines: [Routine] = try context.fetch(FetchDescriptor<Routine>())
+            let names: [String] = routines
+                .filter { (routine: Routine) -> Bool in
+                    return routine.exercises.contains { (link: RoutineExercise) -> Bool in
+                        return link.exercise?.id == exercise.id
+                    }
+                }
+                .map(\.name)
+            return .success(names)
+        } catch {
+            print("[Persistence] No se pudieron comprobar las rutinas del ejercicio: \(error)")
+            return .failure(error)
+        }
+    }
+}
+
 // MARK: - Sesiones que quedaron abiertas
 
 /// Cierra las sesiones sin `endDate` que ya no tienen forma de reanudarse.

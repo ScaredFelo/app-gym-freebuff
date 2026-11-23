@@ -45,10 +45,6 @@ final class HealthKitManager: NSObject, ObservableObject, HKWorkoutSessionDelega
 
     // MARK: - Authorization
 
-    func solicitarPermisoHealthKit() {
-        requestAuthorization()
-    }
-
     func requestAuthorization() {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

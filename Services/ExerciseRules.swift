@@ -37,6 +37,14 @@ enum ExerciseRules {
         return compound + isolation
     }
 
+    /// Clave de comparación usada por las migraciones, las búsquedas y la
+    /// ficha del ejercicio: minúsculas y sin acentos, sin recortar nada más.
+    /// Se mantiene aquí para que las cuatro copias anteriores no divergan.
+    static func comparisonKey(_ text: String) -> String {
+        let lowered: String = text.lowercased()
+        return lowered.folding(options: .diacriticInsensitive, locale: Locale(identifier: "es_ES"))
+    }
+
     static func normalizedName(_ name: String) -> String {
         let folded: String = name.folding(
             options: [.diacriticInsensitive, .caseInsensitive],

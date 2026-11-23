@@ -31,3 +31,15 @@ enum TestResources {
         return try ExerciseCatalogStore(data: data(named: "ExerciseCatalog"))
     }
 }
+
+extension RoutineImportCoordinator {
+    /// Solo pruebas: avanza el run loop hasta que termina la carga del archivo
+    /// en curso. La lectura y el `JSONDecoder` ya no se ejecutan en el hilo
+    /// principal, así que las pruebas esperan aquí antes de comprobar el estado.
+    func waitForPendingImport(timeout: TimeInterval = 5.0) {
+        let deadline: Date = Date().addingTimeInterval(timeout)
+        while isLoading && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+        }
+    }
+}

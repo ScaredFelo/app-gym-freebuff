@@ -505,8 +505,7 @@ public enum ExerciseDuplicateService {
     // MARK: Normalización
 
     private static func normalize(_ text: String) -> String {
-        let lowered: String = text.lowercased()
-        let folded: String = lowered.folding(options: .diacriticInsensitive, locale: Locale(identifier: "es_ES"))
+        let folded: String = ExerciseRules.comparisonKey(text)
         let collapsed: String = folded
             .components(separatedBy: .whitespacesAndNewlines)
             .filter { (part: String) -> Bool in return !part.isEmpty }

@@ -14,6 +14,9 @@ public struct ExerciseListView: View {
     @State private var showingAddModal = false
     @State private var selectedExerciseForDetail: Exercise?
     @State private var selectedExerciseToEdit: Exercise?
+    /// Explicación de por qué un ejercicio no se ha borrado. `nil` cuando la
+    /// última operación se completó o no hay ningún aviso pendiente.
+    @State private var deletionMessage: String?
 
     public var body: some View {
         NavigationStack {
@@ -70,6 +73,21 @@ public struct ExerciseListView: View {
                 ExerciseSettingsView(exercise: exercise)
             }
             .searchable(text: $searchText, prompt: "Buscar ejercicio...")
+            .alert(
+                "EJERCICIO NO ELIMINADO",
+                isPresented: Binding(
+                    get: { deletionMessage != nil },
+                    set: { (isPresented: Bool) in
+                        if !isPresented { deletionMessage = nil }
+                    }
+                )
+            ) {
+                Button("Entendido", role: .cancel) {
+                    deletionMessage = nil
+                }
+            } message: {
+                Text(deletionMessage ?? "")
+            }
         }
     }
 
@@ -103,12 +121,31 @@ public struct ExerciseListView: View {
         }
     }
 
+    /// Borra solo los ejercicios que no dejan ningún dato histórico ni rutina
+    /// rota. La política y el guardado viven en `ExerciseDeletionService`; la
+    /// vista únicamente muestra el motivo cuando se bloquea el borrado.
     private func deleteExercises(at offsets: IndexSet) {
-        for index in offsets {
-            let exercise = filteredExercises[index]
-            modelContext.delete(exercise)
+        // Se toma una foto de los objetivos antes de mutar la consulta: al
+        // borrar, `filteredExercises` cambia y los índices dejarían de ser
+        // válidos.
+        let targets: [Exercise] = offsets.compactMap { (index: Int) -> Exercise? in
+            guard filteredExercises.indices.contains(index) else { return nil }
+            return filteredExercises[index]
         }
-        PersistenceService.save(modelContext, operation: "guardar los ejercicios")
+
+        var messages: [String] = []
+        for exercise in targets {
+            let outcome: ExerciseDeletionService.Outcome = ExerciseDeletionService.delete(
+                exercise,
+                context: modelContext
+            )
+            if let message: String = outcome.message(for: exercise) {
+                messages.append(message)
+            }
+        }
+
+        guard !messages.isEmpty else { return }
+        deletionMessage = messages.joined(separator: "\n\n")
     }
 }
 

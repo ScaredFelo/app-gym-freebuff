@@ -143,11 +143,6 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         }
     }
 
-    /// Alias de compatibilidad con llamadas existentes.
-    func requestHealthKitAccess() {
-        healthKitManager.solicitarPermisoHealthKit()
-    }
-
     // MARK: - Escaneo
 
     func startScanning() {
@@ -188,11 +183,6 @@ final class BPMManager: NSObject, ObservableObject, CBCentralManagerDelegate, CB
         default:
             statusText = "Bluetooth no listo"
         }
-    }
-
-    // Alias de compatibilidad con llamadas existentes
-    func startBluetoothScanning() {
-        startScanning()
     }
 
     func stopScanning() {

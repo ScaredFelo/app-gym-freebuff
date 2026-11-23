@@ -1370,17 +1370,8 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         let copiedExercises = routine.exercises.sorted { (lhs: RoutineExercise, rhs: RoutineExercise) -> Bool in
             return lhs.sortOrder < rhs.sortOrder
         }
-            .map { routineExercise in
-                RoutineExercise(
-                    exercise: routineExercise.exercise,
-                    defaultSets: routineExercise.defaultSets,
-                    targetRepsMin: routineExercise.targetRepsMin,
-                    targetRepsMax: routineExercise.targetRepsMax,
-                    sortOrder: routineExercise.sortOrder,
-                    defaultWeight: routineExercise.defaultWeight,
-                    restSeconds: routineExercise.restSeconds,
-                    notes: routineExercise.notes
-                )
+            .map { (routineExercise: RoutineExercise) -> RoutineExercise in
+                return Self.copyOfRoutineExercise(routineExercise)
             }
 
         copiedExercises.forEach { modelContext.insert($0) }
@@ -1395,6 +1386,24 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         session.routineName = newRoutine.name
         persist(modelContext, operation: "guardar la rutina nueva")
         return finishWorkout(modelContext: modelContext)
+    }
+
+    /// Copia de un vínculo para «guardar como rutina nueva». Conserva todos los
+    /// ajustes personalizados, incluido `hasCustomRest`: si se perdiera, las
+    /// migraciones del catálogo podrían sobrescribir el descanso elegido por el
+    /// usuario en la rutina recién creada.
+    static func copyOfRoutineExercise(_ routineExercise: RoutineExercise) -> RoutineExercise {
+        return RoutineExercise(
+            exercise: routineExercise.exercise,
+            defaultSets: routineExercise.defaultSets,
+            targetRepsMin: routineExercise.targetRepsMin,
+            targetRepsMax: routineExercise.targetRepsMax,
+            sortOrder: routineExercise.sortOrder,
+            defaultWeight: routineExercise.defaultWeight,
+            restSeconds: routineExercise.restSeconds,
+            notes: routineExercise.notes,
+            hasCustomRest: routineExercise.hasCustomRest
+        )
     }
 
     /// Descarta la sesión. Devuelve `false` si el borrado no se pudo guardar,

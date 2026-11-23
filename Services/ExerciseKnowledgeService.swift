@@ -390,8 +390,7 @@ public enum ExerciseKnowledgeService {
     }
 
     private static func normalize(_ text: String) -> String {
-        let lowered: String = text.lowercased()
-        return lowered.folding(options: .diacriticInsensitive, locale: Locale(identifier: "es_ES"))
+        return ExerciseRules.comparisonKey(text)
     }
 
     private static func make(

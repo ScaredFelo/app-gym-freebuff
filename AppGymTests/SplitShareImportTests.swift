@@ -564,6 +564,7 @@ final class SplitShareImportTests: XCTestCase {
         defer { removeDirectory(of: url) }
 
         coordinator.receive(url)
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingSplit)
         XCTAssertEqual(try context.fetchCount(FetchDescriptor<Routine>()), 0)
@@ -577,6 +578,7 @@ final class SplitShareImportTests: XCTestCase {
         defer { removeDirectory(of: url) }
 
         coordinator.receive(url)
+        coordinator.waitForPendingImport()
         coordinator.cancelSplit()
 
         XCTAssertNil(coordinator.pendingSplit)
@@ -601,6 +603,7 @@ final class SplitShareImportTests: XCTestCase {
         let now: Date = Date()
         coordinator.receive(routineURL, now: now)
         coordinator.receive(splitURL, now: now.addingTimeInterval(1.0))
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingRequest)
         XCTAssertNil(coordinator.pendingSplit)
@@ -608,6 +611,7 @@ final class SplitShareImportTests: XCTestCase {
 
         coordinator.cancel()
         coordinator.routineSheetDismissed()
+        coordinator.waitForPendingImport()
 
         XCTAssertNil(coordinator.pendingRequest)
         XCTAssertNotNil(coordinator.pendingSplit)
@@ -623,6 +627,7 @@ final class SplitShareImportTests: XCTestCase {
         let now: Date = Date()
         coordinator.receive(url, now: now)
         coordinator.receive(url, now: now.addingTimeInterval(1.0))
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingSplit)
         XCTAssertEqual(coordinator.queuedCount, 0)
@@ -659,6 +664,7 @@ final class SplitShareImportTests: XCTestCase {
         let now: Date = Date()
         coordinator.receive(routineURL, now: now)
         coordinator.receive(splitURL, now: now.addingTimeInterval(1.0))
+        coordinator.waitForPendingImport()
 
         coordinator.cancel()
 
@@ -667,6 +673,7 @@ final class SplitShareImportTests: XCTestCase {
         XCTAssertEqual(coordinator.queuedCount, 1)
 
         coordinator.routineSheetDismissed()
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingSplit)
         XCTAssertEqual(coordinator.queuedCount, 0)
@@ -689,9 +696,11 @@ final class SplitShareImportTests: XCTestCase {
         let now: Date = Date()
         coordinator.receive(routineURL, now: now)
         coordinator.receive(splitURL, now: now.addingTimeInterval(1.0))
+        coordinator.waitForPendingImport()
 
         coordinator.cancel()
         coordinator.routineSheetDismissed()
+        coordinator.waitForPendingImport()
         XCTAssertNotNil(coordinator.pendingSplit)
 
         // Un segundo callback (o un cierre tardío) no debe cancelar el split.
@@ -716,9 +725,11 @@ final class SplitShareImportTests: XCTestCase {
         let now: Date = Date()
         coordinator.receive(splitURL, now: now)
         coordinator.receive(routineURL, now: now.addingTimeInterval(1.0))
+        coordinator.waitForPendingImport()
 
         coordinator.cancelSplit()
         coordinator.splitSheetDismissed()
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingRequest)
         XCTAssertNil(coordinator.pendingSplit)
@@ -739,6 +750,7 @@ final class SplitShareImportTests: XCTestCase {
         }
 
         coordinator.receive(invalid)
+        coordinator.waitForPendingImport()
         XCTAssertNil(coordinator.pendingSplit)
         XCTAssertEqual(coordinator.notice?.kind, .failure)
 
@@ -746,6 +758,7 @@ final class SplitShareImportTests: XCTestCase {
         XCTAssertEqual(coordinator.queuedCount, 1)
 
         coordinator.dismissNotice()
+        coordinator.waitForPendingImport()
 
         XCTAssertNotNil(coordinator.pendingRequest)
         XCTAssertEqual(coordinator.queuedCount, 0)
