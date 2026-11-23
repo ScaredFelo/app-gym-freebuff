@@ -414,6 +414,8 @@ final class SplitShareSelectionTests: XCTestCase {
         let upper: Routine = makeRoutine(named: "UPPER", sortOrder: 2, context: sender)
         makeLink(in: push, name: "Press banca", order: 0, context: sender)
         makeLink(in: legs, name: "Sentadilla", order: 0, context: sender)
+        // Las tres rutinas viajan en el split: ninguna puede estar vacía.
+        makeLink(in: upper, name: "Dominadas", order: 0, context: sender)
         pushFolder.routineIDs = [push.id]
         legsFolder.routineIDs = [legs.id]
         try sender.save()
@@ -459,6 +461,9 @@ final class SplitShareSelectionTests: XCTestCase {
         let sender: ModelContext = try makeContext()
         let push: Routine = makeRoutine(named: "PUSH", sortOrder: 0, context: sender)
         let pull: Routine = makeRoutine(named: "PULL", sortOrder: 1, context: sender)
+        // Un split con rutinas vacías se rechaza, así que ambas llevan ejercicio.
+        makeLink(in: push, name: "Press banca", order: 0, context: sender)
+        makeLink(in: pull, name: "Remo", order: 0, context: sender)
         try sender.save()
 
         let payload: RoutineSplitPayload = try RoutineSplitShareService.payload(for: [push, pull])
@@ -484,15 +489,24 @@ final class SplitShareSelectionTests: XCTestCase {
         let folder: RoutineFolder = try makeFolder(named: "Empuje", context: context)
         let push: Routine = makeRoutine(named: "PUSH", sortOrder: 0, context: context)
         let pull: Routine = makeRoutine(named: "PULL", sortOrder: 1, context: context)
+        // Un split solo es exportable si todas sus rutinas tienen ejercicios.
+        makeLink(in: push, name: "Press banca", order: 0, context: context)
+        makeLink(in: pull, name: "Remo", order: 0, context: context)
         folder.routineIDs = [push.id, pull.id]
         try context.save()
 
         let routines: [Routine] = allRoutines(context)
+        // Una sola factoría: `payload(for:)` acuña un identificador nuevo en
+        // cada llamada, así que este mismo payload se codifica, se decodifica y
+        // se compara. Nunca se generan dos UUID distintos para el mismo archivo.
         let legacy: RoutineSplitPayload = try RoutineSplitShareService.payload(
             for: folder,
             routines: routines
         )
-        let data: Data = try RoutineSplitShareService.encodedData(for: folder, routines: routines)
+
+        let encoder: JSONEncoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let data: Data = try encoder.encode(legacy)
 
         XCTAssertEqual(try SplitImportService.decode(data: data), legacy)
 
@@ -529,6 +543,57 @@ final class SplitShareSelectionTests: XCTestCase {
         XCTAssertEqual(imported.name, "PUSH")
         XCTAssertEqual(imported.exercises.count, 1)
         XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<RoutineFolder>()), 0)
+    }
+
+    // MARK: - Exportación de splits con rutinas vacías
+
+    func testSplitWithAnEmptyRoutineCannotBeExported() throws {
+        let context: ModelContext = try makeContext()
+        let push: Routine = makeRoutine(named: "PUSH", sortOrder: 0, context: context)
+        makeLink(in: push, name: "Press banca", order: 0, context: context)
+        let pull: Routine = makeRoutine(named: "PULL", sortOrder: 1, context: context)
+        try context.save()
+
+        XCTAssertThrowsError(try RoutineSplitShareService.payload(for: [push, pull])) { error in
+            XCTAssertEqual(error as? RoutineSplitShareError, .emptyRoutine(name: "PULL"))
+        }
+    }
+
+    func testSplitWithSeveralRoutinesAndOneEmptyCannotBeExported() throws {
+        let context: ModelContext = try makeContext()
+        let push: Routine = makeRoutine(named: "PUSH", sortOrder: 0, context: context)
+        makeLink(in: push, name: "Press banca", order: 0, context: context)
+        let pull: Routine = makeRoutine(named: "PULL", sortOrder: 1, context: context)
+        makeLink(in: pull, name: "Remo", order: 0, context: context)
+        let legs: Routine = makeRoutine(named: "LEGS", sortOrder: 2, context: context)
+        try context.save()
+
+        XCTAssertThrowsError(try RoutineSplitShareService.encodedData(for: [push, pull, legs])) { error in
+            XCTAssertEqual(error as? RoutineSplitShareError, .emptyRoutine(name: "LEGS"))
+        }
+    }
+
+    func testValidSplitExportsAndImports() throws {
+        let sender: ModelContext = try makeContext()
+        let push: Routine = makeRoutine(named: "PUSH", sortOrder: 0, context: sender)
+        makeLink(in: push, name: "Press banca", order: 0, context: sender)
+        let pull: Routine = makeRoutine(named: "PULL", sortOrder: 1, context: sender)
+        makeLink(in: pull, name: "Remo", order: 0, context: sender)
+        try sender.save()
+
+        let payload: RoutineSplitPayload = try RoutineSplitShareService.payload(for: [push, pull])
+
+        let receiver: ModelContext = try makeContext()
+        let result: SplitImportResult = try SplitImportService.importSplit(
+            SplitImportRequest(payload: payload),
+            mode: .newFolder(name: payload.name),
+            into: receiver
+        )
+
+        XCTAssertEqual(result.routineCount, 2)
+        XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<RoutineFolder>()), 1)
+        XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<Routine>()), 2)
+        XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<RoutineExercise>()), 2)
     }
 
     // MARK: - Utilidades

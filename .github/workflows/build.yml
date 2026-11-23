@@ -19,7 +19,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    # Build Release + 284 tests en simulador + empaquetado.
+    # Build Release + 289 tests en simulador + empaquetado.
     timeout-minutes: 60
 
     steps:
@@ -82,7 +82,7 @@ jobs:
           name: AppGym-Unsigned-IPA
           path: AppGym.ipa
 
-      # Ejecuta los 284 XCTest del target AppGymTests sobre un simulador.
+      # Ejecuta los 289 XCTest del target AppGymTests sobre un simulador.
       #
       # Sin `-sdk iphoneos` y sin flags de firma: el simulador firma ad-hoc y el
       # bundle de tests necesita ese host. `set -o pipefail` propaga el codigo de
@@ -163,7 +163,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # Puerta de calidad obligatoria: 284 tests ejecutados, 0 fallidos, 0
+      # Puerta de calidad obligatoria: 289 tests ejecutados, 0 fallidos, 0
       # omitidos. Cualquier desviacion hace fallar este paso y, con ello, el job.
       # Es fail-closed: si no hay .xcresult o no se puede leer, tambien falla.
       - name: Verify XCTest counts
@@ -172,7 +172,7 @@ jobs:
         env:
           RESULT_BUNDLE: ${{ runner.temp }}/TestResults.xcresult
           COUNTS_FILE: ${{ runner.temp }}/test-counts.txt
-          EXPECTED_TESTS: "284"
+          EXPECTED_TESTS: "289"
         run: |
           set +e
           if [ ! -d "$RESULT_BUNDLE" ]; then
@@ -280,7 +280,7 @@ jobs:
           PACKAGE_STEP: ${{ steps.package.outcome }}
           TESTS_STEP: ${{ steps.tests.outcome }}
           VERIFY_STEP: ${{ steps.verify_tests.outcome }}
-          EXPECTED_TESTS: "284"
+          EXPECTED_TESTS: "289"
           CI_STATUS_TOKEN: ${{ secrets.CI_STATUS_TOKEN }}
         run: |
           set +e

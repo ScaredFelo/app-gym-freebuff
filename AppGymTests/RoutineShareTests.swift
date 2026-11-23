@@ -186,6 +186,94 @@ final class RoutineShareTests: XCTestCase {
         XCTAssertFalse(name.contains("¿"))
     }
 
+    // MARK: - Rutinas individuales vacías
+
+    /// Una rutina sin ejercicios se puede compartir y volver a importar: el
+    /// destinatario decide qué ejercicios le añade después.
+    func testEmptyRoutineCanBeExportedAndImported() throws {
+        let sender: ModelContext = try makeContext()
+        let routine: Routine = Routine(
+            name: "Vacía",
+            isTemplate: true,
+            sortOrder: 0,
+            exercises: [],
+            source: .manual
+        )
+        sender.insert(routine)
+        try sender.save()
+
+        let file: RoutineShareFile = try RoutineShareService.makeFile(for: routine)
+        defer { try? FileManager.default.removeItem(at: file.url) }
+
+        let request: RoutineImportRequest = try RoutineImportService.makeRequest(fromFileAt: file.url)
+
+        XCTAssertEqual(request.routineName, "Vacía")
+        XCTAssertEqual(request.exerciseCount, 0)
+
+        let receiver: ModelContext = try makeContext()
+        let imported: Routine = try RoutineImportService.importRoutine(request, into: receiver)
+
+        XCTAssertEqual(imported.name, "Vacía")
+        XCTAssertTrue(imported.exercises.isEmpty)
+        XCTAssertTrue(imported.isActivePlanRoutine)
+        XCTAssertEqual(imported.source, .manual)
+        // La identidad es nueva: el UUID del emisor no se reutiliza.
+        XCTAssertNotEqual(imported.id, routine.id)
+        XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<Routine>()), 1)
+        XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<Exercise>()), 0)
+        XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<RoutineExercise>()), 0)
+    }
+
+    /// El caso con ejercicios sigue funcionando igual de extremo a extremo.
+    func testRoutineWithExercisesSurvivesExportAndImport() throws {
+        let sender: ModelContext = try makeContext()
+
+        let exercise: Exercise = Exercise(name: "Press banca", muscleGroup: .chest)
+        sender.insert(exercise)
+
+        let routine: Routine = Routine(
+            name: "Empuje",
+            isTemplate: true,
+            sortOrder: 0,
+            exercises: [],
+            source: .manual
+        )
+        sender.insert(routine)
+
+        let link: RoutineExercise = RoutineExercise(
+            exercise: exercise,
+            defaultSets: 4,
+            targetRepsMin: 6,
+            targetRepsMax: 8,
+            sortOrder: 0,
+            defaultWeight: 60.0,
+            restSeconds: 150
+        )
+        sender.insert(link)
+        routine.exercises = [link]
+        try sender.save()
+
+        let file: RoutineShareFile = try RoutineShareService.makeFile(for: routine)
+        defer { try? FileManager.default.removeItem(at: file.url) }
+
+        let request: RoutineImportRequest = try RoutineImportService.makeRequest(fromFileAt: file.url)
+        XCTAssertEqual(request.exerciseCount, 1)
+
+        let receiver: ModelContext = try makeContext()
+        let imported: Routine = try RoutineImportService.importRoutine(request, into: receiver)
+
+        XCTAssertEqual(imported.name, "Empuje")
+        XCTAssertEqual(imported.exercises.count, 1)
+
+        let importedLink: RoutineExercise = try XCTUnwrap(imported.exercises.first)
+        XCTAssertEqual(importedLink.exercise?.name, "Press banca")
+        XCTAssertEqual(importedLink.defaultSets, 4)
+        XCTAssertEqual(importedLink.targetRepsMin, 6)
+        XCTAssertEqual(importedLink.targetRepsMax, 8)
+        XCTAssertEqual(importedLink.restSeconds, 150)
+        XCTAssertEqual(try receiver.fetchCount(FetchDescriptor<RoutineExercise>()), 1)
+    }
+
     // MARK: - Utilidades
 
     private func makeContext() throws -> ModelContext {

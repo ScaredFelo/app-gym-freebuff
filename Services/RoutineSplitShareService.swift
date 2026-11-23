@@ -7,6 +7,10 @@ enum RoutineSplitShareError: LocalizedError, Equatable {
     case emptySplit
     case notEnoughRoutines
     case tooManyRoutines
+    /// Una de las rutinas del split no tiene ejercicios.
+    case emptyRoutine(name: String)
+    /// Una de las rutinas del split incumple el resto de la integridad.
+    case invalidRoutine(name: String, reason: RoutineImportError)
     case encodingFailed
     case writeFailed
 
@@ -18,6 +22,10 @@ enum RoutineSplitShareError: LocalizedError, Equatable {
             return "Selecciona al menos dos rutinas para compartir un split."
         case .tooManyRoutines:
             return "Un split no puede contener más de \(SplitImportService.maxRoutines) rutinas."
+        case .emptyRoutine(let name):
+            return "La rutina «\(name)» no contiene ningún ejercicio. Añade al menos uno antes de compartir el split."
+        case .invalidRoutine(let name, let reason):
+            return "La rutina «\(name)» no se puede compartir: \(reason.errorDescription ?? "contiene datos no válidos.")"
         case .encodingFailed:
             return "No se ha podido preparar el split para compartirlo."
         case .writeFailed:
@@ -286,14 +294,41 @@ enum RoutineSplitShareService {
             throw RoutineSplitShareError.tooManyRoutines
         }
 
+        let sharedRoutines: [RoutineShareRoutine] = exportable.map {
+            RoutineShareService.sharedRoutine(for: $0)
+        }
+        // El archivo generado tiene que poder importarse: se aplican las mismas
+        // reglas que la validación de recepción de un split.
+        try validateExportable(sharedRoutines)
+
         let trimmedName: String = name.trimmingCharacters(in: .whitespacesAndNewlines)
         return RoutineSplitPayload(
             format: RoutineSplitPayload.formatIdentifier,
             version: RoutineSplitPayload.currentVersion,
             id: UUID(),
             name: trimmedName.isEmpty ? defaultSplitName : trimmedName,
-            routines: exportable.map { RoutineShareService.sharedRoutine(for: $0) }
+            routines: sharedRoutines
         )
+    }
+
+    /// Comprueba cada rutina del split antes de escribir el archivo.
+    ///
+    /// Un split es un conjunto de rutinas para entrenar: si una está vacía el
+    /// receptor no puede usarla. Se informa del nombre de la primera rutina que
+    /// incumple la regla, y se reutiliza la validación compartida para no
+    /// duplicar el resto de comprobaciones.
+    private static func validateExportable(_ routines: [RoutineShareRoutine]) throws {
+        for routine in routines {
+            guard !routine.exercises.isEmpty else {
+                throw RoutineSplitShareError.emptyRoutine(name: routine.name)
+            }
+
+            do {
+                try RoutineImportService.validate(sharedRoutine: routine, rules: .splitFile)
+            } catch let reason as RoutineImportError {
+                throw RoutineSplitShareError.invalidRoutine(name: routine.name, reason: reason)
+            }
+        }
     }
 
     static func encodedData(

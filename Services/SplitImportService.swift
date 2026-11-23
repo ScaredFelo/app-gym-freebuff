@@ -186,7 +186,9 @@ enum SplitImportService {
 
         for (offset, routine) in payload.routines.enumerated() {
             do {
-                try RoutineImportService.validate(sharedRoutine: routine)
+                // Un split no puede contener rutinas vacías: el receptor no
+                // tendría nada que entrenar. La rutina individual sí.
+                try RoutineImportService.validate(sharedRoutine: routine, rules: .splitFile)
             } catch let reason as RoutineImportError {
                 throw SplitImportError.invalidRoutine(index: offset + 1, reason: reason)
             }

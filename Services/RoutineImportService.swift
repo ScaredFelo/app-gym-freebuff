@@ -98,6 +98,22 @@ struct RoutineImportRequest: Identifiable, Equatable {
     }
 }
 
+// MARK: - Reglas por formato
+
+/// Reglas que dependen del archivo que se valida, no de los datos de la rutina.
+///
+/// La integridad de los campos (nombre, orden, rangos y valores de cada
+/// ejercicio) es idéntica en los dos formatos; lo único que cambia es si una
+/// rutina sin ejercicios es aceptable.
+enum SharedRoutineValidationRules {
+    /// `.appgymroutine`: una rutina individual puede estar vacía. Se puede
+    /// compartir y el destinatario podrá añadirle ejercicios al importarla.
+    case routineFile
+    /// `.appgymsplit`: un split es un conjunto de rutinas para entrenar, así
+    /// que una rutina sin ejercicios lo hace inutilizable y se rechaza.
+    case splitFile
+}
+
 // MARK: - Servicio
 
 /// Recibe, valida e importa rutinas individuales compartidas con el formato
@@ -220,19 +236,32 @@ enum RoutineImportService {
             throw RoutineImportError.unsupportedVersion(payload.version)
         }
 
-        try validate(sharedRoutine: payload.routine)
+        try validate(sharedRoutine: payload.routine, rules: .routineFile)
     }
 
     /// Reglas de una rutina, compartidas por `.appgymroutine` y `.appgymsplit`.
-    static func validate(sharedRoutine routine: RoutineShareRoutine) throws {
+    ///
+    /// `rules` decide **solo** la regla de «sin ejercicios»: el resto de la
+    /// integridad se comprueba igual en los dos formatos.
+    static func validate(
+        sharedRoutine routine: RoutineShareRoutine,
+        rules: SharedRoutineValidationRules
+    ) throws {
         let routineName: String = routine.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !routineName.isEmpty, routineName.count <= maxRoutineNameLength else {
             throw RoutineImportError.invalidRoutineName
         }
 
         let exercises: [RoutineShareExercise] = routine.exercises
-        guard !exercises.isEmpty else {
-            throw RoutineImportError.missingExercises
+        switch rules {
+        case .routineFile:
+            // Una rutina individual vacía es válida: se comparte y el receptor
+            // decide qué ejercicios le añade después.
+            break
+        case .splitFile:
+            guard !exercises.isEmpty else {
+                throw RoutineImportError.missingExercises
+            }
         }
         guard exercises.count <= maxExercises else {
             throw RoutineImportError.tooManyExercises
