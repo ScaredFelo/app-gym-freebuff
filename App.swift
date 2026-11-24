@@ -150,6 +150,73 @@ enum AppMigrationPlan: SchemaMigrationPlan {
     }
 }
 
+// MARK: - Entorno de pruebas
+
+/// Indica si este proceso es el anfitrión de una ejecución de XCTest.
+///
+/// `AppGymTests` es un `bundle.unit-test` que depende de `AppGym`, así que Xcode
+/// lanza la app y **inyecta** el bundle de pruebas en su proceso. La sesión
+/// `Session-AppGymTests-2026-11-23_191947` (Xcode 16.4) lo confirma en el
+/// entorno con el que se abre `com.jordiferres.appgym`:
+///
+/// ```
+/// DYLD_INSERT_LIBRARIES = ".../AppGym.app/Frameworks/libXCTestBundleInject.dylib:..."
+/// XCTestBundlePath = "PlugIns/AppGymTests.xctest"
+/// XCTestConfigurationFilePath = ""
+/// XCTestSessionIdentifier = "A11AADF5-3216-45F1-B305-15DD5045EB46"
+/// ```
+///
+/// Señales, de más a menos fuerte:
+///
+/// 1. `NSClassFromString("XCTestCase") != nil`: la clase solo existe si
+///    `XCTest.framework` está cargado, y Xcode lo carga en el host para poder
+///    inyectar el bundle. La app de producción no enlaza ni carga XCTest, así
+///    que esta señal no puede dar un falso positivo, ni siquiera en Release.
+/// 2. Variables de entorno de la sesión. Se comprueba que **existan** (`!= nil`)
+///    y nunca su contenido: en el run del 23/11/2026
+///    `XCTestConfigurationFilePath` llegaba como cadena vacía, así que exigir un
+///    valor no vacío habría descartado justo la variable que proponía la
+///    auditoría. Se aceptan además `XCTestBundlePath` y
+///    `XCTestSessionIdentifier` para no depender de una sola clave entre
+///    versiones de Xcode.
+///
+/// No se usan `arguments` ni una marca en `UserDefaults`: los argumentos cambian
+/// entre versiones de Xcode y una marca persistida sobreviviría a la sesión de
+/// pruebas y desactivaría el mantenimiento en la siguiente apertura normal.
+enum TestEnvironment {
+    /// Consulta al runtime y al entorno del proceso. Es barata y su resultado
+    /// no puede cambiar mientras la app está viva.
+    static var isRunningUnderXCTest: Bool {
+        return isXCTestLinked || hasXCTestSessionEnvironment
+    }
+
+    private static var isXCTestLinked: Bool {
+        return NSClassFromString("XCTestCase") != nil
+    }
+
+    private static var hasXCTestSessionEnvironment: Bool {
+        let environment: [String: String] = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || environment["XCTestSessionIdentifier"] != nil
+    }
+
+    /// `true` solo en el anfitrión de XCTest de un build **Debug**.
+    ///
+    /// El esquema compila las pruebas con `test: config: Debug` y `DEBUG` está
+    /// definido en la configuración Debug del proyecto. La condición de
+    /// compilación es la última barrera: un binario Release no incluye esta
+    /// rama, así que ninguna combinación de entorno puede hacer que la app
+    /// distribuida abra un store temporal o se salte el mantenimiento.
+    static var isTestHost: Bool {
+        #if DEBUG
+        return isRunningUnderXCTest
+        #else
+        return false
+        #endif
+    }
+}
+
 // MARK: - Contenedor tolerante a fallos
 
 /// Abre el contenedor sin apartar, borrar ni sustituir nunca el store original.
@@ -178,13 +245,26 @@ enum StoreBootstrap {
 
     /// `storeURL` existe para las pruebas con un store temporal. En producción
     /// se usa la configuración por defecto de SwiftData.
+    ///
+    /// En el anfitrión de XCTest y sin `storeURL` el store se abre **en
+    /// memoria**: ese contenedor solo existe para que la app host tenga un
+    /// `ModelContainer` con el que construir su vista. Ninguna prueba lo lee ni
+    /// escribe (cada test crea el suyo con `makeContainer(storeURL:)`, con
+    /// `isStoredInMemoryOnly: true` o en un directorio temporal), así que abrir
+    /// el store del simulador durante los tests solo añadiría aperturas,
+    /// migraciones y sembrado ajenos a lo que se está probando. Las pruebas de
+    /// persistencia y migración siguen pasando su propio `storeURL` y, por
+    /// tanto, siguen usando disco exactamente igual que antes.
     static func makeContainer(storeURL: URL? = nil) -> Outcome {
         let schema = Schema(versionedSchema: AppSchemaV6.self)
+        let opensTemporaryStoreForTestHost: Bool = storeURL == nil && TestEnvironment.isTestHost
 
         do {
             let configuration: ModelConfiguration
             if let storeURL {
                 configuration = ModelConfiguration(url: storeURL)
+            } else if opensTemporaryStoreForTestHost {
+                configuration = ModelConfiguration(isStoredInMemoryOnly: true)
             } else {
                 configuration = ModelConfiguration(isStoredInMemoryOnly: false)
             }
@@ -296,6 +376,9 @@ struct AppGymApp: App {
             runLaunchTasksOnce(container: container)
         }
         .onChange(of: scenePhase) { (_, newPhase: ScenePhase) in
+            // Bajo XCTest el contenedor es de pruebas y el snapshot que lee el
+            // widget debe seguir siendo el de la app real: no se publica nada.
+            guard !TestEnvironment.isTestHost else { return }
             // Al volver a la app la racha se calculó con las sesiones de la
             // última vez. El arranque también pasa por `.active`, y ahí ya
             // ha recalculado `runLaunchTasksOnce`: si el snapshot es de
@@ -360,6 +443,16 @@ struct AppGymApp: App {
     private func runLaunchTasksOnce(container: ModelContainer) {
         guard !didRunLaunchTasks else { return }
         didRunLaunchTasks = true
+
+        // El anfitrión de XCTest abre la app solo para que el bundle de pruebas
+        // tenga un proceso donde ejecutarse; ninguna prueba usa este
+        // contenedor. Cada test crea su propio `ModelContext` en memoria o en
+        // un store temporal y llama de forma explícita al sembrado que necesita
+        // (por ejemplo `MockDataGenerator.seedIfNeeded(context:)`). Ejecutar
+        // aquí las nueve pasadas escribiría en el store del simulador y en el
+        // dominio de `UserDefaults` de la app antes del primer test, sin que
+        // nada lo compruebe.
+        guard !TestEnvironment.isTestHost else { return }
 
         let context = container.mainContext
         MockDataGenerator.seedIfNeeded(context: context)
