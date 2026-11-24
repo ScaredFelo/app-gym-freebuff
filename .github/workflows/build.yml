@@ -91,13 +91,270 @@ jobs:
       # El destino se resuelve por UDID porque el nombre del iPhone depende de la
       # version de Xcode que traiga la imagen macos-15 (iPhone 16 con Xcode 16,
       # iPhone 17 con Xcode 26); un nombre fijo romperia el workflow.
+
+      # ---------------------------------------------------------------------
+      # Diagnostico de XCTest.
+      #
+      # El fallo del run del 24/11/2026 no ejecuta ningun test: testmanagerd
+      # contesta a la recopilacion de informes de fallos y a partir de ahi no
+      # se lanza ni AppGym ni el test runner, con
+      # StandardOutputAndStandardError.txt vacio. Sin logs del simulador y del
+      # host esa pausa es invisible, asi que estos pasos solo recogen
+      # evidencia: no tocan el build, ni el comando de XCTest, ni el recuento
+      # de la puerta de calidad. Todos llevan continue-on-error, de modo que un
+      # fallo del diagnostico nunca puede cambiar el resultado del job.
+      #
+      # La recogida empieza dentro del propio paso de XCTest (streams en
+      # caliente, muestras de pila y marcas de tiempo) para que quede algo en
+      # disco aunque el paso se agote a los 30 minutos, y continua despues en
+      # un paso con `if: always()` que publica el artefacto.
+      # ---------------------------------------------------------------------
+      - name: Prepare XCTest diagnostics
+        id: diag_prepare
+        continue-on-error: true
+        env:
+          DIAG_DIR: ${{ runner.temp }}/ci-diagnostics
+        run: |
+          set +e
+          mkdir -p "$DIAG_DIR/bin" "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" \
+                   "$DIAG_DIR/crashes" "$DIAG_DIR/device"
+          : > "$DIAG_DIR/timeline.txt"
+
+          # Un unico helper compartido (mark/note/timeout_log/bounded): los
+          # colectores y la recogida posterior lo cargan con `source`.
+          cat > "$DIAG_DIR/bin/diagnostic-helpers.sh" <<'SH'
+          #!/bin/bash
+          # Helpers de diagnostico compartidos por los pasos y los colectores.
+          # Se generan en "Prepare XCTest diagnostics" y se cargan con `source`.
+          # Requieren DIAG_DIR exportado. No abortan nunca el paso llamante.
+
+          mark() {
+            printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+              >> "$DIAG_DIR/timeline.txt"
+          }
+
+          note() {
+            printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+              | tee -a "$DIAG_DIR/timeline.txt" >&2
+          }
+
+          # timeout_log <timeout|fallo> <limite> <codigo> <comando...>
+          timeout_log() {
+            local kind="$1"
+            local limit="$2"
+            local code="$3"
+            shift 3
+            printf '%s [%s] limite=%ss rc=%s: %s\n' \
+              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$kind" "$limit" "$code" "$*" \
+              | tee -a "$DIAG_DIR/timeline.txt" >&2
+          }
+
+          # bounded <segundos> <comando...>
+          # Tope de tiempo propio: el watchdog deja una marca antes de matar, de
+          # modo que el vencimiento ([timeout], rc 124) se distingue de un error
+          # normal del comando ([fallo], rc original).
+          bounded() {
+            local limit="$1"
+            shift
+            local flag="$DIAG_DIR/.watchdog.$$.$RANDOM"
+            rm -f "$flag"
+            "$@" 2>&1 &
+            local child=$!
+            # Vigila en pasos de 1 s y termina solo cuando el comando desaparece:
+            # no deja `sleep` vivos ni retiene el stdout del paso.
+            ( i=0
+              while [ "$i" -lt "$limit" ]; do
+                sleep 1
+                i=$((i + 1))
+                kill -0 "$child" 2>/dev/null || exit 0
+              done
+              : > "$flag"
+              kill -KILL "$child" 2>/dev/null ) >/dev/null 2>&1 &
+            local watchdog=$!
+            wait "$child"
+            local code=$?
+            if [ -f "$flag" ]; then
+              kill "$watchdog" 2>/dev/null
+              rm -f "$flag"
+              timeout_log timeout "$limit" "$code" "$*"
+              return 124
+            fi
+            kill "$watchdog" 2>/dev/null
+            if [ "$code" -ne 0 ]; then
+              timeout_log fallo "$limit" "$code" "$*"
+            fi
+            return "$code"
+          }
+          SH
+          . "$DIAG_DIR/bin/diagnostic-helpers.sh"
+          mark "diagnostico: preparacion iniciada"
+
+          {
+            echo "## Host"
+            bounded 30 sw_vers
+            bounded 30 uname -a
+            bounded 60 xcodebuild -version
+            bounded 30 xcrun simctl --version
+            echo
+            echo "## Disco"
+            bounded 30 df -h /
+            echo
+            echo "## Simuladores disponibles"
+            bounded 90 xcrun simctl list devices available
+            echo
+            echo "## Procesos relevantes antes de XCTest"
+            bounded 30 ps -Ao pid,ppid,stat,etime,pcpu,comm \
+              | grep -E 'testmanagerd|CoreSimulator|Simulator|SpringBoard' | grep -v grep
+          } > "$DIAG_DIR/environment.txt" 2>&1
+          mark "diagnostico: entorno capturado"
+
+          # Stream del log del simulador, limitado a los procesos que gobiernan
+          # el arranque del test y el lanzamiento de la app. Espera a que
+          # xcodebuild encienda el dispositivo (maximo 6 minutos) y cierra su
+          # stream cuando el paso termina este script.
+          cat > "$DIAG_DIR/bin/sim-logstream.sh" <<'SH'
+          #!/bin/bash
+          # Sigue el log del simulador para los procesos del arranque de XCTest.
+          set +e
+          out="$DIAG_DIR/logs/simulator-logstream.txt"
+          timeout_marker="$DIAG_DIR/logs/simulator-logstream.timeout.$$"
+          rm -f "$timeout_marker"
+
+          # Helpers compartidos: mark/note/timeout_log/bounded.
+          if [ ! -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
+            echo "sin diagnostic-helpers.sh: recogida cancelada" >&2
+            exit 0
+          fi
+          . "$DIAG_DIR/bin/diagnostic-helpers.sh"
+
+          # Cada consulta del dispositivo va acotada y la espera entera tiene un
+          # plazo absoluto de 360 s: con CoreSimulator atascado no puede
+          # alargarse a 180 consultas de 20 s cada una. Al vencer el plazo se
+          # anota el motivo y se sigue con el resto del script.
+          booted=0
+          wait_deadline=$(( $(date +%s) + 360 ))
+          while [ "$(date +%s)" -lt "$wait_deadline" ]; do
+            if bounded 20 xcrun simctl list devices 2>/dev/null | grep -q "$UDID.*Booted"; then
+              booted=1
+              break
+            fi
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) esperando a que arranque $UDID" >> "$out"
+            sleep 2
+          done
+          if [ "$booted" -eq 1 ]; then
+            note "sim-logstream: $UDID arrancado"
+          else
+            note "sim-logstream: 360 s de espera agotados sin $UDID arrancado; se abre el stream igualmente"
+          fi
+          note "sim-logstream: abriendo stream (limite 2100 s)"
+          # El stream se lanza como hijo con watchdog: si se bloquea se corta a
+          # los 2100 s y, si el paso cierra este script, el trap cierra tambien
+          # el stream. Asi matar el PID anotado en pids.txt limpia todo.
+          xcrun simctl spawn "$UDID" log stream --style compact --level debug \
+            --predicate 'process == "testmanagerd" OR process == "SpringBoard" OR process == "runningboardd" OR process == "backboardd" OR process == "AppGym" OR process == "AppGymTests"' \
+            >> "$out" &
+          stream_pid=$!
+          # Vigila el stream en pasos de 1 s: si el stream termina antes, el
+          # watchdog sale solo y no queda ningun `sleep` huerfano.
+          ( i=0
+            while [ "$i" -lt 2100 ]; do
+              sleep 1
+              i=$((i + 1))
+              kill -0 "$stream_pid" 2>/dev/null || exit 0
+            done
+            : > "$timeout_marker"
+            kill -TERM "$stream_pid" 2>/dev/null
+            sleep 5
+            kill -KILL "$stream_pid" 2>/dev/null ) >/dev/null 2>&1 &
+          watchdog=$!
+          trap 'kill -TERM "$stream_pid" 2>/dev/null; kill "$watchdog" 2>/dev/null' TERM INT
+          wait "$stream_pid"
+          kill "$watchdog" 2>/dev/null
+          if [ -f "$timeout_marker" ]; then
+            note "sim-logstream: stream cortado al agotar los 2100 s"
+          fi
+          note "sim-logstream: stream terminado"
+          SH
+
+          # Stream del log unificado del host: CoreSimulator y testmanagerd
+          # explican por que no llega a lanzarse el proceso de la app.
+          cat > "$DIAG_DIR/bin/host-logstream.sh" <<'SH'
+          #!/bin/bash
+          # Sigue el log unificado del host para CoreSimulator, testmanagerd y xcodebuild.
+          set +e
+          out="$DIAG_DIR/logs/host-logstream.txt"
+          exec log stream --style compact --level debug \
+            --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym"' \
+            >> "$out" 2>&1
+          SH
+
+          # Estado periodico del simulador y de los procesos. Cada 5 minutos
+          # ademas toma una muestra de pila de xcodebuild y testmanagerd: si el
+          # arranque del test se queda bloqueado, la muestra dice en que llamada
+          # esta esperando, incluso si el paso se corta a los 30 minutos.
+          cat > "$DIAG_DIR/bin/snapshot-loop.sh" <<'SH'
+          #!/bin/bash
+          # Estado del simulador y de los procesos cada 20 s; muestras cada 5 minutos.
+          set +e
+          out="$DIAG_DIR/snapshots/loop.txt"
+
+          # Helpers compartidos: mark/note/timeout_log/bounded.
+          if [ ! -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
+            echo "sin diagnostic-helpers.sh: recogida cancelada" >&2
+            exit 0
+          fi
+          . "$DIAG_DIR/bin/diagnostic-helpers.sh"
+
+          n=0
+          while true; do
+            n=$((n + 1))
+            {
+              echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) muestra=$n ==="
+              echo "-- dispositivos --"
+              bounded 20 xcrun simctl list devices | sed -n '1,40p'
+              echo "-- procesos --"
+              ps -Ao pid,ppid,stat,etime,pcpu,comm \
+                | grep -E 'xcodebuild|testmanagerd|CoreSimulator|AppGym|SpringBoard' | grep -v grep
+              if [ -n "$UDID" ]; then
+                echo "-- servicios de XCTest en el simulador --"
+                bounded 20 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -E 'AppGym|testmanagerd|XCTest'
+              fi
+            } >> "$out" 2>&1
+
+            if [ $((n % 15)) -eq 0 ]; then
+              # `pgrep -x` aqui solo localiza el PID que se va a muestrear: nunca
+              # se usa para terminar procesos.
+              for name in xcodebuild testmanagerd; do
+                pid="$(pgrep -x "$name" | head -1)"
+                if [ -n "$pid" ]; then
+                  bounded 60 sample "$pid" 2 1 -file "$DIAG_DIR/snapshots/sample-${name}-${n}.txt" >> "$out" 2>&1
+                fi
+              done
+            fi
+            sleep 20
+          done
+          SH
+
+          mark "diagnostico: preparacion terminada"
+          ls -la "$DIAG_DIR/bin" >> "$DIAG_DIR/timeline.txt" 2>&1
+          exit 0
       - name: Run XCTest
         id: tests
         timeout-minutes: 30
         env:
           RESULT_BUNDLE: ${{ runner.temp }}/TestResults.xcresult
+          DIAG_DIR: ${{ runner.temp }}/ci-diagnostics
         run: |
           set -o pipefail
+
+          # Helpers de diagnostico compartidos. Si la preparacion fallo,
+          # `mark` queda como no-op y el paso de pruebas sigue igual.
+          mark() { :; }
+          if [ -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
+            . "$DIAG_DIR/bin/diagnostic-helpers.sh"
+          fi
+          mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" 2>/dev/null
+          mark "XCTest: paso iniciado"
           udid="$(xcrun simctl list devices available \
             | grep -E '^[[:space:]]+iPhone' \
             | head -1 \
@@ -108,6 +365,24 @@ jobs:
             exit 1
           fi
           echo "Simulador elegido: $udid"
+          echo "$udid" > "$DIAG_DIR/udid.txt" 2>/dev/null
+          mark "XCTest: dispositivo elegido ($udid)"
+
+          # Recogida en caliente. Los streams del simulador y del host solo se
+          # pueden reconstruir mientras ocurren; un `log show` posterior pierde
+          # el detalle de depuracion. Se lanzan como hijos de este paso y se
+          # anotan sus PID para cerrarlos aqui mismo; si el paso se agota a los
+          # 30 minutos, lo ya escrito queda en $DIAG_DIR y lo publica el paso
+          # de recogida posterior.
+          : > "$DIAG_DIR/pids.txt"
+          UDID="$udid" bash "$DIAG_DIR/bin/sim-logstream.sh" >> "$DIAG_DIR/logs/sim-logstream.err" 2>&1 &
+          echo "sim-logstream=$!" >> "$DIAG_DIR/pids.txt"
+          UDID="$udid" bash "$DIAG_DIR/bin/host-logstream.sh" >> "$DIAG_DIR/logs/host-logstream.err" 2>&1 &
+          echo "host-logstream=$!" >> "$DIAG_DIR/pids.txt"
+          UDID="$udid" bash "$DIAG_DIR/bin/snapshot-loop.sh" >> "$DIAG_DIR/logs/snapshot-loop.err" 2>&1 &
+          echo "snapshot-loop=$!" >> "$DIAG_DIR/pids.txt"
+          mark "XCTest: recogida en caliente iniciada"
+          sleep 2
 
           # -resultBundlePath exige que la ruta no exista todavia.
           rm -rf "$RESULT_BUNDLE"
@@ -120,6 +395,7 @@ jobs:
           # falla con su nombre, XCTest captura un spindump, reinicia el runner
           # y continua la suite. El minimo es 60 s y se redondea al minuto; el
           # maximo de 300 s acota cualquier excepcion al valor por defecto.
+          mark "XCTest: xcodebuild empieza"
           xcodebuild test \
             -project AppGym.xcodeproj \
             -scheme AppGym \
@@ -132,7 +408,32 @@ jobs:
             -maximum-test-execution-time-allowance 300 \
             -derivedDataPath /tmp/DerivedDataTests \
             -resultBundlePath "$RESULT_BUNDLE" \
-            COMPILER_INDEX_STORE_ENABLE=NO 2>&1 | tee test.log
+            COMPILER_INDEX_STORE_ENABLE=NO > >(tee test.log) 2>&1 &
+          # El PID del xcodebuild de XCTest se anota para poder cerrar
+          # exactamente ese proceso si sobrevive al corte del paso: nunca se
+          # terminan procesos buscandolos por patron de nombre.
+          xcodebuild_pid=$!
+          echo "$xcodebuild_pid" > "$DIAG_DIR/xcodebuild.pid"
+          mark "XCTest: xcodebuild pid $xcodebuild_pid"
+          wait "$xcodebuild_pid"
+          status=$?
+          mark "XCTest: xcodebuild termina con codigo $status"
+          if [ -d "$RESULT_BUNDLE" ]; then
+            mark "XCTest: .xcresult presente"
+          else
+            mark "XCTest: sin .xcresult"
+          fi
+
+          # Cierre de la recogida en caliente por PID anotado, nunca por patron
+          # de nombre: un patron podria alcanzar a este mismo shell.
+          while IFS='=' read -r name pid; do
+            if [ -n "$pid" ]; then
+              kill "$pid" 2>/dev/null
+            fi
+          done < "$DIAG_DIR/pids.txt" 2>/dev/null
+          sleep 1
+          mark "XCTest: recogida en caliente detenida"
+          exit "$status"
 
       # Se sube aunque los tests fallen: el .xcresult es la evidencia completa
       # (fallos con linea, logs y adjuntos). Se guarda en $RUNNER_TEMP, fuera
@@ -160,6 +461,143 @@ jobs:
         with:
           name: AppGym-TestLog
           path: test.log
+          if-no-files-found: warn
+          retention-days: 14
+
+      # Recogida posterior a XCTest. Se ejecuta con `if: always()` para que
+      # ocurra tambien cuando el paso de pruebas se agota a los 30 minutos: el
+      # runner corta el proceso del paso, pero los pasos con always() siguen
+      # ejecutandose y lo que los colectores en caliente ya escribieron en
+      # $DIAG_DIR sigue en disco. Cada comando va acotado con `bounded` para que
+      # la recogida no agote el presupuesto del job.
+      - name: Collect XCTest diagnostics
+        id: diag_collect
+        if: always()
+        continue-on-error: true
+        # 15 min: el peor caso sumado de los comandos acotados es 755 s
+        # (30 + 20 + 120 + 30 + 120 + 300 + 60 + 20 + 20 + 20 + 15); el resto
+        # de auxiliares (ls, sed, kill, ps -p) son locales y no bloquean, asi
+        # que quedan mas de dos minutos para cerrar y escribir el resumen.
+        timeout-minutes: 15
+        env:
+          DIAG_DIR: ${{ runner.temp }}/ci-diagnostics
+          RESULT_BUNDLE: ${{ runner.temp }}/TestResults.xcresult
+        run: |
+          set +e
+          mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" "$DIAG_DIR/crashes/host" \
+                   "$DIAG_DIR/crashes/coresimulator" "$DIAG_DIR/crashes/simulator" \
+                   "$DIAG_DIR/device"
+
+          # Helpers compartidos (mark/timeout_log/bounded). Si la preparacion
+          # fallo, `mark` queda como no-op y los comandos acotados degradan.
+          mark() { :; }
+          if [ -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
+            . "$DIAG_DIR/bin/diagnostic-helpers.sh"
+          fi
+          mark "diagnostico: recogida posterior iniciada"
+          udid="$(cat "$DIAG_DIR/udid.txt" 2>/dev/null)"
+          echo "udid=$udid" >> "$DIAG_DIR/timeline.txt"
+
+          # Un colector o el xcodebuild de XCTest que hayan sobrevivido al corte
+          # del paso impiden fotografiar el estado real. Se cierran solo los PID
+          # anotados por este job: los colectores en pids.txt y el xcodebuild de
+          # XCTest en xcodebuild.pid. Nunca se terminan procesos por patron.
+          if [ -f "$DIAG_DIR/pids.txt" ]; then
+            while IFS='=' read -r name pid; do
+              if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
+                kill "$pid" 2>/dev/null
+              fi
+            done < "$DIAG_DIR/pids.txt"
+          fi
+          xcodebuild_pid="$(cat "$DIAG_DIR/xcodebuild.pid" 2>/dev/null)"
+          if [ -n "$xcodebuild_pid" ] && ps -p "$xcodebuild_pid" > /dev/null 2>&1; then
+            kill -TERM "$xcodebuild_pid" 2>/dev/null
+            mark "diagnostico: xcodebuild ($xcodebuild_pid) seguia vivo tras el corte del paso"
+            sleep 5
+            if ps -p "$xcodebuild_pid" > /dev/null 2>&1; then
+              kill -KILL "$xcodebuild_pid" 2>/dev/null
+            fi
+          fi
+          sleep 3
+
+          # 1) Estado del simulador y de la maquina en el momento del fallo.
+          {
+            echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+            echo "-- simctl list --"
+            bounded 30 xcrun simctl list
+            echo "-- procesos --"
+            bounded 20 ps -Ao pid,ppid,stat,etime,pcpu,pmem,command
+          } > "$DIAG_DIR/snapshots/final.txt" 2>&1
+          mark "diagnostico: estado final capturado"
+
+          # 2) Logs de la ventana de la prueba. Los streams en caliente son la
+          # fuente principal; este volcado cubre lo anterior a su arranque.
+          bounded 120 log show --style compact --last 45m \
+            --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym"' \
+            > "$DIAG_DIR/logs/host-logshow.txt"
+          mark "diagnostico: log show del host capturado"
+
+          if [ -n "$udid" ] && bounded 30 xcrun simctl list devices 2>/dev/null | grep -q "$udid.*Booted"; then
+            bounded 120 xcrun simctl spawn "$udid" log show --style compact --last 45m \
+              --predicate 'process == "testmanagerd" OR process == "SpringBoard" OR process == "runningboardd" OR process == "backboardd" OR process == "AppGym" OR process == "AppGymTests"' \
+              > "$DIAG_DIR/logs/simulator-logshow.txt"
+            mark "diagnostico: log show del simulador capturado"
+          else
+            echo "simulador no arrancado o udid desconocido: sin log show del dispositivo" \
+              > "$DIAG_DIR/logs/simulator-logshow.txt"
+            mark "diagnostico: sin log show del simulador"
+          fi
+
+          # 3) Informes de fallos del host, de CoreSimulator y del dispositivo.
+          bounded 20 cp -R ~/Library/Logs/DiagnosticReports/. "$DIAG_DIR/crashes/host/" 2>/dev/null
+          bounded 20 cp -R ~/Library/Logs/CoreSimulator/. "$DIAG_DIR/crashes/coresimulator/" 2>/dev/null
+          if [ -n "$udid" ]; then
+            bounded 20 cp -R ~/Library/Developer/CoreSimulator/Devices/"$udid"/data/Library/Logs/CrashReporter/. \
+              "$DIAG_DIR/crashes/simulator/" 2>/dev/null
+          fi
+          bounded 15 find "$DIAG_DIR/crashes" -maxdepth 3 -type f 2>/dev/null | head -200 \
+            > "$DIAG_DIR/crashes/listado.txt"
+          mark "diagnostico: informes de fallos copiados"
+
+          # 4) Estado completo del dispositivo segun CoreSimulator. `diagnose`
+          # archiva el resultado en el directorio actual, asi que se lanza dentro
+          # de $DIAG_DIR/device para que viaje en el artefacto.
+          (
+            cd "$DIAG_DIR/device" || exit 0
+            bounded 300 xcrun simctl diagnose
+          ) > "$DIAG_DIR/logs/simctl-diagnose.txt" 2>&1
+          mark "diagnostico: simctl diagnose terminado"
+
+          # 5) Lo que el .xcresult incompleto pueda declarar de si mismo.
+          if [ -d "$RESULT_BUNDLE" ]; then
+            bounded 60 xcrun xcresulttool get test-results summary \
+              --path "$RESULT_BUNDLE" --compact > "$DIAG_DIR/logs/xcresult-summary.txt"
+          else
+            echo "sin .xcresult en $RESULT_BUNDLE" > "$DIAG_DIR/logs/xcresult-summary.txt"
+          fi
+          mark "diagnostico: recogida posterior terminada"
+
+          {
+            echo ""
+            echo "## Diagnostico XCTest"
+            echo ""
+            echo "Artefacto \`AppGym-XCTestDiagnostics\`: logs en caliente del simulador y del host, estado y procesos del simulador, muestras de pila, informes de fallos y marcas de tiempo."
+            echo ""
+            echo '```'
+            sed -n '1,40p' "$DIAG_DIR/timeline.txt" 2>/dev/null
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY" 2>/dev/null
+          exit 0
+
+      # El diagnostico se publica siempre, tambien cuando XCTest no llega a
+      # ejecutar un solo test: es el unico rastro de por que no arranco.
+      - name: Upload XCTest diagnostics
+        id: upload_diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: AppGym-XCTestDiagnostics
+          path: ${{ runner.temp }}/ci-diagnostics
           if-no-files-found: warn
           retention-days: 14
 
