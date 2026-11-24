@@ -149,6 +149,119 @@ jobs:
               | tee -a "$DIAG_DIR/timeline.txt" >&2
           }
 
+          # watch_stream <segundos> <pid> [marca]
+          # Vigila <pid> desde un subshell: sale solo cuando el proceso
+          # desaparece y, al vencer el plazo, deja [marca] y lo corta (TERM y,
+          # tras 2 s, KILL). El `sleep` de cada vuelta se lanza como hijo y el
+          # trap lo mata, asi que al cerrar el vigilante no queda ningun `sleep`
+          # huerfano. Deja su PID en WATCHDOG_PID.
+          watch_stream() {
+            local limit="$1"
+            local target="$2"
+            local marker="${3:-}"
+            (
+              nap=""
+              trap '[ -n "$nap" ] && kill "$nap" 2>/dev/null; exit 0' TERM INT
+              i=0
+              while [ "$i" -lt "$limit" ]; do
+                sleep 1 &
+                nap=$!
+                wait "$nap" 2>/dev/null
+                nap=""
+                i=$((i + 1))
+                kill -0 "$target" 2>/dev/null || exit 0
+              done
+              if [ -n "$marker" ]; then : > "$marker"; fi
+              kill -TERM "$target" 2>/dev/null
+              # Gracia de 2 s solo mientras el proceso siga vivo: un comando que
+              # atiende el TERM no deja ni un `sleep` de mas, y uno que lo ignora
+              # recibe KILL al vencer. La espera va troceada y anotada en `nap`
+              # para que el trap la cierre si a este vigilante le llega TERM.
+              g=0
+              while [ "$g" -lt 2 ] && kill -0 "$target" 2>/dev/null; do
+                sleep 1 &
+                nap=$!
+                wait "$nap" 2>/dev/null
+                nap=""
+                g=$((g + 1))
+              done
+              kill -KILL "$target" 2>/dev/null
+              exit 0
+            ) >/dev/null 2>&1 &
+            WATCHDOG_PID=$!
+          }
+
+          # _reap_watchdog <pid> <etiqueta>
+          # Recoge el vigilante lanzado por _bounded_run, en cualquier camino de
+          # salida (exito, rc distinto de cero o timeout): espera acotada a que
+          # salga solo, TERM y KILL si no lo hace, comprobacion con process_gone
+          # y `wait` cuando ya termino. Nunca espera indefinidamente y no deja la
+          # referencia viva sin dejar constancia.
+          _reap_watchdog() {
+            local wd="$1"
+            local label="${2:-comando}"
+            local waited
+            [ -n "$wd" ] || return 0
+            waited=0
+            while [ "$waited" -lt 2 ] && ! process_gone "$wd"; do
+              sleep 1
+              waited=$((waited + 1))
+            done
+            if ! process_gone "$wd"; then
+              kill -TERM "$wd" 2>/dev/null
+              waited=0
+              while [ "$waited" -lt 2 ] && ! process_gone "$wd"; do
+                sleep 1
+                waited=$((waited + 1))
+              done
+            fi
+            if ! process_gone "$wd"; then
+              kill -KILL "$wd" 2>/dev/null
+              waited=0
+              while [ "$waited" -lt 2 ] && ! process_gone "$wd"; do
+                sleep 1
+                waited=$((waited + 1))
+              done
+            fi
+            if process_gone "$wd"; then
+              wait "$wd" 2>/dev/null
+            else
+              note "$label: el vigilante $wd sigue vivo tras TERM y KILL"
+            fi
+          }
+
+          # _bounded_run <segundos> <stdin> <comando...>
+          # Nucleo de bounded/bounded_stdin. El comando corre siempre con stdin
+          # redirigido: ninguno puede quedarse esperando una entrada de teclado.
+          # Al terminar (exito, fallo o timeout) recoge siempre su vigilante.
+          _bounded_run() {
+            local limit="$1"
+            local input="$2"
+            shift 2
+            local flag="$DIAG_DIR/.watchdog.$$.$RANDOM"
+            local child code watchdog timed_out
+            rm -f "$flag"
+            "$@" < "$input" 2>&1 &
+            child=$!
+            watch_stream "$limit" "$child" "$flag"
+            watchdog="$WATCHDOG_PID"
+            wait "$child" 2>/dev/null
+            code=$?
+            timed_out=0
+            if [ -f "$flag" ]; then timed_out=1; fi
+            # Se recoge el vigilante antes de salir, tambien en error y timeout.
+            _reap_watchdog "$watchdog" "$1"
+            rm -f "$flag"
+            if [ "$timed_out" -eq 1 ]; then
+              timeout_log timeout "$limit" "$code" "$*"
+              return 124
+            fi
+            if [ "$code" -ne 0 ]; then
+              timeout_log fallo "$limit" "$code" "$*"
+            fi
+            return "$code"
+          }
+
           # bounded <segundos> <comando...>
           # Tope de tiempo propio: el watchdog deja una marca antes de matar, de
           # modo que el vencimiento ([timeout], rc 124) se distingue de un error
@@ -156,34 +269,682 @@ jobs:
           bounded() {
             local limit="$1"
             shift
-            local flag="$DIAG_DIR/.watchdog.$$.$RANDOM"
-            rm -f "$flag"
-            "$@" 2>&1 &
-            local child=$!
-            # Vigila en pasos de 1 s y termina solo cuando el comando desaparece:
-            # no deja `sleep` vivos ni retiene el stdout del paso.
-            ( i=0
-              while [ "$i" -lt "$limit" ]; do
-                sleep 1
+            _bounded_run "$limit" /dev/null "$@"
+          }
+
+          # bounded_stdin <segundos> <fichero> <comando...>
+          # Como bounded, pero el comando lee stdin del fichero indicado. Se usa
+          # con `xcrun simctl diagnose`, que pide un Enter antes de recopilar.
+          bounded_stdin() {
+            local limit="$1"
+            local input="$2"
+            shift 2
+            _bounded_run "$limit" "$input" "$@"
+          }
+
+          # run_to <fichero> <segundos> <comando...>
+          # Ejecuta el comando acotado y guarda su salida en <fichero>. Antes de lanzar
+          # nada valida el plazo (entero 1-3600) y comprueba con una prueba real
+          # (mktemp + escritura + borrado) que DIAG_DIR admite los ficheros del
+          # vigilante. El comando corre en su propio grupo de procesos y, al vencer el
+          # plazo, se corta el grupo entero (TERM, gracia y KILL) para no dejar
+          # descendientes vivos.
+          run_to() {
+            : "run_to (helpers)"
+            local file="${1:-}"
+            local limit="${2:-}"
+            shift 2 2>/dev/null || true
+            local flag="" ready="" handoff="" armed=""
+            local child="" watchdog="" code=0 timed_out=0 probe="" i=0 g=0
+            local target="" group=0 monitor_was_on=0 grace=2
+
+            # A) Plazo. Solo digitos: se rechazan vacio, signos, decimales y texto. Los
+            # ceros iniciales se normalizan (0030 -> 30) antes de cualquier aritmetica;
+            # despues se rechazan el cero y > 3600.
+            case "$limit" in
+              ''|*[!0-9]*)
+                echo "::warning::run_to: limite no valido ('$limit'): debe ser un entero positivo de segundos; no se ejecuta el comando."
+                return 125
+                ;;
+            esac
+            limit="${limit#"${limit%%[!0]*}"}"
+            if [ -z "$limit" ]; then
+              echo "::warning::run_to: limite 0 no valido: debe ser un entero positivo de segundos; no se ejecuta el comando."
+              return 125
+            fi
+            if [ "${#limit}" -gt 4 ] || [ "$limit" -gt 3600 ]; then
+              echo "::warning::run_to: limite ${limit}s fuera de rango (1-3600); no se ejecuta el comando."
+              return 125
+            fi
+            if [ -z "$file" ]; then
+              echo "::warning::run_to: falta el fichero de salida; no se ejecuta el comando."
+              return 125
+            fi
+
+            # B) DIAG_DIR definido, directorio (existente o creable) y realmente
+            # escribible. `test -w` no basta: se crea un fichero con mktemp, se escribe
+            # contenido, se borra y se comprueba que el borrado funciono.
+            if [ -z "${DIAG_DIR:-}" ]; then
+              echo "::warning::run_to: DIAG_DIR no esta definido; no se ejecuta el comando."
+              return 125
+            fi
+            if [ -e "$DIAG_DIR" ] && [ ! -d "$DIAG_DIR" ]; then
+              echo "::warning::run_to: DIAG_DIR existe y no es un directorio ($DIAG_DIR); no se ejecuta el comando."
+              return 125
+            fi
+            if [ ! -d "$DIAG_DIR" ] && ! mkdir -p "$DIAG_DIR" 2>/dev/null; then
+              echo "::warning::run_to: DIAG_DIR no existe y no se puede crear ($DIAG_DIR); no se ejecuta el comando."
+              return 125
+            fi
+            if [ ! -d "$DIAG_DIR" ]; then
+              echo "::warning::run_to: DIAG_DIR no es un directorio ($DIAG_DIR); no se ejecuta el comando."
+              return 125
+            fi
+            probe="$(mktemp "$DIAG_DIR/.run_to-probe.XXXXXX" 2>/dev/null)" || probe=""
+            if [ -z "$probe" ] || [ ! -f "$probe" ]; then
+              echo "::warning::run_to: mktemp no pudo crear un fichero de prueba en $DIAG_DIR; no se ejecuta el comando."
+              return 125
+            fi
+            if ! printf 'run_to probe\n' > "$probe" 2>/dev/null || [ ! -s "$probe" ]; then
+              echo "::warning::run_to: no se pudo escribir el fichero de prueba en $DIAG_DIR; no se ejecuta el comando."
+              rm -f "$probe" 2>/dev/null || true
+              return 125
+            fi
+            if ! rm -f "$probe" 2>/dev/null || [ -e "$probe" ]; then
+              echo "::warning::run_to: no se pudo eliminar el fichero de prueba de $DIAG_DIR; no se ejecuta el comando."
+              return 125
+            fi
+            if ! mkdir -p "$(dirname "$file")" 2>/dev/null || [ ! -d "$(dirname "$file")" ]; then
+              echo "::warning::run_to: no se pudo preparar el directorio de $file; no se ejecuta el comando."
+              return 125
+            fi
+
+            # C) Marcadores. El de timeout se crea y comprueba antes de arrancar el
+            # vigilante, de modo que el vencimiento siempre pueda dejar marca.
+            flag="$DIAG_DIR/.run_to.flag.$$.$RANDOM"
+            ready="$DIAG_DIR/.run_to.ready.$$.$RANDOM"
+            handoff="$DIAG_DIR/.run_to.pid.$$.$RANDOM"
+            armed="$DIAG_DIR/.run_to.armed.$$.$RANDOM"
+            rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+            if ! : > "$flag" 2>/dev/null || [ ! -f "$flag" ]; then
+              echo "::warning::run_to: no se pudo preparar el marcador de timeout en $DIAG_DIR; no se ejecuta el comando."
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+
+            # D) El vigilante arranca y se confirma ANTES del comando: `ready` avisa de
+            # que esta vivo y `armed` de que ya tiene el PID del hijo y su grupo. Al
+            # vencer escribe `flag`, corta con TERM el grupo, espera la gracia y aplica
+            # KILL al grupo.
+            (
+              set +e
+              trap 'exit 0' TERM INT
+              : > "$ready" || exit 1
+              i=0
+              while [ ! -s "$handoff" ] && [ "$i" -lt 20 ]; do
+                sleep 0.1 2>/dev/null || sleep 1
                 i=$((i + 1))
-                kill -0 "$child" 2>/dev/null || exit 0
               done
-              : > "$flag"
-              kill -KILL "$child" 2>/dev/null ) >/dev/null 2>&1 &
-            local watchdog=$!
-            wait "$child"
-            local code=$?
-            if [ -f "$flag" ]; then
-              kill "$watchdog" 2>/dev/null
-              rm -f "$flag"
-              timeout_log timeout "$limit" "$code" "$*"
+              target=""
+              group=0
+              IFS=' ' read -r target group < "$handoff" 2>/dev/null || true
+              case "$target" in
+                ''|*[!0-9]*) exit 1 ;;
+              esac
+              case "$group" in
+                0|1) ;;
+                *) group=0 ;;
+              esac
+              : > "$armed" || exit 1
+              i=0
+              while [ "$i" -lt "$limit" ]; do
+                sleep 1 2>/dev/null || true
+                i=$((i + 1))
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$target" 2>/dev/null || exit 0
+                else
+                  kill -0 "$target" 2>/dev/null || exit 0
+                fi
+              done
+              printf 'timeout\n' > "$flag" 2>/dev/null \
+                || echo "::warning::run_to: no se pudo escribir el marcador de timeout en $DIAG_DIR" >&2
+              if [ "$group" -eq 1 ]; then
+                kill -TERM -- "-$target" 2>/dev/null
+              else
+                kill -TERM "$target" 2>/dev/null
+              fi
+              g=0
+              while [ "$g" -lt "$grace" ]; do
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$target" 2>/dev/null || break
+                else
+                  kill -0 "$target" 2>/dev/null || break
+                fi
+                sleep 1 2>/dev/null || true
+                g=$((g + 1))
+              done
+              if [ "$group" -eq 1 ]; then
+                kill -KILL -- "-$target" 2>/dev/null
+              else
+                kill -KILL "$target" 2>/dev/null
+              fi
+              exit 0
+            ) >/dev/null 2>&1 &
+            watchdog=$!
+
+            i=0
+            while [ ! -f "$ready" ] && [ "$i" -lt 20 ]; do
+              kill -0 "$watchdog" 2>/dev/null || break
+              sleep 0.1 2>/dev/null || sleep 1
+              i=$((i + 1))
+            done
+            if [ ! -f "$ready" ] || ! kill -0 "$watchdog" 2>/dev/null; then
+              echo "::warning::run_to: el vigilante no se pudo iniciar; no se ejecuta el comando."
+              kill -TERM "$watchdog" 2>/dev/null || true
+              wait "$watchdog" 2>/dev/null || true
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+
+            # E) Comando protegido en su propio grupo de procesos. Si no se le puede
+            # entregar el PID al vigilante se cancela de inmediato y se devuelve 125.
+            case $- in *m*) monitor_was_on=1 ;; esac
+            set -m 2>/dev/null || true
+            case $- in *m*) group=1 ;; *) group=0 ;; esac
+            "$@" < /dev/null > "$file" 2>&1 &
+            child=$!
+            if [ "$monitor_was_on" -eq 1 ]; then
+              :
+            else
+              set +m 2>/dev/null || true
+            fi
+            if ! printf '%s %s\n' "$child" "$group" > "$handoff" 2>/dev/null; then
+              echo "::warning::run_to: no se pudo entregar el PID al vigilante; se cancela el comando."
+              if [ "$group" -eq 1 ]; then
+                kill -TERM -- "-$child" 2>/dev/null || true
+              else
+                kill -TERM "$child" 2>/dev/null || true
+              fi
+              g=0
+              while [ "$g" -lt "$grace" ]; do
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$child" 2>/dev/null || break
+                else
+                  kill -0 "$child" 2>/dev/null || break
+                fi
+                sleep 1 2>/dev/null || true
+                g=$((g + 1))
+              done
+              if [ "$group" -eq 1 ]; then
+                kill -KILL -- "-$child" 2>/dev/null || true
+              else
+                kill -KILL "$child" 2>/dev/null || true
+              fi
+              wait "$child" 2>/dev/null || true
+              kill -TERM "$watchdog" 2>/dev/null || true
+              wait "$watchdog" 2>/dev/null || true
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+            i=0
+            while [ ! -f "$armed" ] && [ "$i" -lt 20 ]; do
+              kill -0 "$watchdog" 2>/dev/null || break
+              sleep 0.1 2>/dev/null || sleep 1
+              i=$((i + 1))
+            done
+            if [ ! -f "$armed" ] || ! kill -0 "$watchdog" 2>/dev/null; then
+              echo "::warning::run_to: el vigilante no confirmo el PID; se cancela el comando."
+              if [ "$group" -eq 1 ]; then
+                kill -TERM -- "-$child" 2>/dev/null || true
+              else
+                kill -TERM "$child" 2>/dev/null || true
+              fi
+              g=0
+              while [ "$g" -lt "$grace" ]; do
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$child" 2>/dev/null || break
+                else
+                  kill -0 "$child" 2>/dev/null || break
+                fi
+                sleep 1 2>/dev/null || true
+                g=$((g + 1))
+              done
+              if [ "$group" -eq 1 ]; then
+                kill -KILL -- "-$child" 2>/dev/null || true
+              else
+                kill -KILL "$child" 2>/dev/null || true
+              fi
+              wait "$child" 2>/dev/null || true
+              kill -TERM "$watchdog" 2>/dev/null || true
+              wait "$watchdog" 2>/dev/null || true
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+
+            # F) Espera, recogida del vigilante (sin huerfanos) y clasificacion.
+            code=0
+            wait "$child" 2>/dev/null || code=$?
+            wait "$watchdog" 2>/dev/null || true
+            if [ -s "$flag" ]; then timed_out=1; fi
+            rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+            if [ "$timed_out" -eq 1 ]; then
+              if command -v timeout_log > /dev/null 2>&1; then
+                timeout_log timeout "$limit" "$code" "$*"
+              fi
+              echo "::warning::run_to: el comando agoto ${limit}s y se corto: $*" >&2
               return 124
             fi
-            kill "$watchdog" 2>/dev/null
             if [ "$code" -ne 0 ]; then
-              timeout_log fallo "$limit" "$code" "$*"
+              if command -v timeout_log > /dev/null 2>&1; then
+                timeout_log fallo "$limit" "$code" "$*"
+              fi
             fi
             return "$code"
+          }
+          RUN_TO_IMPLEMENTATION="helpers"
+
+          # simctl_list <segundos> [<fichero>]
+          # Vuelca `simctl list devices` en un fichero (por defecto
+          # logs/simctl-list.last.txt) y devuelve su codigo de salida.
+          simctl_list() {
+            local limit="${1:-20}"
+            local file="${2:-$DIAG_DIR/logs/simctl-list.last.txt}"
+            run_to "$file" "$limit" xcrun simctl list devices
+          }
+
+          # is_booted <udid> [<fichero>]
+          # Cierto solo si la ultima lista muestra "<udid> (Booted)".
+          is_booted() {
+            local udid="$1"
+            local file="${2:-$DIAG_DIR/logs/simctl-list.last.txt}"
+            [ -n "$udid" ] && [ -f "$file" ] && grep -q "($udid) (Booted)" "$file"
+          }
+
+          # wait_booted <udid> <plazo_segundos> [<etiqueta>]
+          # Espera con plazo absoluto a que el dispositivo figure como Booted.
+          # Cada consulta va acotada y los errores de simctl (durante un arranque
+          # atascado son transitorios) se anotan y se reintentan, sin darlos por
+          # definitivos. Nunca arranca, reinicia ni borra el dispositivo: de eso
+          # se encarga xcodebuild.
+          wait_booted() {
+            local udid="$1"
+            local budget="$2"
+            local label="${3:-dispositivo}"
+            local deadline=$(( $(date +%s) + budget ))
+            local attempt=0
+            local rc=0
+            local state="desconocido"
+            local list="$DIAG_DIR/logs/simctl-list.$label.txt"
+            mkdir -p "$DIAG_DIR/logs" 2>/dev/null
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+              attempt=$((attempt + 1))
+              rc=0
+              simctl_list 20 "$list" || rc=$?
+              if [ "$rc" -eq 0 ] && is_booted "$udid" "$list"; then
+                printf '%s [espera] %s intento=%s rc=0 estado=Booted\n' \
+                  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" "$attempt" \
+                  >> "$DIAG_DIR/timeline.txt"
+                return 0
+              fi
+              if [ "$rc" -eq 0 ]; then
+                if grep -q "($udid)" "$list"; then
+                  state="$(sed -n "s/^.*($udid) \([^)]*\)).*$/\1/p" "$list" | head -1)"
+                  state="${state:-presente}"
+                else
+                  state="no figura en simctl list devices"
+                fi
+              else
+                state="simctl list devices rc=$rc (se reintenta)"
+              fi
+              printf '%s [espera] %s intento=%s rc=%s estado=%s\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" "$attempt" "$rc" "$state" \
+                | tee -a "$DIAG_DIR/timeline.txt" >&2
+              sleep 3
+            done
+            note "$label: plazo de ${budget}s agotado sin confirmar Booted (ultimo estado: $state)"
+            return 1
+          }
+
+          # capture_processes <etiqueta>
+          # Anota PID, tiempo de ejecucion, estado y CPU de los procesos que
+          # gobiernan el arranque de XCTest. No bloquea: `ps` es local.
+          # `pgrep -x` aqui solo localiza PIDs para observarlos; nunca se usa
+          # para terminar procesos.
+          capture_processes() {
+            local label="$1"
+            local out="$DIAG_DIR/snapshots/processes.txt"
+            local csv="$DIAG_DIR/snapshots/processes.csv"
+            local names="CoreSimulatorService Simulator testmanagerd xcodebuild AppGym AppGymTests AppGymTests-Runner"
+            local name pids pid stamp
+            stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            mkdir -p "$DIAG_DIR/snapshots" 2>/dev/null
+            {
+              echo "=== $stamp $label ==="
+              for name in $names; do
+                pids="$(pgrep -x "$name" 2>/dev/null | paste -sd, -)"
+                if [ -n "$pids" ]; then
+                  echo "$name pids=$pids"
+                  ps -o pid,ppid,stat,etime,pcpu,pmem,comm -p "$pids" 2>/dev/null \
+                    | tail -n +2
+                else
+                  echo "$name ausente"
+                fi
+              done
+            } >> "$out" 2>&1
+            for name in $names; do
+              for pid in $(pgrep -x "$name" 2>/dev/null | head -2); do
+                ps -o pid=,stat=,etime=,pcpu= -p "$pid" 2>/dev/null \
+                  | sed "s/^ */$stamp,$name,/" >> "$csv"
+              done
+            done
+          }
+
+          # process_gone <pid>
+          # Cierto si el PID ya no existe o si solo queda su entrada zombie (el
+          # proceso ya termino y su padre la recogera). Permite esperar una
+          # terminacion sin confundir un zombie con un proceso vivo.
+          process_gone() {
+            local pid="$1" stat
+            [ -n "$pid" ] || return 0
+            # `kill -0` es universal; si el PID sigue en la tabla se consulta el
+            # estado para no tratar un zombie como proceso vivo. Si `ps` no
+            # puede informar del estado se asume vivo: nunca se declara
+            # terminado algo que aun existe (eso saltaria el KILL).
+            kill -0 "$pid" 2>/dev/null || return 0
+            stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ')"
+            if [ -z "$stat" ]; then
+              return 1
+            fi
+            [ "${stat#Z}" != "$stat" ]
+          }
+
+          # stream_cleanup: cierre ordenado del colector lanzado con
+          # supervise_stream. Secuencia: TERM al stream y a la pausa activa,
+          # hasta 5 s de espera, KILL si el stream sigue vivo, espera y
+          # comprobacion de las terminaciones reales (incluido el vigilante). El
+          # logs/*.pid que close_stream_pids() usa como respaldo solo se borra si
+          # la terminacion del stream esta confirmada; si el proceso sigue vivo
+          # tras KILL, se conserva y queda anotado en timeline.txt. El vigilante
+          # tiene su propio fichero (logs/<stream>.watchdog.<intento>.pid), que
+          # solo se borra cuando process_gone confirma su terminacion. Ignora
+          # TERM/INT mientras limpia: un segundo corte del paso no puede dejar la
+          # limpieza a medias.
+          stream_cleanup() {
+            trap '' TERM INT
+            local p waited busy alive_stream=0 alive_pause=0 alive_watchdog=0
+            # 1) TERM al stream y a la pausa entre reintentos.
+            for p in ${stream_pid:-} ${stream_pause:-}; do
+              kill -TERM "$p" 2>/dev/null
+            done
+            # 2) Hasta 5 s para que terminen por si mismos.
+            waited=0
+            while [ "$waited" -lt 5 ]; do
+              busy=0
+              for p in ${stream_pid:-} ${stream_pause:-}; do
+                if [ -n "$p" ] && ! process_gone "$p"; then busy=1; fi
+              done
+              if [ "$busy" -eq 0 ]; then break; fi
+              sleep 1
+              waited=$((waited + 1))
+            done
+            # 3) KILL si el stream sigue vivo tras la espera, y espera corta para
+            #    confirmar que esta vez si termino.
+            if [ -n "${stream_pid:-}" ] && ! process_gone "$stream_pid"; then
+              kill -KILL "$stream_pid" 2>/dev/null
+              note "stream: no cedio a TERM en 5 s; cerrado con KILL"
+              # Espera acotada adicional y comprobacion explicita del estado.
+              waited=0
+              while [ "$waited" -lt 3 ] && ! process_gone "$stream_pid"; do
+                sleep 1
+                waited=$((waited + 1))
+              done
+              if ! process_gone "$stream_pid"; then
+                alive_stream=1
+                note "stream: el proceso $stream_pid sigue vivo tras KILL; se conserva el .pid"
+              fi
+            fi
+            if [ -n "${stream_pause:-}" ] && ! process_gone "$stream_pause"; then
+              kill -KILL "$stream_pause" 2>/dev/null
+              waited=0
+              while [ "$waited" -lt 3 ] && ! process_gone "$stream_pause"; do
+                sleep 1
+                waited=$((waited + 1))
+              done
+              if ! process_gone "$stream_pause"; then
+                alive_pause=1
+                note "stream: la pausa $stream_pause sigue viva tras KILL; se conserva su referencia"
+              fi
+            fi
+            # 4) Reap solo de lo que ya termino (asi `wait` no puede quedarse
+            #    bloqueado) y comprobacion explicita de cada terminacion.
+            for p in ${stream_pid:-} ${stream_pause:-}; do
+              if process_gone "$p"; then wait "$p" 2>/dev/null; fi
+            done
+            for p in ${stream_pid:-} ${stream_pause:-}; do
+              if [ -n "$p" ] && ! process_gone "$p"; then
+                note "stream: el proceso $p seguia vivo al terminar la limpieza"
+              fi
+            done
+            if [ "$alive_stream" -eq 0 ]; then stream_pid=""; fi
+            if [ "$alive_pause" -eq 0 ]; then stream_pause=""; fi
+            # 5) El vigilante de ese intento termina solo al desaparecer el
+            #    stream; se espera aqui para no dejarlo vivo ni huerfano.
+            if [ -n "${stream_watchdog:-}" ]; then
+              waited=0
+              while [ "$waited" -lt 3 ] && ! process_gone "$stream_watchdog"; do
+                sleep 1
+                waited=$((waited + 1))
+              done
+              if ! process_gone "$stream_watchdog"; then
+                kill -KILL "$stream_watchdog" 2>/dev/null
+                note "stream: el vigilante $stream_watchdog no termino solo; cerrado con KILL"
+                waited=0
+                while [ "$waited" -lt 3 ] && ! process_gone "$stream_watchdog"; do
+                  sleep 1
+                  waited=$((waited + 1))
+                done
+              fi
+              if process_gone "$stream_watchdog"; then
+                wait "$stream_watchdog" 2>/dev/null
+                stream_watchdog=""
+                if [ -n "${stream_watchdog_out:-}" ]; then
+                  rm -f "$stream_watchdog_out"
+                fi
+              else
+                alive_watchdog=1
+                note "stream: el vigilante $stream_watchdog sigue vivo tras KILL; se conserva $(basename "${stream_watchdog_out:-watchdog.pid}")"
+              fi
+            fi
+            # 6) El PID anotado se borra solo si la terminacion esta confirmada;
+            #    si no, se conserva para que close_stream_pids() y el artefacto
+            #    permitan revisarlo.
+            if [ -n "${stream_out:-}" ]; then
+              if [ "$alive_stream" -eq 0 ]; then
+                rm -f "$stream_out.pid"
+              else
+                note "stream: se conserva $(basename "$stream_out").pid; el PID $stream_pid sigue vivo"
+              fi
+            fi
+            note "stream: cerrado a peticion del paso"
+            exit 0
+          }
+
+          # _close_pid_file <fichero> <stream|watchdog> <deadline>
+          # Cierra el PID anotado en <fichero> sin salirse del plazo absoluto
+          # <deadline> (epoch): TERM, espera, KILL y comprobacion con
+          # process_gone, cada tramo limitado por lo que queda de plazo. El
+          # fichero solo se borra con la terminacion confirmada; si el proceso
+          # sigue vivo o ya no hay plazo, se conserva y se anota PID y motivo.
+          _close_pid_file() {
+            local f="$1"
+            local kind="$2"
+            local deadline="$3"
+            local pid stop alive
+            [ -f "$f" ] || return 0
+            pid="$(head -1 "$f" 2>/dev/null)"
+            case "$pid" in
+              ''|*[!0-9]*) rm -f "$f"; return 0 ;;
+            esac
+            alive=0
+            if ! process_gone "$pid"; then
+              # Tramo TERM: como maximo 3 s y nunca mas alla del plazo global.
+              stop=$(( $(date +%s) + 3 ))
+              if [ "$stop" -gt "$deadline" ]; then stop="$deadline"; fi
+              if [ "$(date +%s)" -ge "$stop" ]; then
+                alive=1
+                note "close_stream_pids: plazo global agotado; queda pendiente el $kind $pid ($(basename "$f"))"
+              else
+                kill -TERM "$pid" 2>/dev/null
+                while [ "$(date +%s)" -lt "$stop" ] && ! process_gone "$pid"; do
+                  sleep 1
+                done
+                if ! process_gone "$pid"; then
+                  # Tramo KILL: otros 3 s como maximo, tambien dentro del plazo.
+                  stop=$(( $(date +%s) + 3 ))
+                  if [ "$stop" -gt "$deadline" ]; then stop="$deadline"; fi
+                  if [ "$(date +%s)" -lt "$stop" ]; then
+                    kill -KILL "$pid" 2>/dev/null
+                    while [ "$(date +%s)" -lt "$stop" ] && ! process_gone "$pid"; do
+                      sleep 1
+                    done
+                  fi
+                fi
+                if ! process_gone "$pid" && [ "$alive" -eq 0 ]; then
+                  alive=1
+                  note "close_stream_pids: el $kind $pid sigue vivo tras TERM y KILL; se conserva $(basename "$f")"
+                fi
+              fi
+            fi
+            # El fichero solo desaparece con la terminacion confirmada.
+            if [ "$alive" -eq 0 ]; then
+              rm -f "$f"
+            fi
+          }
+
+          # close_stream_pids [<segundos>]
+          # Respaldo de stream_cleanup(): cierra los PIDs anotados por los
+          # supervisores, para el caso de un colector que no pudo limpiar (por
+          # ejemplo si murio con KILL). Primero los vigilantes
+          # (logs/*.watchdog.<intento>.pid, uno por intento) y despues los
+          # streams (logs/*.pid, excluyendo los anteriores). Solo usa PIDs
+          # escritos por este workflow, nunca patrones de nombre, ignora zombies
+          # y descarta ficheros con contenido que no sea un PID.
+          #
+          # Presupuesto: un unico plazo absoluto (por defecto 20 s) para TODA la
+          # operacion. Todos los ficheros comparten el mismo reloj, y cada
+          # proceso recibe como maximo el tiempo que quede. Al agotarse, los
+          # ficheros pendientes se conservan y quedan anotados; la funcion sale
+          # sin bloquearse.
+          close_stream_pids() {
+            local budget="${1:-20}"
+            local deadline f
+            deadline=$(( $(date +%s) + budget ))
+            for f in "$DIAG_DIR"/logs/*.watchdog.*.pid; do
+              _close_pid_file "$f" watchdog "$deadline"
+            done
+            for f in "$DIAG_DIR"/logs/*.pid; do
+              case "$f" in
+                *.watchdog.*.pid) continue ;;
+              esac
+              _close_pid_file "$f" stream "$deadline"
+            done
+          }
+
+          # supervise_stream <etiqueta> <fichero> <plazo_segundos> <comando...>
+          # Mantiene <comando> vivo hasta <plazo> segundos. `simctl spawn ...
+          # log stream` (y `log stream` en el host) terminan o fallan a los pocos
+          # segundos cuando los servicios del dispositivo aun no responden: antes
+          # eso daba el stream por terminado y se perdia la ventana del fallo.
+          # Aqui cada intento se vigila con watch_stream, su codigo se anota y se
+          # reintenta con espera creciente, sin pasar del plazo ni dejar procesos
+          # vivos.
+          supervise_stream() {
+            local label="$1"
+            local out="$2"
+            local budget="$3"
+            shift 3
+            local deadline=$(( $(date +%s) + budget ))
+            local attempt=0
+            local remaining=0
+            local rc=0
+            local pause=0
+            local waited=0
+            local watchdog_file=""
+            stream_pid=""
+            stream_pause=""
+            stream_watchdog=""
+            stream_watchdog_out=""
+            stream_out="$out"
+            trap stream_cleanup TERM INT
+            mark "$label: supervisor iniciado (plazo ${budget}s)"
+            while :; do
+              remaining=$(( deadline - $(date +%s) ))
+              if [ "$remaining" -lt 5 ]; then
+                note "$label: plazo de ${budget}s agotado"
+                break
+              fi
+              attempt=$((attempt + 1))
+              printf '%s [stream] %s intento=%s restante=%ss\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" "$attempt" "$remaining" >> "$out"
+              "$@" < /dev/null >> "$out" 2>&1 &
+              stream_pid=$!
+              # PID del stream anotado junto al log: si el colector muere con
+              # KILL, el paso puede cerrar exactamente ese proceso.
+              printf '%s\n' "$stream_pid" > "$out.pid"
+              watch_stream "$remaining" "$stream_pid"
+              stream_watchdog="$WATCHDOG_PID"
+              # PID del vigilante anotado en su propio fichero: sobrevive al shell
+              # del colector y permite al padre localizarlo y reintentar.
+              watchdog_file="$out.watchdog.$attempt.pid"
+              printf '%s\n' "$stream_watchdog" > "$watchdog_file"
+              stream_watchdog_out="$watchdog_file"
+              wait "$stream_pid" 2>/dev/null
+              rc=$?
+              stream_pid=""
+              # El vigilante del intento termina solo al desaparecer el stream
+              # (<=1 s). Se espera de forma acotada: no se deja vivo entre
+              # intentos ni se bloquea el supervisor si no cediera.
+              waited=0
+              while [ "$waited" -lt 3 ] && ! process_gone "$stream_watchdog"; do
+                sleep 1
+                waited=$((waited + 1))
+              done
+              # Si no termina en 3 s: KILL, espera acotada y confirmacion. Nunca
+              # se descarta su referencia sin dejar constancia.
+              if ! process_gone "$stream_watchdog"; then
+                kill -KILL "$stream_watchdog" 2>/dev/null
+                note "$label: el vigilante $stream_watchdog no termino en 3 s; cerrado con KILL"
+                waited=0
+                while [ "$waited" -lt 3 ] && ! process_gone "$stream_watchdog"; do
+                  sleep 1
+                  waited=$((waited + 1))
+                done
+              fi
+              if process_gone "$stream_watchdog"; then
+                wait "$stream_watchdog" 2>/dev/null
+                stream_watchdog=""
+                rm -f "$watchdog_file"
+              else
+                note "$label: el vigilante $stream_watchdog sigue vivo tras KILL; se conserva $(basename "$watchdog_file")"
+              fi
+              rm -f "$out.pid"
+              printf '%s [stream] %s intento=%s termina rc=%s\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" "$attempt" "$rc" >> "$out"
+              remaining=$(( deadline - $(date +%s) ))
+              if [ "$remaining" -lt 5 ]; then
+                note "$label: plazo de ${budget}s agotado (ultimo intento rc=$rc)"
+                break
+              fi
+              pause=$(( attempt < 6 ? attempt * 5 : 30 ))
+              if [ "$pause" -gt "$remaining" ]; then pause="$remaining"; fi
+              note "$label: intento $attempt termino rc=$rc; reintento en ${pause}s"
+              sleep "$pause" &
+              stream_pause=$!
+              wait "$stream_pause" 2>/dev/null
+              stream_pause=""
+            done
+            note "$label: stream terminado tras $attempt intento(s)"
+            trap - TERM INT
           }
           SH
           . "$DIAG_DIR/bin/diagnostic-helpers.sh"
@@ -210,134 +971,623 @@ jobs:
 
           # Stream del log del simulador, limitado a los procesos que gobiernan
           # el arranque del test y el lanzamiento de la app. Espera a que
-          # xcodebuild encienda el dispositivo (maximo 6 minutos) y cierra su
-          # stream cuando el paso termina este script.
+          # xcodebuild encienda el dispositivo y mantiene el stream vivo con
+          # reintentos hasta el plazo del paso.
           cat > "$DIAG_DIR/bin/sim-logstream.sh" <<'SH'
           #!/bin/bash
           # Sigue el log del simulador para los procesos del arranque de XCTest.
           set +e
           out="$DIAG_DIR/logs/simulator-logstream.txt"
-          timeout_marker="$DIAG_DIR/logs/simulator-logstream.timeout.$$"
-          rm -f "$timeout_marker"
 
-          # Helpers compartidos: mark/note/timeout_log/bounded.
+          # Helpers compartidos: mark/note/timeout_log/bounded/run_to/
+          # simctl_list/is_booted/wait_booted/supervise_stream.
           if [ ! -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
             echo "sin diagnostic-helpers.sh: recogida cancelada" >&2
             exit 0
           fi
           . "$DIAG_DIR/bin/diagnostic-helpers.sh"
 
-          # Cada consulta del dispositivo va acotada y la espera entera tiene un
-          # plazo absoluto de 360 s: con CoreSimulator atascado no puede
-          # alargarse a 180 consultas de 20 s cada una. Al vencer el plazo se
-          # anota el motivo y se sigue con el resto del script.
-          booted=0
-          wait_deadline=$(( $(date +%s) + 360 ))
-          while [ "$(date +%s)" -lt "$wait_deadline" ]; do
-            if bounded 20 xcrun simctl list devices 2>/dev/null | grep -q "$UDID.*Booted"; then
-              booted=1
-              break
-            fi
-            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) esperando a que arranque $UDID" >> "$out"
-            sleep 2
-          done
-          if [ "$booted" -eq 1 ]; then
-            note "sim-logstream: $UDID arrancado"
+          # Cierre ordenado desde el primer momento: si el paso corta el colector
+          # durante la espera del dispositivo, no queda nada a medias.
+          trap stream_cleanup TERM INT
+
+          # 1) Confirmar Booted antes de las operaciones que necesitan un
+          # dispositivo operativo. Cada consulta va acotada y los errores de
+          # simctl durante el arranque se reintentan hasta el plazo absoluto de
+          # 360 s: un error aislado no se toma como fallo definitivo. Aqui no se
+          # arranca ni se reinicia el dispositivo: lo arranca xcodebuild y
+          # reiniciarlo competiria con el.
+          started=$(date +%s)
+          if wait_booted "$UDID" 360 sim-logstream; then
+            note "sim-logstream: $UDID Booted confirmado"
           else
-            note "sim-logstream: 360 s de espera agotados sin $UDID arrancado; se abre el stream igualmente"
+            note "sim-logstream: sin confirmacion de Booted; se abre el stream igualmente"
           fi
-          note "sim-logstream: abriendo stream (limite 2100 s)"
-          # El stream se lanza como hijo con watchdog: si se bloquea se corta a
-          # los 2100 s y, si el paso cierra este script, el trap cierra tambien
-          # el stream. Asi matar el PID anotado en pids.txt limpia todo.
-          xcrun simctl spawn "$UDID" log stream --style compact --level debug \
-            --predicate 'process == "testmanagerd" OR process == "SpringBoard" OR process == "runningboardd" OR process == "backboardd" OR process == "AppGym" OR process == "AppGymTests"' \
-            >> "$out" &
-          stream_pid=$!
-          # Vigila el stream en pasos de 1 s: si el stream termina antes, el
-          # watchdog sale solo y no queda ningun `sleep` huerfano.
-          ( i=0
-            while [ "$i" -lt 2100 ]; do
-              sleep 1
-              i=$((i + 1))
-              kill -0 "$stream_pid" 2>/dev/null || exit 0
-            done
-            : > "$timeout_marker"
-            kill -TERM "$stream_pid" 2>/dev/null
-            sleep 5
-            kill -KILL "$stream_pid" 2>/dev/null ) >/dev/null 2>&1 &
-          watchdog=$!
-          trap 'kill -TERM "$stream_pid" 2>/dev/null; kill "$watchdog" 2>/dev/null' TERM INT
-          wait "$stream_pid"
-          kill "$watchdog" 2>/dev/null
-          if [ -f "$timeout_marker" ]; then
-            note "sim-logstream: stream cortado al agotar los 2100 s"
-          fi
-          note "sim-logstream: stream terminado"
+
+          # 2) Supervisor del stream. `simctl spawn ... log stream` termina o
+          # falla a los pocos segundos cuando los servicios del dispositivo aun
+          # no responden; antes eso daba el stream por terminado y se perdia
+          # justo la ventana del fallo. Ahora se reinicia con espera creciente
+          # hasta un plazo absoluto de 1700 s (menos que los 1800 s del paso,
+          # para que se cierre solo en vez de morir con el) o hasta que el paso
+          # lo cierre por el PID anotado en pids.txt (nunca por patron).
+          stream_budget=1700
+          elapsed=$(( $(date +%s) - started ))
+          stream_left=$(( stream_budget - elapsed ))
+          if [ "$stream_left" -lt 30 ]; then stream_left=30; fi
+          supervise_stream sim-logstream "$out" "$stream_left" \
+            xcrun simctl spawn "$UDID" log stream --style compact --level debug \
+              --predicate 'process == "testmanagerd" OR process == "SpringBoard" OR process == "runningboardd" OR process == "backboardd" OR process == "CoreSimulatorBridge" OR process == "launchd_sim" OR process == "AppGym" OR process == "AppGymTests" OR process == "AppGymTests-Runner"'
           SH
 
           # Stream del log unificado del host: CoreSimulator y testmanagerd
-          # explican por que no llega a lanzarse el proceso de la app.
+          # explican por que no llega a lanzarse el proceso de la app. `log
+          # stream` tambien puede terminar antes de tiempo, asi que va bajo el
+          # mismo supervisor que el del simulador.
           cat > "$DIAG_DIR/bin/host-logstream.sh" <<'SH'
           #!/bin/bash
           # Sigue el log unificado del host para CoreSimulator, testmanagerd y xcodebuild.
           set +e
           out="$DIAG_DIR/logs/host-logstream.txt"
-          exec log stream --style compact --level debug \
-            --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym"' \
-            >> "$out" 2>&1
+          if [ ! -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
+            echo "sin diagnostic-helpers.sh: recogida cancelada" >&2
+            exit 0
+          fi
+          . "$DIAG_DIR/bin/diagnostic-helpers.sh"
+          # 1700 s: menos que los 1800 s del paso, asi que el supervisor se
+          # cierra solo antes de que el runner corte el paso a los 30 minutos.
+          supervise_stream host-logstream "$out" 1700 \
+            log stream --style compact --level debug \
+              --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym"'
           SH
 
           # Estado periodico del simulador y de los procesos. Cada 5 minutos
-          # ademas toma una muestra de pila de xcodebuild y testmanagerd: si el
-          # arranque del test se queda bloqueado, la muestra dice en que llamada
-          # esta esperando, incluso si el paso se corta a los 30 minutos.
+          # ademas toma muestras de pila de xcodebuild, testmanagerd y de los
+          # procesos de la app: si el arranque del test se queda bloqueado, la
+          # muestra dice en que llamada esta esperando, incluso si el paso se
+          # corta a los 30 minutos.
           cat > "$DIAG_DIR/bin/snapshot-loop.sh" <<'SH'
           #!/bin/bash
           # Estado del simulador y de los procesos cada 20 s; muestras cada 5 minutos.
           set +e
           out="$DIAG_DIR/snapshots/loop.txt"
+          # 1700 s: menos que los 1800 s del paso Run XCTest, para que el bucle
+          # termine solo y no dependa de que el runner lo mate.
+          budget=1700
+          stack_interval=300
 
-          # Helpers compartidos: mark/note/timeout_log/bounded.
+          # Helpers compartidos: mark/note/timeout_log/bounded/run_to/
+          # simctl_list/is_booted/capture_processes.
           if [ ! -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
             echo "sin diagnostic-helpers.sh: recogida cancelada" >&2
             exit 0
           fi
           . "$DIAG_DIR/bin/diagnostic-helpers.sh"
 
+          # Plazo absoluto: el bucle no sobrevive al presupuesto del paso y el
+          # trap lo cierra ordenadamente cuando el paso lo mata por PID.
+          deadline=$(( $(date +%s) + budget ))
+          trap 'note "snapshot-loop: cerrado a peticion del paso"; exit 0' TERM INT
           n=0
-          while true; do
+          last_stack=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
             n=$((n + 1))
+            now="$(date +%s)"
             {
               echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) muestra=$n ==="
-              echo "-- dispositivos --"
-              bounded 20 xcrun simctl list devices | sed -n '1,40p'
-              echo "-- procesos --"
-              ps -Ao pid,ppid,stat,etime,pcpu,comm \
-                | grep -E 'xcodebuild|testmanagerd|CoreSimulator|AppGym|SpringBoard' | grep -v grep
-              if [ -n "$UDID" ]; then
-                echo "-- servicios de XCTest en el simulador --"
-                bounded 20 xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -E 'AppGym|testmanagerd|XCTest'
+              echo "-- estado del dispositivo ($UDID) --"
+              simctl_list 20 > /dev/null 2>&1
+              if is_booted "$UDID"; then
+                echo "state=Booted"
+              else
+                echo "state=no Booted (o simctl sin respuesta)"
+                sed -n "/$UDID/p" "$DIAG_DIR/logs/simctl-list.last.txt" 2>/dev/null | head -3
               fi
+              head -40 "$DIAG_DIR/logs/simctl-list.last.txt" 2>/dev/null
+              echo "-- procesos del host --"
+              capture_processes "muestra=$n"
+              tail -n 30 "$DIAG_DIR/snapshots/processes.txt" 2>/dev/null
             } >> "$out" 2>&1
 
-            if [ $((n % 15)) -eq 0 ]; then
-              # `pgrep -x` aqui solo localiza el PID que se va a muestrear: nunca
-              # se usa para terminar procesos.
-              for name in xcodebuild testmanagerd; do
-                pid="$(pgrep -x "$name" | head -1)"
-                if [ -n "$pid" ]; then
-                  bounded 60 sample "$pid" 2 1 -file "$DIAG_DIR/snapshots/sample-${name}-${n}.txt" >> "$out" 2>&1
+            if [ -n "$UDID" ]; then
+              # Procesos dentro del dispositivo: ahi viven el test runner y la
+              # app. Cada consulta va acotada; si `simctl spawn` falla por los
+              # servicios inestables, se anota su codigo y se sigue.
+              {
+                echo "-- procesos del dispositivo --"
+                run_to "$DIAG_DIR/logs/device-ps.$n.txt" 20 \
+                  xcrun simctl spawn "$UDID" ps -Ao pid,ppid,etime,stat,comm
+                head -40 "$DIAG_DIR/logs/device-ps.$n.txt" 2>/dev/null
+                if [ $((n % 3)) -eq 0 ]; then
+                  echo "-- servicios de XCTest en el simulador --"
+                  run_to "$DIAG_DIR/logs/device-launchctl.$n.txt" 20 \
+                    xcrun simctl spawn "$UDID" launchctl list
+                  grep -E 'AppGym|testmanagerd|XCTest' \
+                    "$DIAG_DIR/logs/device-launchctl.$n.txt" 2>/dev/null | head -30
                 fi
+              } >> "$out" 2>&1
+            fi
+
+            if [ $((now - last_stack)) -ge "$stack_interval" ]; then
+              last_stack="$now"
+              # `sample` necesita permisos sobre el proceso: testmanagerd suele
+              # ser de root y rechazarlo; el error queda anotado y el bucle sigue.
+              for name in xcodebuild testmanagerd AppGym AppGymTests AppGymTests-Runner CoreSimulatorService; do
+                for pid in $(pgrep -x "$name" 2>/dev/null | head -2); do
+                  run_to "$DIAG_DIR/snapshots/sample-${name}-${now}-${pid}.txt" 30 \
+                    sample "$pid" 1 1
+                done
               done
+              mark "snapshot-loop: muestras de pila tomadas en la muestra $n"
             fi
             sleep 20
           done
+          note "snapshot-loop: plazo de ${budget}s agotado tras $n muestras"
           SH
 
           mark "diagnostico: preparacion terminada"
           ls -la "$DIAG_DIR/bin" >> "$DIAG_DIR/timeline.txt" 2>&1
           exit 0
+
+      # Pruebas de las DOS implementaciones de `run_to()` (bash, no XCTest: no
+      # alteran el recuento de 289). Extraen el respaldo inline y el
+      # diagnostic-helpers.sh generado por Prepare, comprueban cual queda activo
+      # tras cargar los helpers y ejecutan la misma bateria contra ambos,
+      # incluido un descendiente que no debe sobrevivir al timeout.
+      - name: Self-test run_to guardrails
+        run: |
+          set +e
+          workflow="${GITHUB_WORKSPACE:-$PWD}/.github/workflows/build.yml"
+          test_root="${RUNNER_TEMP:-/tmp}/run_to_selftest"
+          rm -rf "$test_root"
+          mkdir -p "$test_root"
+
+          # Implementacion de respaldo: funcion inline del paso Run XCTest.
+          fallback_source="$test_root/run_to_fallback.sh"
+          awk '/^[[:space:]]*# >>> run_to fallback selftest >>>[[:space:]]*$/{on=1;next} /^[[:space:]]*# <<< run_to fallback selftest <<<[[:space:]]*$/{on=0} on' \
+            "$workflow" | sed 's/^          //' > "$fallback_source"
+
+          # Implementacion activa: diagnostic-helpers.sh, generado en Prepare.
+          helper_source="$test_root/diagnostic-helpers.sh"
+          awk '/diagnostic-helpers\.sh" <<.SH.$/{on=1;next} on && /^[[:space:]]*SH$/{on=0} on' \
+            "$workflow" | sed 's/^          //' > "$helper_source"
+
+          if [ ! -s "$fallback_source" ] || [ ! -s "$helper_source" ]; then
+            echo "::error::No se pudieron extraer las dos implementaciones de run_to() del workflow."
+            exit 1
+          fi
+          if ! bash -n "$fallback_source" || ! bash -n "$helper_source"; then
+            echo "::error::Alguna de las dos implementaciones extraidas no pasa bash -n."
+            exit 1
+          fi
+
+          pass=0
+          fail=0
+          ok() { pass=$((pass + 1)); printf 'PASS  %s\n' "$1"; }
+          ko() { fail=$((fail + 1)); printf 'FAIL  %s\n' "$1"; }
+          expect() {
+            if [ "$2" = "$3" ]; then
+              ok "$1"
+            else
+              ko "$1 (esperado '$2', obtenido '$3')"
+            fi
+          }
+          marker=""
+          check_not_run() {
+            if [ -e "$marker" ]; then
+              ko "$1: el comando NO debe ejecutarse"
+            else
+              ok "$1: el comando no se ejecuta"
+            fi
+          }
+          check_no_watchdog() {
+            if [ -n "$(jobs -p)" ]; then
+              ko "$1: quedan procesos de vigilancia"
+            else
+              ok "$1: sin procesos de vigilancia"
+            fi
+          }
+          # process_alive <pid>
+          # Cierto solo si el PID existe y no es un zombie. En macOS se consulta
+          # `ps`; en Git Bash/Linux, /proc. Si no se puede leer el estado se
+          # asume vivo (conservador: nunca se declara muerto algo que aun existe).
+          process_alive() {
+            local pid="$1" stat
+            [ -n "$pid" ] || return 1
+            kill -0 "$pid" 2>/dev/null || return 1
+            if [ -r "/proc/$pid/stat" ]; then
+              stat="$(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null)"
+            else
+              stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ')"
+            fi
+            if [ -z "$stat" ]; then
+              return 0
+            fi
+            [ "${stat#Z}" = "$stat" ]
+          }
+          check_active() {
+            local label="$1" expected="$2" active
+            active="$(type run_to 2>/dev/null)"
+            if [ "$RUN_TO_IMPLEMENTATION" = "$expected" ] && printf '%s' "$active" | grep -q "run_to ($expected)"; then
+              ok "$label: implementacion activa = $expected"
+            else
+              ko "$label: implementacion activa distinta de $expected"
+              printf '%s\n' "$active" | sed -n '1,4p'
+            fi
+          }
+
+          run_suite() {
+            local label="$1"
+            local base="$2"
+            local value tag rc timeout_start timeout_elapsed timeout_out timeout_pid timeout_child
+            local desc_out desc_pid desc_child blocked_dir file_as_dir readonly_dir leftovers
+            local orphan_out orphan_parent orphan_pid orphan_child orphan_elapsed orphan_start
+            local kill_out kill_parent kill_desc kill_child
+            export DIAG_DIR="$base/diag"
+            mkdir -p "$DIAG_DIR"
+
+            # 1) limits invalidos: 125 y el comando marcador no se ejecuta.
+            for value in 0 -1 abc 1.5 3601; do
+              tag="$(printf '%s' "$value" | tr -c 'A-Za-z0-9' '_')"
+              marker="$base/marker.limit.$tag"
+              rm -f "$marker"
+              run_to "$DIAG_DIR/out.limit.$tag.txt" "$value" sh -c ': > "$1"' _ "$marker"
+              rc=$?
+              expect "$label limit=$value: rc 125" 125 "$rc"
+              check_not_run "$label limit=$value"
+            done
+            check_no_watchdog "$label limits rechazados"
+
+            # 2) 30 y 0030 se aceptan (los ceros iniciales se normalizan).
+            for value in 30 0030; do
+              tag="$(printf '%s' "$value" | tr -c 'A-Za-z0-9' '_')"
+              marker="$base/marker.ok.$tag"
+              rm -f "$marker"
+              run_to "$DIAG_DIR/out.ok.$tag.txt" "$value" sh -c ': > "$1"' _ "$marker"
+              rc=$?
+              expect "$label limit=$value: aceptado (rc 0)" 0 "$rc"
+              if [ -e "$marker" ]; then
+                ok "$label limit=$value: el comando se ejecuta"
+              else
+                ko "$label limit=$value: el comando se ejecuta"
+              fi
+            done
+
+            # 3) DIAG_DIR no definido.
+            marker="$base/marker.nodiag"
+            rm -f "$marker"
+            ( unset DIAG_DIR; run_to "$base/out.nodiag.txt" 5 sh -c ': > "$1"' _ "$marker" )
+            rc=$?
+            expect "$label DIAG_DIR no definido: rc 125" 125 "$rc"
+            check_not_run "$label DIAG_DIR no definido"
+
+            # 4) DIAG_DIR inexistente y no creable (mock de mkdir).
+            blocked_dir="$base/no-crear/diag"
+            rm -rf "$base/no-crear"
+            marker="$base/marker.nocreate"
+            rm -f "$marker"
+            mkdir() {
+              case "$*" in
+                *"$blocked_dir"*) return 1 ;;
+              esac
+              command mkdir "$@"
+            }
+            DIAG_DIR="$blocked_dir" run_to "$base/out.nocreate.txt" 5 sh -c ': > "$1"' _ "$marker"
+            rc=$?
+            unset -f mkdir
+            expect "$label DIAG_DIR inexistente y no creable: rc 125" 125 "$rc"
+            check_not_run "$label DIAG_DIR inexistente y no creable"
+
+            # 5) DIAG_DIR apunta a un fichero (caso real, sin mocks).
+            file_as_dir="$base/no-es-directorio"
+            : > "$file_as_dir"
+            marker="$base/marker.file"
+            rm -f "$marker"
+            DIAG_DIR="$file_as_dir" run_to "$base/out.file.txt" 5 sh -c ': > "$1"' _ "$marker"
+            rc=$?
+            expect "$label DIAG_DIR es un fichero: rc 125" 125 "$rc"
+            check_not_run "$label DIAG_DIR es un fichero"
+
+            # 6) Directorio no escribible: mktemp simula EACCES solo en el.
+            readonly_dir="$base/solo-lectura"
+            mkdir -p "$readonly_dir"
+            marker="$base/marker.readonly"
+            rm -f "$marker"
+            mktemp() {
+              case "$1" in
+                "$readonly_dir"/*) return 1 ;;
+              esac
+              command mktemp "$@"
+            }
+            DIAG_DIR="$readonly_dir" run_to "$base/out.readonly.txt" 5 sh -c ': > "$1"' _ "$marker"
+            rc=$?
+            unset -f mktemp
+            expect "$label directorio no escribible: rc 125" 125 "$rc"
+            check_not_run "$label directorio no escribible"
+
+            # 7) mktemp falla.
+            marker="$base/marker.mktemp"
+            rm -f "$marker"
+            mktemp() { return 1; }
+            run_to "$DIAG_DIR/out.mktemp.txt" 5 sh -c ': > "$1"' _ "$marker"
+            rc=$?
+            unset -f mktemp
+            expect "$label mktemp falla: rc 125" 125 "$rc"
+            check_not_run "$label mktemp falla"
+
+            # 8) La escritura del fichero de prueba falla.
+            marker="$base/marker.write"
+            rm -f "$marker"
+            printf() {
+              case "$1" in
+                'run_to probe'*) return 1 ;;
+              esac
+              builtin printf "$@"
+            }
+            run_to "$DIAG_DIR/out.write.txt" 5 sh -c ': > "$1"' _ "$marker"
+            rc=$?
+            unset -f printf
+            command rm -f "$DIAG_DIR"/.run_to-probe.* 2>/dev/null || true
+            expect "$label escritura de prueba falla: rc 125" 125 "$rc"
+            check_not_run "$label escritura de prueba falla"
+
+            # 9) El borrado del fichero de prueba falla.
+            marker="$base/marker.rm"
+            rm -f "$marker"
+            rm() {
+              case "$*" in
+                *".run_to-probe."*) return 1 ;;
+              esac
+              command rm "$@"
+            }
+            run_to "$DIAG_DIR/out.rm.txt" 5 sh -c ': > "$1"' _ "$marker"
+            rc=$?
+            unset -f rm
+            command rm -f "$DIAG_DIR"/.run_to-probe.* 2>/dev/null || true
+            expect "$label borrado de la prueba falla: rc 125" 125 "$rc"
+            check_not_run "$label borrado de la prueba falla"
+            check_no_watchdog "$label fallos de DIAG_DIR"
+
+            # 10) Comando que supera el limite: 124 y proceso terminado.
+            timeout_pid="$base/timeout.pid"
+            rm -f "$timeout_pid"
+            timeout_out="$base/timeout.jobs"
+            timeout_start="$(date +%s)"
+            (
+              run_to "$DIAG_DIR/out.timeout.txt" 1 sh -c 'echo $$ > "$1"; exec sleep 30' _ "$timeout_pid"
+              echo "rc=$?"
+              jobs -p
+            ) > "$timeout_out" 2>&1
+            timeout_elapsed=$(( $(date +%s) - timeout_start ))
+            rc="$(sed -n 's/^rc=//p' "$timeout_out")"
+            expect "$label comando que supera el limite: rc 124" 124 "$rc"
+            if [ "$timeout_elapsed" -le 15 ]; then
+              ok "$label timeout: resuelto en ${timeout_elapsed}s (sin bloqueo)"
+            else
+              ko "$label timeout: tardo ${timeout_elapsed}s"
+            fi
+            timeout_child="$(cat "$timeout_pid" 2>/dev/null)"
+            if [ -n "$timeout_child" ] && kill -0 "$timeout_child" 2>/dev/null; then
+              ko "$label timeout: el proceso protegido sigue vivo (pid $timeout_child)"
+              kill -KILL "$timeout_child" 2>/dev/null || true
+            else
+              ok "$label timeout: el proceso protegido termino"
+            fi
+            if sed -n '/^[0-9][0-9]*$/p' "$timeout_out" | grep -q .; then
+              ko "$label timeout: quedan procesos de vigilancia"
+            else
+              ok "$label timeout: sin procesos de vigilancia"
+            fi
+
+            # 11) Descendiente: el comando lanza un hijo y espera; al vencer el plazo no
+            # debe quedar vivo ninguno de los dos.
+            desc_pid="$base/descendant.pid"
+            rm -f "$desc_pid"
+            desc_out="$base/descendant.jobs"
+            (
+              run_to "$DIAG_DIR/out.descendant.txt" 1 sh -c 'sleep 30 & echo $! > "$1"; wait' _ "$desc_pid"
+              echo "rc=$?"
+              jobs -p
+            ) > "$desc_out" 2>&1
+            rc="$(sed -n 's/^rc=//p' "$desc_out")"
+            expect "$label descendiente: rc 124" 124 "$rc"
+            desc_child="$(cat "$desc_pid" 2>/dev/null)"
+            if [ -n "$desc_child" ] && kill -0 "$desc_child" 2>/dev/null; then
+              ko "$label descendiente: sigue vivo tras el timeout (pid $desc_child)"
+              kill -KILL "$desc_child" 2>/dev/null || true
+            else
+              ok "$label descendiente: terminado tras el timeout"
+            fi
+            if sed -n '/^[0-9][0-9]*$/p' "$desc_out" | grep -q .; then
+              ko "$label descendiente: quedan procesos de vigilancia"
+            else
+              ok "$label descendiente: sin procesos de vigilancia"
+            fi
+
+            # 11b) El padre termina antes que el descendiente: el watchdog no debe
+            # confundir la desaparicion del lider con la del grupo. El plazo sigue
+            # contando desde el arranque y, al vencer, se corta el grupo completo.
+            orphan_out="$base/orphan.jobs"
+            orphan_parent="$base/orphan.parent.pid"
+            orphan_pid="$base/orphan.descendant.pid"
+            rm -f "$orphan_parent" "$orphan_pid"
+            orphan_start="$(date +%s)"
+            (
+              run_to "$DIAG_DIR/out.orphan.txt" 1 sh -c 'echo $$ > "$1"; sleep 30 & echo $! > "$2"' _ "$orphan_parent" "$orphan_pid"
+              echo "rc=$?"
+              jobs -p
+            ) > "$orphan_out" 2>&1
+            orphan_elapsed=$(( $(date +%s) - orphan_start ))
+            rc="$(sed -n 's/^rc=//p' "$orphan_out")"
+            expect "$label padre termina antes: rc 124" 124 "$rc"
+            if [ "$orphan_elapsed" -ge 1 ]; then
+              ok "$label padre termina antes: el watchdog espero al plazo (${orphan_elapsed}s)"
+            else
+              ko "$label padre termina antes: el watchdog termino prematuramente (${orphan_elapsed}s)"
+            fi
+            orphan_child="$(cat "$orphan_parent" 2>/dev/null)"
+            if [ -n "$orphan_child" ] && process_alive "$orphan_child"; then
+              ko "$label padre termina antes: el padre sigue vivo (pid $orphan_child)"
+              kill -KILL "$orphan_child" 2>/dev/null || true
+            else
+              ok "$label padre termina antes: el padre termino antes del descendiente"
+            fi
+            orphan_child="$(cat "$orphan_pid" 2>/dev/null)"
+            if [ -n "$orphan_child" ] && process_alive "$orphan_child"; then
+              ko "$label padre termina antes: el descendiente sigue vivo (pid $orphan_child)"
+              kill -KILL "$orphan_child" 2>/dev/null || true
+            else
+              ok "$label padre termina antes: el descendiente termino"
+            fi
+            if sed -n '/^[0-9][0-9]*$/p' "$orphan_out" | grep -q .; then
+              ko "$label padre termina antes: quedan procesos de vigilancia"
+            else
+              ok "$label padre termina antes: sin procesos de vigilancia"
+            fi
+            leftovers="$(find "$DIAG_DIR" -maxdepth 1 -name '.run_to.*' 2>/dev/null | wc -l | tr -d ' ')"
+            expect "$label padre termina antes: sin marcadores temporales" 0 "$leftovers"
+
+            # 11c) El comando y su descendiente ignoran TERM: la gracia no basta
+            # y el watchdog debe aplicar KILL al grupo completo.
+            kill_out="$base/kill.jobs"
+            kill_parent="$base/kill.parent.pid"
+            kill_desc="$base/kill.descendant.pid"
+            rm -f "$kill_parent" "$kill_desc"
+            (
+              run_to "$DIAG_DIR/out.kill.txt" 1 sh -c 'trap "" TERM; echo $$ > "$1"; sleep 30 & echo $! > "$2"; wait' _ "$kill_parent" "$kill_desc"
+              echo "rc=$?"
+              jobs -p
+            ) > "$kill_out" 2>&1
+            rc="$(sed -n 's/^rc=//p' "$kill_out")"
+            expect "$label ignora TERM: rc 124" 124 "$rc"
+            kill_child="$(cat "$kill_parent" 2>/dev/null)"
+            if [ -n "$kill_child" ] && process_alive "$kill_child"; then
+              ko "$label ignora TERM: el padre sigue vivo (pid $kill_child)"
+              kill -KILL "$kill_child" 2>/dev/null || true
+            else
+              ok "$label ignora TERM: el padre termino con KILL"
+            fi
+            kill_child="$(cat "$kill_desc" 2>/dev/null)"
+            if [ -n "$kill_child" ] && process_alive "$kill_child"; then
+              ko "$label ignora TERM: el descendiente sigue vivo (pid $kill_child)"
+              kill -KILL "$kill_child" 2>/dev/null || true
+            else
+              ok "$label ignora TERM: el descendiente termino con KILL"
+            fi
+            if sed -n '/^[0-9][0-9]*$/p' "$kill_out" | grep -q .; then
+              ko "$label ignora TERM: quedan procesos de vigilancia"
+            else
+              ok "$label ignora TERM: sin procesos de vigilancia"
+            fi
+            leftovers="$(find "$DIAG_DIR" -maxdepth 1 -name '.run_to.*' 2>/dev/null | wc -l | tr -d ' ')"
+            expect "$label ignora TERM: sin marcadores temporales" 0 "$leftovers"
+
+            # 12) Comando que termina antes del limite: se conserva su codigo.
+            run_to "$DIAG_DIR/out.rc7.txt" 30 sh -c 'exit 7'
+            rc=$?
+            expect "$label comando que termina antes: rc original 7" 7 "$rc"
+            run_to "$DIAG_DIR/out.rc0.txt" 30 sh -c 'exit 0'
+            rc=$?
+            expect "$label comando exitoso: rc 0" 0 "$rc"
+
+            # 13) Ningun marcador temporal debe sobrevivir a las pruebas.
+            leftovers="$(find "$DIAG_DIR" -maxdepth 1 -name '.run_to.*' 2>/dev/null | wc -l | tr -d ' ')"
+            expect "$label sin marcadores temporales residuales" 0 "$leftovers"
+          }
+
+          # Orden real del paso Run XCTest: primero el respaldo, luego los helpers.
+          . "$fallback_source"
+          check_active "antes de helpers" "fallback"
+          run_suite "respaldo" "$test_root/respaldo"
+
+          . "$helper_source"
+          check_active "despues de helpers" "helpers"
+
+          # Las dos implementaciones deben ser equivalentes salvo la etiqueta
+          # y la gracia (2 s en helpers, 5 s en el respaldo).
+          sed -n '/^# run_to <fichero>/,/^}/p' "$fallback_source" \
+            | sed -e 's/run_to (fallback)/run_to (X)/' -e 's/grace=5/grace=G/' \
+            > "$test_root/fallback.norm"
+          sed -n '/^# run_to <fichero>/,/^}/p' "$helper_source" \
+            | sed -e 's/run_to (helpers)/run_to (X)/' -e 's/grace=2/grace=G/' \
+            > "$test_root/helper.norm"
+          if cmp -s "$test_root/fallback.norm" "$test_root/helper.norm"; then
+            ok "implementaciones equivalentes salvo etiqueta/gracia"
+          else
+            ko "implementaciones distintas mas alla de etiqueta/gracia"
+            diff -u "$test_root/fallback.norm" "$test_root/helper.norm" | sed -n '1,20p'
+          fi
+
+          run_suite "helpers" "$test_root/helpers"
+
+          # La prueba del padre que termina antes se repite bajo el modo exacto
+          # del workflow (bash -e -o pipefail), con las dos implementaciones.
+          e_label="bash -e"
+          for impl in respaldo helpers; do
+            case "$impl" in
+              respaldo) impl_source="$fallback_source" ;;
+              helpers) impl_source="$helper_source" ;;
+            esac
+            e_diag="$test_root/e-diag-$impl"
+            e_out="$test_root/e-out-$impl.txt"
+            e_parent="$test_root/e-parent-$impl.pid"
+            e_desc="$test_root/e-desc-$impl.pid"
+            e_log="$test_root/e-log-$impl.txt"
+            rm -rf "$e_diag"
+            mkdir -p "$e_diag"
+            rm -f "$e_parent" "$e_desc"
+            cat > "$test_root/e-run.sh" <<'EOS'
+          . "$1"
+           export DIAG_DIR="$2"
+           rc=0
+           if run_to "$3" 1 sh -c 'echo $$ > "$1"; sleep 30 & echo $! > "$2"' _ "$4" "$5"; then
+             rc=0
+           else
+             rc=$?
+           fi
+           echo "rc=$rc"
+          EOS
+            if bash -e -o pipefail "$test_root/e-run.sh" "$impl_source" "$e_diag" "$e_out" "$e_parent" "$e_desc" > "$e_log" 2>&1; then
+              e_rc="$(sed -n 's/^rc=//p' "$e_log")"
+              expect "$e_label $impl: rc 124" 124 "$e_rc"
+            else
+              ko "$e_label $impl: la shell -e aborto antes de clasificar"
+            fi
+            e_child="$(cat "$e_desc" 2>/dev/null)"
+            if [ -n "$e_child" ] && process_alive "$e_child"; then
+              ko "$e_label $impl: descendiente vivo (pid $e_child)"
+              kill -KILL "$e_child" 2>/dev/null || true
+            else
+              ok "$e_label $impl: descendiente terminado"
+            fi
+            e_left="$(find "$e_diag" -maxdepth 1 -name '.run_to.*' 2>/dev/null | wc -l | tr -d ' ')"
+            expect "$e_label $impl: sin marcadores temporales" 0 "$e_left"
+          done
+
+          # El fichero que Prepare deja en el runner debe contener la implementacion
+          # endurecida; si no existe, el paso usara el respaldo (tambien endurecido).
+          real_helper="${RUNNER_TEMP:-/tmp}/ci-diagnostics/bin/diagnostic-helpers.sh"
+          if [ -f "$real_helper" ]; then
+            if grep -q 'run_to (helpers)' "$real_helper"; then
+              ok "helper real de CI: implementacion activa endurecida"
+            else
+              ko "helper real de CI: run_to sin la implementacion endurecida"
+            fi
+            if cmp -s "$helper_source" "$real_helper"; then
+              ok "helper real de CI: identico al extraido y probado"
+            else
+              ko "helper real de CI: distinto del extraido (se probo otro codigo)"
+            fi
+          else
+            ok "helper real de CI ausente: el paso usara la implementacion de respaldo"
+          fi
+
+          echo "run_to self-test: ${pass} pass, ${fail} fail"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::run_to self-test: ${fail} caso(s) fallido(s)."
+            exit 1
+          fi
+
       - name: Run XCTest
         id: tests
         timeout-minutes: 30
@@ -347,21 +1597,331 @@ jobs:
         run: |
           set -o pipefail
 
-          # Helpers de diagnostico compartidos. Si la preparacion fallo,
-          # `mark` queda como no-op y el paso de pruebas sigue igual.
+          # Helpers de diagnostico compartidos. Si la preparacion fallo, este
+          # bloque deja un `run_to` acotado y la deteccion de proceso terminado:
+          # nunca se ejecuta un comando bloqueante sin limite.
           mark() { :; }
+          process_gone() {
+            local pid="$1" stat
+            [ -n "$pid" ] || return 0
+            # `kill -0` es universal; si el PID sigue en la tabla se consulta el
+            # estado para no tratar un zombie como proceso vivo. Si `ps` no
+            # puede informar del estado se asume vivo: nunca se declara
+            # terminado algo que aun existe (eso saltaria el KILL).
+            kill -0 "$pid" 2>/dev/null || return 0
+            stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ')"
+            if [ -z "$stat" ]; then
+              return 1
+            fi
+            [ "${stat#Z}" != "$stat" ]
+          }
+          # run_to <fichero> <segundos> <comando...>
+          # Fallback sin `bounded`: vigilante propio con bash, sleep y kill.
+          # Antes de lanzar nada valida el plazo (entero de 1 a 3600) y comprueba
+          # con una prueba real (mktemp + escritura + borrado) que DIAG_DIR admite
+          # los ficheros del vigilante. Despues arranca el vigilante, confirma que
+          # esta vivo y solo entonces ejecuta el comando. Cualquier fallo devuelve
+          # 125 sin ejecutar el comando ni dejar procesos de vigilancia.
+          # >>> run_to fallback selftest >>>
+          # run_to <fichero> <segundos> <comando...>
+          # Ejecuta el comando acotado y guarda su salida en <fichero>. Antes de lanzar
+          # nada valida el plazo (entero 1-3600) y comprueba con una prueba real
+          # (mktemp + escritura + borrado) que DIAG_DIR admite los ficheros del
+          # vigilante. El comando corre en su propio grupo de procesos y, al vencer el
+          # plazo, se corta el grupo entero (TERM, gracia y KILL) para no dejar
+          # descendientes vivos.
+          run_to() {
+            : "run_to (fallback)"
+            local file="${1:-}"
+            local limit="${2:-}"
+            shift 2 2>/dev/null || true
+            local flag="" ready="" handoff="" armed=""
+            local child="" watchdog="" code=0 timed_out=0 probe="" i=0 g=0
+            local target="" group=0 monitor_was_on=0 grace=5
+
+            # A) Plazo. Solo digitos: se rechazan vacio, signos, decimales y texto. Los
+            # ceros iniciales se normalizan (0030 -> 30) antes de cualquier aritmetica;
+            # despues se rechazan el cero y > 3600.
+            case "$limit" in
+              ''|*[!0-9]*)
+                echo "::warning::run_to: limite no valido ('$limit'): debe ser un entero positivo de segundos; no se ejecuta el comando."
+                return 125
+                ;;
+            esac
+            limit="${limit#"${limit%%[!0]*}"}"
+            if [ -z "$limit" ]; then
+              echo "::warning::run_to: limite 0 no valido: debe ser un entero positivo de segundos; no se ejecuta el comando."
+              return 125
+            fi
+            if [ "${#limit}" -gt 4 ] || [ "$limit" -gt 3600 ]; then
+              echo "::warning::run_to: limite ${limit}s fuera de rango (1-3600); no se ejecuta el comando."
+              return 125
+            fi
+            if [ -z "$file" ]; then
+              echo "::warning::run_to: falta el fichero de salida; no se ejecuta el comando."
+              return 125
+            fi
+
+            # B) DIAG_DIR definido, directorio (existente o creable) y realmente
+            # escribible. `test -w` no basta: se crea un fichero con mktemp, se escribe
+            # contenido, se borra y se comprueba que el borrado funciono.
+            if [ -z "${DIAG_DIR:-}" ]; then
+              echo "::warning::run_to: DIAG_DIR no esta definido; no se ejecuta el comando."
+              return 125
+            fi
+            if [ -e "$DIAG_DIR" ] && [ ! -d "$DIAG_DIR" ]; then
+              echo "::warning::run_to: DIAG_DIR existe y no es un directorio ($DIAG_DIR); no se ejecuta el comando."
+              return 125
+            fi
+            if [ ! -d "$DIAG_DIR" ] && ! mkdir -p "$DIAG_DIR" 2>/dev/null; then
+              echo "::warning::run_to: DIAG_DIR no existe y no se puede crear ($DIAG_DIR); no se ejecuta el comando."
+              return 125
+            fi
+            if [ ! -d "$DIAG_DIR" ]; then
+              echo "::warning::run_to: DIAG_DIR no es un directorio ($DIAG_DIR); no se ejecuta el comando."
+              return 125
+            fi
+            probe="$(mktemp "$DIAG_DIR/.run_to-probe.XXXXXX" 2>/dev/null)" || probe=""
+            if [ -z "$probe" ] || [ ! -f "$probe" ]; then
+              echo "::warning::run_to: mktemp no pudo crear un fichero de prueba en $DIAG_DIR; no se ejecuta el comando."
+              return 125
+            fi
+            if ! printf 'run_to probe\n' > "$probe" 2>/dev/null || [ ! -s "$probe" ]; then
+              echo "::warning::run_to: no se pudo escribir el fichero de prueba en $DIAG_DIR; no se ejecuta el comando."
+              rm -f "$probe" 2>/dev/null || true
+              return 125
+            fi
+            if ! rm -f "$probe" 2>/dev/null || [ -e "$probe" ]; then
+              echo "::warning::run_to: no se pudo eliminar el fichero de prueba de $DIAG_DIR; no se ejecuta el comando."
+              return 125
+            fi
+            if ! mkdir -p "$(dirname "$file")" 2>/dev/null || [ ! -d "$(dirname "$file")" ]; then
+              echo "::warning::run_to: no se pudo preparar el directorio de $file; no se ejecuta el comando."
+              return 125
+            fi
+
+            # C) Marcadores. El de timeout se crea y comprueba antes de arrancar el
+            # vigilante, de modo que el vencimiento siempre pueda dejar marca.
+            flag="$DIAG_DIR/.run_to.flag.$$.$RANDOM"
+            ready="$DIAG_DIR/.run_to.ready.$$.$RANDOM"
+            handoff="$DIAG_DIR/.run_to.pid.$$.$RANDOM"
+            armed="$DIAG_DIR/.run_to.armed.$$.$RANDOM"
+            rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+            if ! : > "$flag" 2>/dev/null || [ ! -f "$flag" ]; then
+              echo "::warning::run_to: no se pudo preparar el marcador de timeout en $DIAG_DIR; no se ejecuta el comando."
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+
+            # D) El vigilante arranca y se confirma ANTES del comando: `ready` avisa de
+            # que esta vivo y `armed` de que ya tiene el PID del hijo y su grupo. Al
+            # vencer escribe `flag`, corta con TERM el grupo, espera la gracia y aplica
+            # KILL al grupo.
+            (
+              set +e
+              trap 'exit 0' TERM INT
+              : > "$ready" || exit 1
+              i=0
+              while [ ! -s "$handoff" ] && [ "$i" -lt 20 ]; do
+                sleep 0.1 2>/dev/null || sleep 1
+                i=$((i + 1))
+              done
+              target=""
+              group=0
+              IFS=' ' read -r target group < "$handoff" 2>/dev/null || true
+              case "$target" in
+                ''|*[!0-9]*) exit 1 ;;
+              esac
+              case "$group" in
+                0|1) ;;
+                *) group=0 ;;
+              esac
+              : > "$armed" || exit 1
+              i=0
+              while [ "$i" -lt "$limit" ]; do
+                sleep 1 2>/dev/null || true
+                i=$((i + 1))
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$target" 2>/dev/null || exit 0
+                else
+                  kill -0 "$target" 2>/dev/null || exit 0
+                fi
+              done
+              printf 'timeout\n' > "$flag" 2>/dev/null \
+                || echo "::warning::run_to: no se pudo escribir el marcador de timeout en $DIAG_DIR" >&2
+              if [ "$group" -eq 1 ]; then
+                kill -TERM -- "-$target" 2>/dev/null
+              else
+                kill -TERM "$target" 2>/dev/null
+              fi
+              g=0
+              while [ "$g" -lt "$grace" ]; do
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$target" 2>/dev/null || break
+                else
+                  kill -0 "$target" 2>/dev/null || break
+                fi
+                sleep 1 2>/dev/null || true
+                g=$((g + 1))
+              done
+              if [ "$group" -eq 1 ]; then
+                kill -KILL -- "-$target" 2>/dev/null
+              else
+                kill -KILL "$target" 2>/dev/null
+              fi
+              exit 0
+            ) >/dev/null 2>&1 &
+            watchdog=$!
+
+            i=0
+            while [ ! -f "$ready" ] && [ "$i" -lt 20 ]; do
+              kill -0 "$watchdog" 2>/dev/null || break
+              sleep 0.1 2>/dev/null || sleep 1
+              i=$((i + 1))
+            done
+            if [ ! -f "$ready" ] || ! kill -0 "$watchdog" 2>/dev/null; then
+              echo "::warning::run_to: el vigilante no se pudo iniciar; no se ejecuta el comando."
+              kill -TERM "$watchdog" 2>/dev/null || true
+              wait "$watchdog" 2>/dev/null || true
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+
+            # E) Comando protegido en su propio grupo de procesos. Si no se le puede
+            # entregar el PID al vigilante se cancela de inmediato y se devuelve 125.
+            case $- in *m*) monitor_was_on=1 ;; esac
+            set -m 2>/dev/null || true
+            case $- in *m*) group=1 ;; *) group=0 ;; esac
+            "$@" < /dev/null > "$file" 2>&1 &
+            child=$!
+            if [ "$monitor_was_on" -eq 1 ]; then
+              :
+            else
+              set +m 2>/dev/null || true
+            fi
+            if ! printf '%s %s\n' "$child" "$group" > "$handoff" 2>/dev/null; then
+              echo "::warning::run_to: no se pudo entregar el PID al vigilante; se cancela el comando."
+              if [ "$group" -eq 1 ]; then
+                kill -TERM -- "-$child" 2>/dev/null || true
+              else
+                kill -TERM "$child" 2>/dev/null || true
+              fi
+              g=0
+              while [ "$g" -lt "$grace" ]; do
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$child" 2>/dev/null || break
+                else
+                  kill -0 "$child" 2>/dev/null || break
+                fi
+                sleep 1 2>/dev/null || true
+                g=$((g + 1))
+              done
+              if [ "$group" -eq 1 ]; then
+                kill -KILL -- "-$child" 2>/dev/null || true
+              else
+                kill -KILL "$child" 2>/dev/null || true
+              fi
+              wait "$child" 2>/dev/null || true
+              kill -TERM "$watchdog" 2>/dev/null || true
+              wait "$watchdog" 2>/dev/null || true
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+            i=0
+            while [ ! -f "$armed" ] && [ "$i" -lt 20 ]; do
+              kill -0 "$watchdog" 2>/dev/null || break
+              sleep 0.1 2>/dev/null || sleep 1
+              i=$((i + 1))
+            done
+            if [ ! -f "$armed" ] || ! kill -0 "$watchdog" 2>/dev/null; then
+              echo "::warning::run_to: el vigilante no confirmo el PID; se cancela el comando."
+              if [ "$group" -eq 1 ]; then
+                kill -TERM -- "-$child" 2>/dev/null || true
+              else
+                kill -TERM "$child" 2>/dev/null || true
+              fi
+              g=0
+              while [ "$g" -lt "$grace" ]; do
+                if [ "$group" -eq 1 ]; then
+                  kill -0 -- "-$child" 2>/dev/null || break
+                else
+                  kill -0 "$child" 2>/dev/null || break
+                fi
+                sleep 1 2>/dev/null || true
+                g=$((g + 1))
+              done
+              if [ "$group" -eq 1 ]; then
+                kill -KILL -- "-$child" 2>/dev/null || true
+              else
+                kill -KILL "$child" 2>/dev/null || true
+              fi
+              wait "$child" 2>/dev/null || true
+              kill -TERM "$watchdog" 2>/dev/null || true
+              wait "$watchdog" 2>/dev/null || true
+              rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+              return 125
+            fi
+
+            # F) Espera, recogida del vigilante (sin huerfanos) y clasificacion.
+            code=0
+            wait "$child" 2>/dev/null || code=$?
+            wait "$watchdog" 2>/dev/null || true
+            if [ -s "$flag" ]; then timed_out=1; fi
+            rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+            if [ "$timed_out" -eq 1 ]; then
+              if command -v timeout_log > /dev/null 2>&1; then
+                timeout_log timeout "$limit" "$code" "$*"
+              fi
+              echo "::warning::run_to: el comando agoto ${limit}s y se corto: $*" >&2
+              return 124
+            fi
+            if [ "$code" -ne 0 ]; then
+              if command -v timeout_log > /dev/null 2>&1; then
+                timeout_log fallo "$limit" "$code" "$*"
+              fi
+            fi
+            return "$code"
+          }
+          RUN_TO_IMPLEMENTATION="fallback"
+          # <<< run_to fallback selftest <<<
           if [ -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
             . "$DIAG_DIR/bin/diagnostic-helpers.sh"
           fi
           mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" 2>/dev/null
           mark "XCTest: paso iniciado"
-          udid="$(xcrun simctl list devices available \
-            | grep -E '^[[:space:]]+iPhone' \
-            | head -1 \
-            | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')"
+
+          # La resolucion del destino tambien va acotada: `simctl list devices`
+          # se cuelga cuando CoreSimulator esta atascado y, sin tope, el paso
+          # moriria a los 30 minutos sin haber lanzado ni el comando de XCTest.
+          # Cada consulta se acota y se reintenta hasta 120 s; el comando de
+          # XCTest en si no cambia.
+          udid=""
+          list_deadline=$(( $(date +%s) + 120 ))
+          while :; do
+            run_to "$DIAG_DIR/logs/simctl-list.start.txt" 30 \
+              xcrun simctl list devices available
+            list_rc=$?
+            udid="$(grep -E '^[[:space:]]+iPhone' "$DIAG_DIR/logs/simctl-list.start.txt" \
+              | head -1 \
+              | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')"
+            if [ -n "$udid" ]; then
+              break
+            fi
+            if [ "$list_rc" -eq 125 ]; then
+              # run_to no pudo garantizar el limite: mejor fallar aqui que
+              # arrancar un comando que puede colgarse.
+              mark "XCTest: run_to sin limite garantizado; se aborta la resolucion del destino"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$list_deadline" ]; then
+              break
+            fi
+            mark "XCTest: simctl list devices sin resultado; reintento"
+            sleep 5
+          done
           if [ -z "$udid" ]; then
             echo "::error::No hay simuladores de iPhone disponibles en este runner."
-            xcrun simctl list devices available
+            cat "$DIAG_DIR/logs/simctl-list.start.txt" 2>/dev/null
             exit 1
           fi
           echo "Simulador elegido: $udid"
@@ -425,13 +1985,35 @@ jobs:
           fi
 
           # Cierre de la recogida en caliente por PID anotado, nunca por patron
-          # de nombre: un patron podria alcanzar a este mismo shell.
-          while IFS='=' read -r name pid; do
-            if [ -n "$pid" ]; then
-              kill "$pid" 2>/dev/null
+          # de nombre: un patron podria alcanzar a este mismo shell. Cada
+          # colector limpia con su trap (TERM, hasta 5 s, KILL, espera y
+          # comprobacion); aqui se le dan 8 s antes de forzar, y sus streams,
+          # anotados en logs/*.pid, se cierran por su PID exacto, igual que los
+          # vigilantes anotados en logs/*.watchdog.*.pid. Si alguno no confirma
+          # su terminacion, se conservan sus ficheros y queda anotado.
+          collect_pids="$(sed -n 's/^[^=]*=//p' "$DIAG_DIR/pids.txt" 2>/dev/null)"
+          for pid in $collect_pids; do
+            kill -TERM "$pid" 2>/dev/null
+          done
+          waited=0
+          while [ "$waited" -lt 8 ]; do
+            alive=0
+            for pid in $collect_pids; do
+              if [ -n "$pid" ] && ! process_gone "$pid"; then alive=1; fi
+            done
+            if [ "$alive" -eq 0 ]; then break; fi
+            sleep 1
+            waited=$((waited + 1))
+          done
+          for pid in $collect_pids; do
+            if [ -n "$pid" ] && ! process_gone "$pid"; then
+              kill -KILL "$pid" 2>/dev/null
+              mark "XCTest: colector $pid no cedio a TERM; cerrado con KILL"
             fi
-          done < "$DIAG_DIR/pids.txt" 2>/dev/null
-          sleep 1
+          done
+          if command -v close_stream_pids > /dev/null 2>&1; then
+            close_stream_pids
+          fi
           mark "XCTest: recogida en caliente detenida"
           exit "$status"
 
@@ -474,10 +2056,22 @@ jobs:
         id: diag_collect
         if: always()
         continue-on-error: true
-        # 15 min: el peor caso sumado de los comandos acotados es 755 s
-        # (30 + 20 + 120 + 30 + 120 + 300 + 60 + 20 + 20 + 20 + 15); el resto
-        # de auxiliares (ls, sed, kill, ps -p) son locales y no bloquean, asi
-        # que quedan mas de dos minutos para cerrar y escribir el resumen.
+        # 15 min (900 s). Peor caso de la recogida, sumando lo que puede tardar
+        # cada operacion aunque todo vaya al limite:
+        #   - comandos acotados, los 12 que pasan por _bounded_run(): 30 list
+        #     final + 60 bootstatus + 120 log show host + 30 list de estado
+        #     + 120 log show del simulador + 20 * 3 copias de informes + 15 find
+        #     + 150 simctl diagnose + 90 reintento minimo + 60 xcresult tool
+        #     = 735 s;
+        #   - gracia TERM del vigilante al vencer un comando: 2 s * 12 = 24 s;
+        #   - recogida del vigilante (_reap_watchdog: 2 s de salida normal + 2 s
+        #     tras TERM + 2 s tras KILL): 6 s * 12 = 72 s, contando que ninguno
+        #     termina solo;
+        #   - cierre de xcodebuild y asentamiento posterior: 5 s + 3 s = 8 s;
+        #   - limpieza global (colectores, streams y vigilantes): 30 s, plazo
+        #     unico que no se reinicia por fichero.
+        # Total 869 s, 31 s de margen sobre los 900 s. El resto de auxiliares
+        # (ls, sed, kill, ps -p, grep, find puntual) son locales y no bloquean.
         timeout-minutes: 15
         env:
           DIAG_DIR: ${{ runner.temp }}/ci-diagnostics
@@ -491,6 +2085,20 @@ jobs:
           # Helpers compartidos (mark/timeout_log/bounded). Si la preparacion
           # fallo, `mark` queda como no-op y los comandos acotados degradan.
           mark() { :; }
+          process_gone() {
+            local pid="$1" stat
+            [ -n "$pid" ] || return 0
+            # `kill -0` es universal; si el PID sigue en la tabla se consulta el
+            # estado para no tratar un zombie como proceso vivo. Si `ps` no
+            # puede informar del estado se asume vivo: nunca se declara
+            # terminado algo que aun existe (eso saltaria el KILL).
+            kill -0 "$pid" 2>/dev/null || return 0
+            stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d ' ')"
+            if [ -z "$stat" ]; then
+              return 1
+            fi
+            [ "${stat#Z}" != "$stat" ]
+          }
           if [ -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
             . "$DIAG_DIR/bin/diagnostic-helpers.sh"
           fi
@@ -502,12 +2110,97 @@ jobs:
           # del paso impiden fotografiar el estado real. Se cierran solo los PID
           # anotados por este job: los colectores en pids.txt y el xcodebuild de
           # XCTest en xcodebuild.pid. Nunca se terminan procesos por patron.
+          #
+          # Orden de limpieza, con un unico presupuesto global de 30 s:
+          #   1) TERM a los colectores
+          #   2) espera acotada
+          #   3) KILL a los que sigan vivos
+          #   4) espera y comprobacion de su terminacion
+          #   5) close_stream_pids() con el plazo que quede, para recoger los
+          #      streams y los vigilantes que hayan dejado
+          #   6) si el plazo se agota, los ficheros PID pendientes se conservan
+          #      y quedan anotados en timeline.txt
+          cleanup_budget=30
+          cleanup_deadline=$(( $(date +%s) + cleanup_budget ))
+          # 1) TERM a los colectores anotados.
           if [ -f "$DIAG_DIR/pids.txt" ]; then
             while IFS='=' read -r name pid; do
-              if [ -n "$pid" ] && ps -p "$pid" > /dev/null 2>&1; then
-                kill "$pid" 2>/dev/null
+              if [ -n "$pid" ] && ! process_gone "$pid"; then
+                kill -TERM "$pid" 2>/dev/null
               fi
             done < "$DIAG_DIR/pids.txt"
+          fi
+          # 2) Espera acotada: hasta 8 s y nunca mas alla del plazo global.
+          collect_wait=0
+          while [ "$collect_wait" -lt 8 ] && [ "$(date +%s)" -lt "$cleanup_deadline" ]; do
+            collect_busy=0
+            if [ -f "$DIAG_DIR/pids.txt" ]; then
+              while IFS='=' read -r name pid; do
+                if [ -n "$pid" ] && ! process_gone "$pid"; then collect_busy=1; fi
+              done < "$DIAG_DIR/pids.txt"
+            fi
+            if [ "$collect_busy" -eq 0 ]; then break; fi
+            sleep 1
+            collect_wait=$((collect_wait + 1))
+          done
+          # 3) KILL a los colectores que sigan vivos.
+          if [ -f "$DIAG_DIR/pids.txt" ]; then
+            while IFS='=' read -r name pid; do
+              if [ -n "$pid" ] && ! process_gone "$pid"; then
+                kill -KILL "$pid" 2>/dev/null
+                mark "diagnostico: colector $name ($pid) cerrado con KILL"
+              fi
+            done < "$DIAG_DIR/pids.txt"
+          fi
+          # 4) Espera y comprobacion de la terminacion de los colectores.
+          collect_wait=0
+          while [ "$collect_wait" -lt 2 ] && [ "$(date +%s)" -lt "$cleanup_deadline" ]; do
+            collect_busy=0
+            if [ -f "$DIAG_DIR/pids.txt" ]; then
+              while IFS='=' read -r name pid; do
+                if [ -n "$pid" ] && ! process_gone "$pid"; then collect_busy=1; fi
+              done < "$DIAG_DIR/pids.txt"
+            fi
+            if [ "$collect_busy" -eq 0 ]; then break; fi
+            sleep 1
+            collect_wait=$((collect_wait + 1))
+          done
+          if [ -f "$DIAG_DIR/pids.txt" ]; then
+            while IFS='=' read -r name pid; do
+              if [ -n "$pid" ] && ! process_gone "$pid"; then
+                mark "diagnostico: colector $name ($pid) sigue vivo tras KILL; se conserva su PID"
+              fi
+            done < "$DIAG_DIR/pids.txt"
+          fi
+          # 5) Streams y vigilantes pendientes, con el plazo que quede del
+          #    presupuesto global: aqui no se reinicia el reloj. Si el plazo ya
+          #    vencio no se llama a close_stream_pids() ni se le concede un
+          #    segundo extra: sus ficheros PID se conservan (viajan en el
+          #    artefacto) y se anota el motivo y cada pendiente.
+          if command -v close_stream_pids > /dev/null 2>&1; then
+            collect_left=$(( cleanup_deadline - $(date +%s) ))
+            if [ "$collect_left" -lt 1 ]; then
+              collect_pending=0
+              for collect_file in "$DIAG_DIR"/logs/*.watchdog.*.pid; do
+                if [ -f "$collect_file" ]; then
+                  collect_pending=$((collect_pending + 1))
+                  mark "diagnostico: queda pendiente $(basename "$collect_file") (plazo global de limpieza agotado)"
+                fi
+              done
+              for collect_file in "$DIAG_DIR"/logs/*.pid; do
+                case "$collect_file" in
+                  *.watchdog.*.pid) continue ;;
+                esac
+                if [ -f "$collect_file" ]; then
+                  collect_pending=$((collect_pending + 1))
+                  mark "diagnostico: queda pendiente $(basename "$collect_file") (plazo global de limpieza agotado)"
+                fi
+              done
+              mark "diagnostico: plazo global de limpieza agotado; close_stream_pids no se ejecuta (${collect_pending} fichero(s) PID conservados)"
+            else
+              mark "diagnostico: close_stream_pids con ${collect_left}s de plazo"
+              close_stream_pids "$collect_left"
+            fi
           fi
           xcodebuild_pid="$(cat "$DIAG_DIR/xcodebuild.pid" 2>/dev/null)"
           if [ -n "$xcodebuild_pid" ] && ps -p "$xcodebuild_pid" > /dev/null 2>&1; then
@@ -520,27 +2213,48 @@ jobs:
           fi
           sleep 3
 
-          # 1) Estado del simulador y de la maquina en el momento del fallo.
+          # 1) Estado del simulador y de la maquina en el momento del fallo,
+          # incluido el estado del dispositivo elegido (lista y bootstatus) y el
+          # de los procesos que gobiernan el arranque de XCTest.
           {
             echo "=== $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
-            echo "-- simctl list --"
-            bounded 30 xcrun simctl list
-            echo "-- procesos --"
-            bounded 20 ps -Ao pid,ppid,stat,etime,pcpu,pmem,command
+            echo "-- simctl list devices --"
+            run_to "$DIAG_DIR/logs/final-simctl-list.txt" 30 xcrun simctl list devices
+            head -80 "$DIAG_DIR/logs/final-simctl-list.txt" 2>/dev/null
+            echo "-- estado del dispositivo ($udid) --"
+            if [ -n "$udid" ]; then
+              if run_to "$DIAG_DIR/logs/bootstatus.txt" 60 \
+                   xcrun simctl bootstatus "$udid"; then
+                echo "bootstatus: dispositivo Booted"
+              else
+                echo "bootstatus: sin confirmar Booted (ver logs/bootstatus.txt)"
+              fi
+              head -40 "$DIAG_DIR/logs/bootstatus.txt" 2>/dev/null
+            else
+              echo "udid desconocido"
+            fi
+            echo "-- procesos relevantes --"
+            capture_processes "post-run"
+            tail -40 "$DIAG_DIR/snapshots/processes.txt" 2>/dev/null
+            echo "-- ps completo --"
+            ps -Ao pid,ppid,stat,etime,pcpu,pmem,command | head -300
           } > "$DIAG_DIR/snapshots/final.txt" 2>&1
           mark "diagnostico: estado final capturado"
 
           # 2) Logs de la ventana de la prueba. Los streams en caliente son la
           # fuente principal; este volcado cubre lo anterior a su arranque.
-          bounded 120 log show --style compact --last 45m \
-            --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym"' \
-            > "$DIAG_DIR/logs/host-logshow.txt"
+          run_to "$DIAG_DIR/logs/host-logshow.txt" 120 \
+            log show --style compact --last 45m \
+              --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym"'
           mark "diagnostico: log show del host capturado"
 
-          if [ -n "$udid" ] && bounded 30 xcrun simctl list devices 2>/dev/null | grep -q "$udid.*Booted"; then
-            bounded 120 xcrun simctl spawn "$udid" log show --style compact --last 45m \
-              --predicate 'process == "testmanagerd" OR process == "SpringBoard" OR process == "runningboardd" OR process == "backboardd" OR process == "AppGym" OR process == "AppGymTests"' \
-              > "$DIAG_DIR/logs/simulator-logshow.txt"
+          # El estado se consulta a fichero (no a un pipe): `grep -q` cerraria
+          # simctl antes de tiempo y el resultado se leeria a medias.
+          simctl_list 30 "$DIAG_DIR/logs/simctl-list.collect.txt"
+          if is_booted "$udid" "$DIAG_DIR/logs/simctl-list.collect.txt"; then
+            run_to "$DIAG_DIR/logs/simulator-logshow.txt" 120 \
+              xcrun simctl spawn "$udid" log show --style compact --last 45m \
+                --predicate 'process == "testmanagerd" OR process == "SpringBoard" OR process == "runningboardd" OR process == "backboardd" OR process == "CoreSimulatorBridge" OR process == "AppGym" OR process == "AppGymTests" OR process == "AppGymTests-Runner"'
             mark "diagnostico: log show del simulador capturado"
           else
             echo "simulador no arrancado o udid desconocido: sin log show del dispositivo" \
@@ -555,18 +2269,64 @@ jobs:
             bounded 20 cp -R ~/Library/Developer/CoreSimulator/Devices/"$udid"/data/Library/Logs/CrashReporter/. \
               "$DIAG_DIR/crashes/simulator/" 2>/dev/null
           fi
-          bounded 15 find "$DIAG_DIR/crashes" -maxdepth 3 -type f 2>/dev/null | head -200 \
-            > "$DIAG_DIR/crashes/listado.txt"
+          run_to "$DIAG_DIR/crashes/listado-completo.txt" 15 \
+            find "$DIAG_DIR/crashes" -maxdepth 3 -type f
+          head -200 "$DIAG_DIR/crashes/listado-completo.txt" \
+            > "$DIAG_DIR/crashes/listado.txt" 2>/dev/null
           mark "diagnostico: informes de fallos copiados"
 
-          # 4) Estado completo del dispositivo segun CoreSimulator. `diagnose`
-          # archiva el resultado en el directorio actual, asi que se lanza dentro
-          # de $DIAG_DIR/device para que viaje en el artefacto.
-          (
-            cd "$DIAG_DIR/device" || exit 0
-            bounded 300 xcrun simctl diagnose
-          ) > "$DIAG_DIR/logs/simctl-diagnose.txt" 2>&1
-          mark "diagnostico: simctl diagnose terminado"
+          # 4) Estado completo del dispositivo segun CoreSimulator.
+          # `simctl diagnose` empieza con un aviso de privacidad y un "Press
+          # ENTER to continue": con el stdin cerrado (o sin TTY) se queda
+          # esperando esa entrada, que es lo que bloqueaba el paso, y en algun
+          # caso termina con rc 0 sin recopilar nada. Por eso:
+          #   - stdin se alimenta con un salto de linea desde un fichero
+          #     (bounded_stdin), que es exactamente lo que el aviso espera;
+          #   - el comando entero va acotado a 150 s (simctl tiene sus propios
+          #     300 s internos, pero no se confia en ellos ni en -X);
+          #   - -b evita que intente mostrar el resultado en Finder, imposible en
+          #     un runner sin sesion grafica;
+          #   - --no-archive --output deja los ficheros sueltos dentro del
+          #     artefacto y --udid limita la recogida al dispositivo elegido;
+          #   - si falla, se reintenta una sola vez con la forma minima (versiones
+          #     de simctl sin esos flags) y, pase lo que pase, se sigue con el
+          #     resto de la recogida.
+          enter_file="$DIAG_DIR/device/enter.txt"
+          printf '\n\n' > "$enter_file"
+          rm -rf "$DIAG_DIR/device/simctl-diagnose"
+          diagnose_args=(--no-archive -b --output "$DIAG_DIR/device/simctl-diagnose")
+          if [ -n "$udid" ]; then
+            diagnose_args+=(--udid="$udid")
+          fi
+          mark "diagnostico: simctl diagnose inicio"
+          diagnose_rc=0
+          if bounded_stdin 150 "$enter_file" xcrun simctl diagnose "${diagnose_args[@]}" \
+               >> "$DIAG_DIR/logs/simctl-diagnose.txt" 2>&1; then
+            mark "diagnostico: simctl diagnose terminado correctamente"
+          else
+            diagnose_rc=$?
+            if [ "$diagnose_rc" -eq 124 ]; then
+              mark "diagnostico: simctl diagnose agoto los 150 s ([timeout]); reintento minimo"
+            else
+              mark "diagnostico: simctl diagnose rc=$diagnose_rc; reintento minimo"
+            fi
+            if ( cd "$DIAG_DIR/device" && \
+                 bounded_stdin 90 "$enter_file" xcrun simctl diagnose ) \
+                 >> "$DIAG_DIR/logs/simctl-diagnose.txt" 2>&1; then
+              mark "diagnostico: simctl diagnose terminado con la forma minima"
+            else
+              diagnose_rc=$?
+              mark "diagnostico: simctl diagnose sin completar (rc=$diagnose_rc); el resto de la recogida continua"
+            fi
+          fi
+          ls -la "$DIAG_DIR/device" >> "$DIAG_DIR/logs/simctl-diagnose.txt" 2>&1
+          # Un rc 0 no garantiza que haya recopilado: se cuenta lo que dejo.
+          diagnose_files=0
+          if [ -d "$DIAG_DIR/device/simctl-diagnose" ]; then
+            diagnose_files="$(find "$DIAG_DIR/device/simctl-diagnose" -type f 2>/dev/null | wc -l | tr -d ' ')"
+          fi
+          mark "diagnostico: simctl diagnose dejo ${diagnose_files:-0} fichero(s)"
+          rm -f "$enter_file"
 
           # 5) Lo que el .xcresult incompleto pueda declarar de si mismo.
           if [ -d "$RESULT_BUNDLE" ]; then
