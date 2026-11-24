@@ -12,10 +12,10 @@ permissions:
 # publica el estado. No hay artefactos intermedios, asi que el resumen del run
 # y la rama ci-status se escriben siempre que el workflow llegue a este runner.
 #
-# Orden: build Release -> IPA -> upload IPA -> XCTest -> upload .xcresult y
-# test.log -> verificacion del recuento -> estado. El IPA se genera igual que
-# antes aunque los tests fallen, pero solo se considera validado si XCTest
-# termina bien.
+# Orden: build Release -> IPA -> upload IPA -> prepare simulator -> XCTest ->
+# upload .xcresult y test.log -> verificacion del recuento -> estado. El IPA se
+# genera igual que antes aunque los tests fallen, pero solo se considera
+# validado si XCTest termina bien.
 jobs:
   build:
     runs-on: macos-15
@@ -88,9 +88,10 @@ jobs:
       # bundle de tests necesita ese host. `set -o pipefail` propaga el codigo de
       # salida de xcodebuild (65 cuando falla algun test) a traves de `tee`.
       #
-      # El destino se resuelve por UDID porque el nombre del iPhone depende de la
-      # version de Xcode que traiga la imagen macos-15 (iPhone 16 con Xcode 16,
-      # iPhone 17 con Xcode 26); un nombre fijo romperia el workflow.
+      # El destino se resuelve por UDID en "Prepare Simulator" porque el nombre
+      # del iPhone depende de la version de Xcode que traiga la imagen macos-15
+      # (iPhone 16 con Xcode 16, iPhone 17 con Xcode 26). Run XCTest reutiliza
+      # ese unico UDID y no vuelve a elegir dispositivo.
 
       # ---------------------------------------------------------------------
       # Diagnostico de XCTest.
@@ -103,6 +104,10 @@ jobs:
       # evidencia: no tocan el build, ni el comando de XCTest, ni el recuento
       # de la puerta de calidad. Todos llevan continue-on-error, de modo que un
       # fallo del diagnostico nunca puede cambiar el resultado del job.
+      #
+      # "Prepare Simulator" anade una fase previa que arranca el dispositivo y
+      # comprueba que responde antes de lanzar XCTest; su diagnostico tambien
+      # viaja en este artefacto.
       #
       # La recogida empieza dentro del propio paso de XCTest (streams en
       # caliente, muestras de pila y marcas de tiempo) para que quede algo en
@@ -1588,6 +1593,604 @@ jobs:
             exit 1
           fi
 
+      # ---------------------------------------------------------------------
+      # Prepare Simulator.
+      #
+      # Fase explicita anterior a Run XCTest. Resuelve un unico UDID y lo deja
+      # en $DIAG_DIR/udid.txt; Run XCTest lo reutiliza tal cual, asi que no
+      # puede seleccionarse un segundo dispositivo. Si el simulador ya esta
+      # Booted no se reinicia; si esta apagado se pide su arranque y se espera
+      # con `simctl bootstatus`. No se borra, resetea ni recrea nada, y no se
+      # cambia el modelo ni la version de iOS.
+      #
+      # Booted no significa disponible. Despues se comprueba de forma
+      # progresiva `simctl list devices`, `simctl spawn UDID /usr/bin/true` y
+      # `simctl spawn UDID /bin/launchctl list`, con limite por comando,
+      # reintentos acotados y un plazo global. Si el simulador no responde, se
+      # guarda evidencia (estado, procesos, bootstatus y logs de CoreSimulator,
+      # testmanagerd, AppGym e instruments/deviceservice.lockdown) y el paso
+      # termina con un error de infraestructura: XCTest no se inicia.
+      # ---------------------------------------------------------------------
+      - name: Prepare Simulator
+        id: prepare_sim
+        timeout-minutes: 13
+        env:
+          DIAG_DIR: ${{ runner.temp }}/ci-diagnostics
+        run: |
+          set +e
+          mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" 2>/dev/null
+
+          # Respaldos si "Prepare XCTest diagnostics" no dejo el helper: todas
+          # las operaciones siguen teniendo un tope propio. El helper real,
+          # cuando existe, sustituye estas funciones al cargarse.
+          mark() {
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+              >> "$DIAG_DIR/timeline.txt" 2>/dev/null
+          }
+          note() {
+            mark "$*"
+            printf '%s\n' "$*" >&2
+          }
+          # run_to <fichero> <segundos> <comando...>: respaldo acotado. El
+          # helper endurecido (grupo de procesos propio) se usa cuando existe.
+          run_to() {
+            local file="$1"
+            local limit="$2"
+            shift 2
+            local flag="$DIAG_DIR/.prepare-run_to.$$.$RANDOM"
+            local child="" watchdog="" rc=0
+            rm -f "$flag" 2>/dev/null
+            "$@" < /dev/null > "$file" 2>&1 &
+            child=$!
+            (
+              nap=""
+              trap '[ -n "$nap" ] && kill "$nap" 2>/dev/null; exit 0' TERM INT
+              i=0
+              while [ "$i" -lt "$limit" ]; do
+                sleep 1 &
+                nap=$!
+                wait "$nap" 2>/dev/null
+                nap=""
+                i=$((i + 1))
+                kill -0 "$child" 2>/dev/null || exit 0
+              done
+              : > "$flag" 2>/dev/null
+              kill -TERM "$child" 2>/dev/null
+              g=0
+              while [ "$g" -lt 2 ] && kill -0 "$child" 2>/dev/null; do
+                sleep 1 &
+                nap=$!
+                wait "$nap" 2>/dev/null
+                nap=""
+                g=$((g + 1))
+              done
+              kill -KILL "$child" 2>/dev/null
+              exit 0
+            ) >/dev/null 2>&1 &
+            watchdog=$!
+            wait "$child" 2>/dev/null
+            rc=$?
+            wait "$watchdog" 2>/dev/null
+            if [ -f "$flag" ]; then
+              rm -f "$flag" 2>/dev/null
+              return 124
+            fi
+            rm -f "$flag" 2>/dev/null
+            return "$rc"
+          }
+          if [ -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
+            . "$DIAG_DIR/bin/diagnostic-helpers.sh"
+          fi
+          mark "Prepare Simulator: inicio"
+
+          # limit_left <tope> <plazo_absoluto>
+          # Imprime el limite a usar: el menor entre <tope> y los segundos que
+          # quedan del plazo absoluto recibido. Devuelve 0 mientras quede tiempo
+          # (>= 1 s). Si el plazo ya vencio (resto <= 0) NO imprime nada, deja
+          # constancia del agotamiento y devuelve 126: el llamador debe
+          # comprobar el resultado y abortar sin ejecutar su comando. Nunca se
+          # sustituye el tiempo agotado por un segundo de cortesia, asi que no
+          # existe camino que arranque un comando con el plazo vencido.
+          LIMIT_EXPIRED=126
+          limit_left() {
+            local cap="${1:-}"
+            local deadline="${2:-}"
+            local left
+            left=$(( deadline - $(date +%s) ))
+            if [ "$left" -le 0 ]; then
+              note "Prepare Simulator: plazo global agotado (restante=${left}s, tope solicitado ${cap}s); no se ejecuta ningun comando"
+              return "$LIMIT_EXPIRED"
+            fi
+            [ "$cap" -gt "$left" ] && cap="$left"
+            printf '%s' "$cap"
+          }
+
+          # El estado va entre parentesis tras el UDID; se corta por el ultimo
+          # ") (" de la linea en vez de confiar en un grupo de sed, que en
+          # Git Bash devolvia el parentesis de apertura dentro del estado.
+          state_from_list() {
+            local udid="$1"
+            local file="$2"
+            local line=""
+            [ -n "$udid" ] && [ -f "$file" ] || return 0
+            line="$(grep -F "($udid)" "$file" | head -1)"
+            [ -n "$line" ] || return 0
+            line="${line##*) (}"
+            printf '%s\n' "${line%)}"
+          }
+
+          record_check() {
+            local name="$1"
+            local rc="$2"
+            local seconds="$3"
+            local file="$4"
+            local command="$5"
+            {
+              printf '%s [check] %s intento=%s rc=%s duracion=%ss comando=%s\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$attempt" "$rc" \
+                "$seconds" "$command"
+              if [ "$rc" -ne 0 ] && [ -s "$file" ]; then
+                sed -n '1,5p' "$file" | sed 's/^/    /'
+              fi
+            } >> "$DIAG_DIR/logs/simulator-readiness.txt" 2>/dev/null
+          }
+
+          # Evidencia inmediata cuando la preparacion no llega a buen termino.
+          # Todo va acotado por UN UNICO plazo absoluto de 120 s para TODA la
+          # recopilacion: el plazo se fija una sola vez aqui y no se reinicia
+          # entre comandos. Cada comando recibe el menor entre su limite
+          # individual y los segundos que queden; no hay minimo artificial de
+          # 5 s. Si no queda tiempo, no se inicia el comando. Collect XCTest
+          # diagnostics completa despues la recogida con always(). La limpieza
+          # y el mensaje final no consumen ese presupuesto.
+          prepare_failure() {
+            local failed_phase="$1"
+            local diag_deadline=$(( $(date +%s) + 120 ))
+            # Clasificacion final: ejecutado correctamente, fallido,
+            # interrumpido por su tope, o no ejecutado por presupuesto agotado.
+            diag_ok=0
+            diag_failed=0
+            diag_timeout=0
+            diag_exhausted=0
+            mark "Prepare Simulator: fallo en $failed_phase; se recoge diagnostico (plazo unico 120s)"
+
+            # diag_left: imprime los segundos que quedan del plazo unico y
+            # devuelve 0; devuelve 126 si ya no queda tiempo (cero o menos).
+            diag_left() {
+              local left
+              left=$(( diag_deadline - $(date +%s) ))
+              if [ "$left" -le 0 ]; then
+                return "$LIMIT_EXPIRED"
+              fi
+              printf '%s' "$left"
+            }
+
+            # diag_run <fichero> <limite_individual> <comando...>
+            # Ejecuta el comando con el menor entre su limite individual y lo
+            # que queda del plazo unico, sin minimo artificial. Devuelve:
+            #   0   comando ejecutado correctamente
+            #   1   comando ejecutado pero fallido
+            #   124 comando interrumpido por su propio tope
+            #   126 no se ejecuto: presupuesto global agotado
+            diag_run() {
+              local file="${1:-}"
+              local want="${2:-0}"
+              local left=""
+              local rc=0
+              shift 2
+              left="$(diag_left)"
+              if [ $? -ne 0 ] || [ -z "$left" ]; then
+                mark "Prepare Simulator: presupuesto de 120s agotado; no se ejecuta: $*"
+                return "$LIMIT_EXPIRED"
+              fi
+              if [ "$want" -gt "$left" ]; then want="$left"; fi
+              run_to "$file" "$want" "$@"
+              rc=$?
+              if [ "$rc" -eq 124 ]; then
+                mark "Prepare Simulator: comando de diagnostico interrumpido por su tope (${want}s): $*"
+                return 124
+              fi
+              if [ "$rc" -ne 0 ]; then
+                mark "Prepare Simulator: comando de diagnostico fallido (rc=$rc, ${want}s): $*"
+                return 1
+              fi
+              return 0
+            }
+
+            # diag_step <fichero> <limite_individual> <comando...>
+            # Cuenta el resultado y no vuelve a lanzar nada si el presupuesto
+            # ya se agoto: despues solo quedan limpieza y mensajes.
+            diag_step() {
+              local rc=0
+              if [ "$diag_exhausted" -eq 1 ]; then
+                return "$LIMIT_EXPIRED"
+              fi
+              diag_run "$@"
+              rc=$?
+              case "$rc" in
+                0) diag_ok=$((diag_ok + 1)) ;;
+                126) diag_exhausted=1 ;;
+                124) diag_timeout=$((diag_timeout + 1)) ;;
+                *) diag_failed=$((diag_failed + 1)) ;;
+              esac
+              return "$rc"
+            }
+            {
+              echo "fase=$failed_phase"
+              echo "hora=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "udid=${udid:-desconocido}"
+              echo "estado=${state:-desconocido}"
+              echo "boot_rc=${boot_rc:-}"
+              echo "bootstatus_rc=${bs_rc:-}"
+              echo "checks=list:$check_list true:$check_true launchctl:$check_launchd intentos:$attempt"
+              echo "diagnostico_plazo=120s"
+            } > "$DIAG_DIR/logs/prepare-failure.txt" 2>/dev/null
+
+            diag_step "$DIAG_DIR/logs/prepare-failure-list.txt" 30 \
+              xcrun simctl list devices
+            if [ -n "${udid:-}" ]; then
+              diag_step "$DIAG_DIR/logs/prepare-failure-bootstatus.txt" 60 \
+                xcrun simctl bootstatus "$udid"
+              diag_step "$DIAG_DIR/logs/prepare-failure-device-ps.txt" 30 \
+                xcrun simctl spawn "$udid" ps -Ao pid,ppid,etime,stat,comm
+            fi
+            diag_step "$DIAG_DIR/logs/prepare-failure-processes.txt" 30 \
+              ps -Ao pid,ppid,stat,etime,pcpu,pmem,command
+            diag_step "$DIAG_DIR/logs/prepare-failure-host-logshow.txt" 60 \
+              log show --style compact --last 20m \
+                --predicate 'process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "testmanagerd" OR process == "AppGym" OR eventMessage CONTAINS "deviceservice.lockdown" OR eventMessage CONTAINS "instruments.deviceservice"'
+            if [ -s "$DIAG_DIR/logs/prepare-failure-host-logshow.txt" ]; then
+              grep -Ei 'CoreSimulator|SimulatorTrampoline' \
+                "$DIAG_DIR/logs/prepare-failure-host-logshow.txt" \
+                > "$DIAG_DIR/logs/prepare-failure-coresimulator.txt" 2>/dev/null
+              grep -Ei 'testmanagerd' \
+                "$DIAG_DIR/logs/prepare-failure-host-logshow.txt" \
+                > "$DIAG_DIR/logs/prepare-failure-testmanagerd.txt" 2>/dev/null
+              grep -Ei 'AppGym' \
+                "$DIAG_DIR/logs/prepare-failure-host-logshow.txt" \
+                > "$DIAG_DIR/logs/prepare-failure-appgym.txt" 2>/dev/null
+              grep -Ei 'deviceservice\.lockdown|instruments\.deviceservice|lockdown' \
+                "$DIAG_DIR/logs/prepare-failure-host-logshow.txt" \
+                > "$DIAG_DIR/logs/prepare-failure-instruments-lockdown.txt" 2>/dev/null
+            fi
+            {
+              echo "diagnostico_comandos_ok=$diag_ok"
+              echo "diagnostico_comandos_fallidos=$diag_failed"
+              echo "diagnostico_comandos_timeout=$diag_timeout"
+              echo "diagnostico_presupuesto_agotado=$diag_exhausted"
+            } >> "$DIAG_DIR/logs/prepare-failure.txt" 2>/dev/null
+            mark "Prepare Simulator: diagnostico de preparacion recogido (ok=$diag_ok fallidos=$diag_failed timeouts=$diag_timeout presupuesto_agotado=$diag_exhausted)"
+            echo "::error::Prepare Simulator: el simulador ${udid:-desconocido} no quedo disponible en la fase '$failed_phase'. No se inicia XCTest; la evidencia queda en AppGym-XCTestDiagnostics."
+            exit 1
+          }
+
+          # Plazo global de la preparacion: 9 min. Deja margen dentro de los
+          # 60 min del job para los 30 min de XCTest y la recogida posterior.
+          # Ninguna fase reinicia este reloj.
+          prep_deadline=$(( $(date +%s) + 540 ))
+          phase="resolucion"
+          udid=""
+          state=""
+          boot_rc=""
+          bs_rc=""
+          check_list=0
+          check_true=0
+          check_launchd=0
+          attempt=0
+          boot_attempt=0
+
+          # 1) UDID. Misma regla de seleccion que usaba Run XCTest (primer
+          # iPhone disponible), resuelta una sola vez y guardada para que
+          # xcodebuild use exactamente este dispositivo.
+          list_deadline=$(( $(date +%s) + 120 ))
+          [ "$list_deadline" -gt "$prep_deadline" ] && list_deadline="$prep_deadline"
+          resolve_attempt=0
+          resolve_max=6
+          while [ "$resolve_attempt" -lt "$resolve_max" ]; do
+            resolve_attempt=$((resolve_attempt + 1))
+            list_start=$(date +%s)
+            list_limit="$(limit_left 30 "$list_deadline")"
+            limit_rc=$?
+            if [ "$limit_rc" -ne 0 ]; then
+              phase="resolucion (plazo agotado antes de simctl list devices)"
+              break
+            fi
+            run_to "$DIAG_DIR/logs/prepare-list.start.txt" \
+              "$list_limit" \
+              xcrun simctl list devices available
+            list_rc=$?
+            list_seconds=$(( $(date +%s) - list_start ))
+            {
+              printf '%s [resolucion] intento=%s rc=%s duracion=%ss comando=%s\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$resolve_attempt" "$list_rc" \
+                "$list_seconds" "xcrun simctl list devices available"
+              if [ "$list_rc" -ne 0 ]; then
+                sed -n '1,5p' "$DIAG_DIR/logs/prepare-list.start.txt" \
+                  | sed 's/^/    error: /'
+              fi
+            } >> "$DIAG_DIR/logs/simulator-readiness.txt" 2>/dev/null
+            udid="$(grep -E '^[[:space:]]+iPhone' "$DIAG_DIR/logs/prepare-list.start.txt" \
+              | head -1 \
+              | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')"
+            if [ -n "$udid" ]; then
+              state="$(state_from_list "$udid" "$DIAG_DIR/logs/prepare-list.start.txt")"
+              break
+            fi
+            if [ "$list_rc" -eq 125 ]; then
+              phase="resolucion (run_to sin limite garantizado)"
+              break
+            fi
+            if [ "$(date +%s)" -ge "$list_deadline" ]; then
+              phase="resolucion (sin UDID tras el plazo)"
+              break
+            fi
+            mark "Prepare Simulator: simctl list devices sin resultado; reintento"
+            sleep 5
+          done
+          if [ -z "$udid" ]; then
+            [ "$phase" = "resolucion" ] \
+              && phase="resolucion (sin UDID tras $resolve_attempt intento(s))"
+            note "Prepare Simulator: no se pudo resolver el UDID"
+            prepare_failure "$phase"
+          fi
+          if ! printf '%s\n' "$udid" > "$DIAG_DIR/udid.txt" 2>/dev/null; then
+            note "Prepare Simulator: no se pudo guardar el UDID en $DIAG_DIR/udid.txt"
+            prepare_failure "resolucion (escritura de udid.txt)"
+          fi
+          echo "Simulador elegido: $udid"
+          mark "Prepare Simulator: UDID resuelto ($udid), estado inicial=${state:-desconocido}"
+
+          # 2) Arranque. Si ya esta Booted no se toca. Si esta apagado se pide
+          # `simctl boot`; si ya esta arrancando se respeta y solo se espera.
+          # Nunca se apaga, borra, resetea ni reinicia.
+          already_booted=0
+          [ "$state" = "Booted" ] && already_booted=1
+          if [ "$already_booted" -eq 1 ]; then
+            mark "Prepare Simulator: ya estaba Booted; no se reinicia"
+          else
+            if [ "$state" = "Shutting Down" ]; then
+              shutdown_deadline=$(( $(date +%s) + 60 ))
+              while [ "$(date +%s)" -lt "$shutdown_deadline" ]; do
+                sleep 5
+                list_limit="$(limit_left 30 "$shutdown_deadline")"
+                limit_rc=$?
+                if [ "$limit_rc" -ne 0 ]; then
+                  note "Prepare Simulator: plazo de apagado agotado; se deja de consultar el estado"
+                  break
+                fi
+                run_to "$DIAG_DIR/logs/prepare-list.shutdown.txt" \
+                  "$list_limit" \
+                  xcrun simctl list devices
+                if [ $? -eq 0 ]; then
+                  state="$(state_from_list "$udid" "$DIAG_DIR/logs/prepare-list.shutdown.txt")"
+                  if [ "$state" = "Shutdown" ] || [ "$state" = "Booted" ]; then break; fi
+                fi
+              done
+              if [ "$state" = "Booted" ]; then
+                already_booted=1
+                mark "Prepare Simulator: quedo Booted durante el apagado; no se reinicia"
+              fi
+            fi
+          fi
+
+          if [ "$already_booted" -eq 0 ]; then
+            while [ "$boot_attempt" -lt 2 ] && [ "$(date +%s)" -lt "$prep_deadline" ]; do
+              boot_attempt=$((boot_attempt + 1))
+              case "$state" in
+                Booting|Creating)
+                  mark "Prepare Simulator: arranque ya en curso ($state); no se pide otro boot"
+                  break
+                  ;;
+              esac
+              boot_start=$(date +%s)
+              boot_limit="$(limit_left 120 "$prep_deadline")"
+              limit_rc=$?
+              if [ "$limit_rc" -ne 0 ]; then
+                phase="boot (plazo agotado antes de simctl boot)"
+                break
+              fi
+              run_to "$DIAG_DIR/logs/prepare-boot.$boot_attempt.txt" \
+                "$boot_limit" \
+                xcrun simctl boot "$udid"
+              boot_rc=$?
+              boot_seconds=$(( $(date +%s) - boot_start ))
+              printf '%s [boot] intento=%s rc=%s duracion=%ss comando=%s udid=%s estado=%s\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$boot_attempt" "$boot_rc" \
+                "$boot_seconds" "xcrun simctl boot $udid" "$udid" "${state:-desconocido}" \
+                >> "$DIAG_DIR/logs/simulator-readiness.txt"
+              if [ "$boot_rc" -ne 0 ]; then
+                sed -n '1,5p' "$DIAG_DIR/logs/prepare-boot.$boot_attempt.txt" \
+                  | sed 's/^/    error: /' \
+                  >> "$DIAG_DIR/logs/simulator-readiness.txt" 2>/dev/null
+              fi
+              if [ "$boot_rc" -eq 0 ]; then
+                mark "Prepare Simulator: boot solicitado (intento $boot_attempt, ${boot_seconds}s)"
+                break
+              fi
+              if grep -q "current state: Booted" \
+                   "$DIAG_DIR/logs/prepare-boot.$boot_attempt.txt" 2>/dev/null; then
+                state="Booted"
+                mark "Prepare Simulator: boot ya estaba Booted (carrera); no se reinicia"
+                break
+              fi
+              list_limit="$(limit_left 30 "$prep_deadline")"
+              limit_rc=$?
+              if [ "$limit_rc" -ne 0 ]; then
+                note "Prepare Simulator: plazo global agotado antes de consultar el estado tras simctl boot"
+                break
+              fi
+              run_to "$DIAG_DIR/logs/prepare-list.boot.txt" \
+                "$list_limit" \
+                xcrun simctl list devices
+              if [ $? -eq 0 ]; then
+                state="$(state_from_list "$udid" "$DIAG_DIR/logs/prepare-list.boot.txt")"
+              fi
+              if [ "$state" = "Booted" ] || [ "$state" = "Booting" ]; then
+                mark "Prepare Simulator: boot rc=$boot_rc pero el estado es $state; se espera"
+                break
+              fi
+              note "Prepare Simulator: simctl boot fallo (rc=$boot_rc, intento $boot_attempt); se reintenta"
+              sleep 5
+            done
+            if [ "${boot_rc:-0}" -ne 0 ] && [ "${state:-}" = "Shutdown" ]; then
+              phase="boot (estado Shutdown tras $boot_attempt intento(s), rc=$boot_rc)"
+              prepare_failure "$phase"
+            fi
+          fi
+
+          # 3) Booted confirmado por bootstatus. Con el dispositivo ya Booted
+          # debe responder al instante (120 s); si se acaba de arrancar se le
+          # dan hasta 420 s. El limite nunca supera el plazo global.
+          if [ "$already_booted" -eq 1 ]; then
+            bs_cap=120
+          else
+            bs_cap=420
+          fi
+          bs_limit="$(limit_left "$bs_cap" "$prep_deadline")"
+          limit_rc=$?
+          if [ "$limit_rc" -ne 0 ]; then
+            phase="bootstatus (plazo agotado antes de simctl bootstatus)"
+            prepare_failure "$phase"
+          fi
+          bs_start=$(date +%s)
+          run_to "$DIAG_DIR/logs/prepare-bootstatus.txt" "$bs_limit" \
+            xcrun simctl bootstatus "$udid"
+          bs_rc=$?
+          bs_seconds=$(( $(date +%s) - bs_start ))
+          printf '%s [bootstatus] rc=%s duracion=%ss limite=%ss comando=%s udid=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$bs_rc" "$bs_seconds" "$bs_limit" \
+            "xcrun simctl bootstatus $udid" "$udid" \
+            >> "$DIAG_DIR/logs/simulator-readiness.txt"
+          if [ "$bs_rc" -ne 0 ]; then
+            sed -n '1,5p' "$DIAG_DIR/logs/prepare-bootstatus.txt" \
+              | sed 's/^/    error: /' \
+              >> "$DIAG_DIR/logs/simulator-readiness.txt" 2>/dev/null
+          fi
+          if [ "$bs_rc" -ne 0 ]; then
+            phase="bootstatus (rc=$bs_rc tras ${bs_seconds}s)"
+            prepare_failure "$phase"
+          fi
+          booted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mark "Prepare Simulator: Booted confirmado por bootstatus (${bs_seconds}s)"
+
+          # 4) Disponibilidad real. Booted solo dice que el dispositivo
+          # arranco; los servicios pueden seguir sin responder (fue el fallo
+          # del 24/11/2026). Se avanza a la siguiente comprobacion solo cuando
+          # la anterior pasa, con 30 s por comando y un plazo global de 180 s,
+          # nunca mas alla del plazo de la preparacion.
+          if [ "$(date +%s)" -ge "$prep_deadline" ]; then
+            phase="disponibilidad (sin plazo tras bootstatus)"
+            prepare_failure "$phase"
+          fi
+          ready_deadline=$(( $(date +%s) + 180 ))
+          [ "$ready_deadline" -gt "$prep_deadline" ] && ready_deadline="$prep_deadline"
+
+          ready_attempts_max=12
+          while [ "$(date +%s)" -lt "$ready_deadline" ] \
+               && [ "$attempt" -lt "$ready_attempts_max" ]; do
+            attempt=$((attempt + 1))
+            if [ "$check_list" -eq 0 ]; then
+              check_start=$(date +%s)
+              check_limit="$(limit_left 30 "$ready_deadline")"
+              limit_rc=$?
+              if [ "$limit_rc" -ne 0 ]; then
+                note "Prepare Simulator: plazo de disponibilidad agotado antes de 'list devices'; se interrumpe la espera"
+                break
+              fi
+              run_to "$DIAG_DIR/logs/prepare-check-list.txt" \
+                "$check_limit" \
+                xcrun simctl list devices
+              check_rc=$?
+              check_seconds=$(( $(date +%s) - check_start ))
+              record_check "list devices" "$check_rc" "$check_seconds" \
+                "$DIAG_DIR/logs/prepare-check-list.txt" "xcrun simctl list devices"
+              if [ "$check_rc" -eq 0 ] \
+                   && grep -q "($udid) (Booted)" "$DIAG_DIR/logs/prepare-check-list.txt"; then
+                check_list=1
+                mark "Prepare Simulator: primera comprobacion simctl list devices OK (intento $attempt, ${check_seconds}s)"
+              else
+                note "Prepare Simulator: simctl list devices no confirma Booted (intento $attempt, rc=$check_rc, ${check_seconds}s)"
+              fi
+            fi
+            if [ "$check_list" -eq 1 ] && [ "$check_true" -eq 0 ]; then
+              check_start=$(date +%s)
+              check_limit="$(limit_left 30 "$ready_deadline")"
+              limit_rc=$?
+              if [ "$limit_rc" -ne 0 ]; then
+                note "Prepare Simulator: plazo de disponibilidad agotado antes de 'spawn true'; se interrumpe la espera"
+                break
+              fi
+              run_to "$DIAG_DIR/logs/prepare-check-spawn-true.txt" \
+                "$check_limit" \
+                xcrun simctl spawn "$udid" /usr/bin/true
+              check_rc=$?
+              check_seconds=$(( $(date +%s) - check_start ))
+              record_check "spawn true" "$check_rc" "$check_seconds" \
+                "$DIAG_DIR/logs/prepare-check-spawn-true.txt" \
+                "xcrun simctl spawn $udid /usr/bin/true"
+              if [ "$check_rc" -eq 0 ]; then
+                check_true=1
+                mark "Prepare Simulator: primera comprobacion simctl spawn true OK (intento $attempt, ${check_seconds}s)"
+              else
+                note "Prepare Simulator: simctl spawn /usr/bin/true falla (intento $attempt, rc=$check_rc, ${check_seconds}s)"
+              fi
+            fi
+            if [ "$check_true" -eq 1 ] && [ "$check_launchd" -eq 0 ]; then
+              check_start=$(date +%s)
+              check_limit="$(limit_left 30 "$ready_deadline")"
+              limit_rc=$?
+              if [ "$limit_rc" -ne 0 ]; then
+                note "Prepare Simulator: plazo de disponibilidad agotado antes de 'spawn launchctl'; se interrumpe la espera"
+                break
+              fi
+              run_to "$DIAG_DIR/logs/prepare-check-spawn-launchctl.txt" \
+                "$check_limit" \
+                xcrun simctl spawn "$udid" /bin/launchctl list
+              check_rc=$?
+              check_seconds=$(( $(date +%s) - check_start ))
+              record_check "spawn launchctl" "$check_rc" "$check_seconds" \
+                "$DIAG_DIR/logs/prepare-check-spawn-launchctl.txt" \
+                "xcrun simctl spawn $udid /bin/launchctl list"
+              if [ "$check_rc" -eq 0 ]; then
+                check_launchd=1
+                mark "Prepare Simulator: primera comprobacion simctl spawn launchctl list OK (intento $attempt, ${check_seconds}s)"
+              else
+                note "Prepare Simulator: simctl spawn /bin/launchctl list falla (intento $attempt, rc=$check_rc, ${check_seconds}s)"
+              fi
+            fi
+            if [ "$check_list" -eq 1 ] && [ "$check_true" -eq 1 ] \
+                 && [ "$check_launchd" -eq 1 ]; then
+              break
+            fi
+            left=$(( ready_deadline - $(date +%s) ))
+            if [ "$left" -gt 0 ]; then
+              pause=5
+              [ "$attempt" -gt 2 ] && pause=10
+              [ "$attempt" -gt 4 ] && pause=15
+              [ "$pause" -gt "$left" ] && pause="$left"
+              sleep "$pause"
+            fi
+          done
+
+          if [ "$check_list" -ne 1 ] || [ "$check_true" -ne 1 ] \
+               || [ "$check_launchd" -ne 1 ]; then
+            phase="disponibilidad (list=$check_list true=$check_true launchctl=$check_launchd, $attempt intento(s) de maximo $ready_attempts_max)"
+            prepare_failure "$phase"
+          fi
+
+          if ! {
+            echo "udid=$udid"
+            echo "booted_at=$booted_at"
+            echo "ready_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "checks=list,spawn,launchctl"
+          } > "$DIAG_DIR/simulator-ready.txt" 2>/dev/null; then
+            prepare_failure "disponibilidad (no se pudo escribir simulator-ready.txt)"
+          fi
+          mark "Prepare Simulator: simulador disponible; UDID $udid listo para XCTest"
+          echo "Simulador preparado: $udid"
+          exit 0
+
       - name: Run XCTest
         id: tests
         timeout-minutes: 30
@@ -1890,43 +2493,25 @@ jobs:
           mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" 2>/dev/null
           mark "XCTest: paso iniciado"
 
-          # La resolucion del destino tambien va acotada: `simctl list devices`
-          # se cuelga cuando CoreSimulator esta atascado y, sin tope, el paso
-          # moriria a los 30 minutos sin haber lanzado ni el comando de XCTest.
-          # Cada consulta se acota y se reintenta hasta 120 s; el comando de
-          # XCTest en si no cambia.
-          udid=""
-          list_deadline=$(( $(date +%s) + 120 ))
-          while :; do
-            run_to "$DIAG_DIR/logs/simctl-list.start.txt" 30 \
-              xcrun simctl list devices available
-            list_rc=$?
-            udid="$(grep -E '^[[:space:]]+iPhone' "$DIAG_DIR/logs/simctl-list.start.txt" \
-              | head -1 \
-              | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')"
-            if [ -n "$udid" ]; then
-              break
-            fi
-            if [ "$list_rc" -eq 125 ]; then
-              # run_to no pudo garantizar el limite: mejor fallar aqui que
-              # arrancar un comando que puede colgarse.
-              mark "XCTest: run_to sin limite garantizado; se aborta la resolucion del destino"
-              break
-            fi
-            if [ "$(date +%s)" -ge "$list_deadline" ]; then
-              break
-            fi
-            mark "XCTest: simctl list devices sin resultado; reintento"
-            sleep 5
-          done
-          if [ -z "$udid" ]; then
-            echo "::error::No hay simuladores de iPhone disponibles en este runner."
-            cat "$DIAG_DIR/logs/simctl-list.start.txt" 2>/dev/null
+          # El UDID lo resuelve y valida "Prepare Simulator". Este paso no
+          # vuelve a elegir dispositivo: reutiliza exactamente el mismo o
+          # aborta, de modo que xcodebuild nunca puede acabar en un segundo
+          # simulador distinto del preparado.
+          udid="$(sed -n '1p' "$DIAG_DIR/udid.txt" 2>/dev/null)"
+          if ! printf '%s\n' "$udid" \
+               | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'; then
+            echo "::error::Run XCTest: falta el UDID valido que debe dejar Prepare Simulator en $DIAG_DIR/udid.txt."
+            mark "XCTest: sin UDID preparado; no se inicia xcodebuild"
             exit 1
           fi
-          echo "Simulador elegido: $udid"
-          echo "$udid" > "$DIAG_DIR/udid.txt" 2>/dev/null
-          mark "XCTest: dispositivo elegido ($udid)"
+          ready_udid="$(sed -n 's/^udid=//p' "$DIAG_DIR/simulator-ready.txt" 2>/dev/null | head -1)"
+          if [ "$ready_udid" != "$udid" ]; then
+            echo "::error::Run XCTest: Prepare Simulator no confirmo la disponibilidad del UDID $udid; no se inicia xcodebuild."
+            mark "XCTest: simulador no confirmado como disponible; no se inicia xcodebuild"
+            exit 1
+          fi
+          echo "Simulador preparado: $udid"
+          mark "XCTest: reutiliza el UDID preparado ($udid)"
 
           # Recogida en caliente. Los streams del simulador y del host solo se
           # pueden reconstruir mientras ocurren; un `log show` posterior pierde
@@ -1975,9 +2560,60 @@ jobs:
           xcodebuild_pid=$!
           echo "$xcodebuild_pid" > "$DIAG_DIR/xcodebuild.pid"
           mark "XCTest: xcodebuild pid $xcodebuild_pid"
+
+          # Marcas de fase mientras corre xcodebuild. test.log y los procesos
+          # del host son la unica senal de por que el runner no llega a los
+          # tests; se traducen a timeline.txt en caliente para que un corte a
+          # los 30 minutos conserve hasta donde llego la inicializacion. El
+          # vigilante se anota en pids.txt y se cierra por PID como el resto.
+          (
+            set +e
+            trap 'exit 0' TERM INT
+            saw_session=0
+            saw_app=0
+            saw_runner=0
+            saw_case=0
+            saw_end=0
+            while :; do
+              alive=0
+              kill -0 "$xcodebuild_pid" 2>/dev/null && alive=1
+              if [ "$saw_session" -eq 0 ] \
+                   && grep -Fq "Test Suite 'AppGymTests.xctest' started" test.log 2>/dev/null; then
+                saw_session=1
+                mark "XCTest: sesion XCTest iniciada"
+              fi
+              if [ "$saw_app" -eq 0 ] && pgrep -x AppGym > /dev/null 2>&1; then
+                saw_app=1
+                mark "XCTest: AppGym lanzada"
+              fi
+              if [ "$saw_runner" -eq 0 ] && pgrep -x AppGymTests-Runner > /dev/null 2>&1; then
+                saw_runner=1
+                mark "XCTest: runner de tests lanzado"
+              fi
+              if [ "$saw_case" -eq 0 ] \
+                   && grep -Fq "Test Case '-[" test.log 2>/dev/null; then
+                saw_case=1
+                mark "XCTest: primer Test Case iniciado"
+              fi
+              if [ "$alive" -eq 0 ]; then
+                if [ "$saw_end" -eq 0 ] \
+                     && grep -Eq "Test Suite 'AppGymTests.xctest' (passed|failed)" test.log 2>/dev/null; then
+                  saw_end=1
+                  mark "XCTest: suite AppGymTests terminada"
+                fi
+                break
+              fi
+              sleep 2
+            done
+            exit 0
+          ) >/dev/null 2>&1 &
+          phase_pid=$!
+          echo "phase-watch=$phase_pid" >> "$DIAG_DIR/pids.txt"
+          mark "XCTest: vigilante de fases iniciado (pid $phase_pid)"
           wait "$xcodebuild_pid"
           status=$?
           mark "XCTest: xcodebuild termina con codigo $status"
+          mark "XCTest: finalizacion de XCTest (rc=$status)"
           if [ -d "$RESULT_BUNDLE" ]; then
             mark "XCTest: .xcresult presente"
           else
@@ -2245,8 +2881,18 @@ jobs:
           # fuente principal; este volcado cubre lo anterior a su arranque.
           run_to "$DIAG_DIR/logs/host-logshow.txt" 120 \
             log show --style compact --last 45m \
-              --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym"'
+              --predicate 'process == "testmanagerd" OR process == "CoreSimulatorService" OR process == "SimulatorTrampoline" OR process == "xcodebuild" OR eventMessage CONTAINS "AppGym" OR eventMessage CONTAINS "deviceservice.lockdown" OR eventMessage CONTAINS "instruments.deviceservice"'
           mark "diagnostico: log show del host capturado"
+
+          # Errores concretos que bloquean el arranque de XCTest. Son greps
+          # locales sobre el volcado anterior (sin comandos nuevos acotados y
+          # dentro del presupuesto de 15 min documentado del paso).
+          grep -Ei 'deviceservice\.lockdown|instruments\.deviceservice|lockdown' \
+            "$DIAG_DIR/logs/host-logshow.txt" \
+            > "$DIAG_DIR/logs/instruments-lockdown.txt" 2>/dev/null
+          grep -Ei 'testmanagerd' "$DIAG_DIR/logs/host-logshow.txt" \
+            > "$DIAG_DIR/logs/testmanagerd.txt" 2>/dev/null
+          mark "diagnostico: errores de instruments/deviceservice.lockdown y testmanagerd extractados"
 
           # El estado se consulta a fichero (no a un pipe): `grep -q` cerraria
           # simctl antes de tiempo y el resultado se leeria a medias.
