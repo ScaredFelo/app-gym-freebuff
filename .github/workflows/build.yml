@@ -301,6 +301,23 @@ jobs:
             shift 2 2>/dev/null || true
             local flag="" ready="" handoff="" armed=""
             local child="" watchdog="" code=0 timed_out=0 probe="" i=0 g=0
+            local rt_id="$$-${RANDOM}-$(date +%s)" rt_start_s=0 rt_start_ns="" rt_end_ns=""
+            local rt_mono_ms="na" rt_group_alive="na" rt_pgid_txt="na"
+            # _rt_log: registro de tiempos de esta llamada en run-to-timing.txt.
+            # La duracion se mide con mono_now (monotonico); pared= es solo
+            # informativo y nunca se usa para afirmar que se excedio el limite.
+            _rt_log() {
+              local ts="" ep="" mn="-"
+              [ -n "${DIAG_DIR:-}" ] || return 0
+              [ -d "${DIAG_DIR:-/nonexistent}" ] || return 0
+              ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              ep="$(date +%s)"
+              if type mono_now > /dev/null 2>&1; then
+                if mono_now; then mn="$MONO_NS"; fi
+              fi
+              printf '%s pared=%s mono=%s id=%s %s\n' "$ts" "$ep" "$mn" "$rt_id" "$*" \
+                >> "$DIAG_DIR/run-to-timing.txt" 2>/dev/null || true
+            }
             local target="" group=0 monitor_was_on=0 grace=2
 
             # A) Plazo. Solo digitos: se rechazan vacio, signos, decimales y texto. Los
@@ -376,6 +393,12 @@ jobs:
               rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
               return 125
             fi
+            rt_start_s="$(date +%s)"
+            rt_start_ns=""
+            if type mono_now > /dev/null 2>&1; then
+              if mono_now; then rt_start_ns="$MONO_NS"; fi
+            fi
+            _rt_log "evento=inicio limite=$limit fichero=$(basename "$file" 2>/dev/null || printf '%s' "$file") padre=$$"
 
             # D) El vigilante arranca y se confirma ANTES del comando: `ready` avisa de
             # que esta vivo y `armed` de que ya tiene el PID del hijo y su grupo. Al
@@ -406,9 +429,9 @@ jobs:
                 sleep 1 2>/dev/null || true
                 i=$((i + 1))
                 if [ "$group" -eq 1 ]; then
-                  kill -0 -- "-$target" 2>/dev/null || exit 0
+                  kill -0 -- "-$target" 2>/dev/null || { _rt_log "evento=watchdog_sin_timeout"; exit 0; }
                 else
-                  kill -0 "$target" 2>/dev/null || exit 0
+                  kill -0 "$target" 2>/dev/null || { _rt_log "evento=watchdog_sin_timeout"; exit 0; }
                 fi
               done
               printf 'timeout\n' > "$flag" 2>/dev/null \
@@ -418,6 +441,10 @@ jobs:
               else
                 kill -TERM "$target" 2>/dev/null
               fi
+              # El TERM se envia antes de registrar: la muestra de reloj no
+              # retrasa el corte del comando ni la gracia.
+              _rt_log "evento=timeout limite=$limit iteraciones=$i pid=$target grupo=$group"
+              _rt_log "evento=term pid=$target grupo=$group"
               g=0
               while [ "$g" -lt "$grace" ]; do
                 if [ "$group" -eq 1 ]; then
@@ -428,11 +455,14 @@ jobs:
                 sleep 1 2>/dev/null || true
                 g=$((g + 1))
               done
+              _rt_log "evento=kill_inmediato pid=$target grupo=$group gracia_iteraciones=$g"
               if [ "$group" -eq 1 ]; then
                 kill -KILL -- "-$target" 2>/dev/null
               else
                 kill -KILL "$target" 2>/dev/null
               fi
+              _rt_log "evento=kill pid=$target grupo=$group"
+              _rt_log "evento=watchdog_fin"
               exit 0
             ) >/dev/null 2>&1 &
             watchdog=$!
@@ -491,6 +521,9 @@ jobs:
               rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
               return 125
             fi
+            rt_pgid_txt="$(ps -p "$child" -o pgid= 2>/dev/null | tr -d ' ')"
+            [ -n "$rt_pgid_txt" ] || rt_pgid_txt="na"
+            _rt_log "evento=arranque pid=$child grupo=$group pgid=$rt_pgid_txt"
             i=0
             while [ ! -f "$armed" ] && [ "$i" -lt 20 ]; do
               kill -0 "$watchdog" 2>/dev/null || break
@@ -532,6 +565,26 @@ jobs:
             wait "$watchdog" 2>/dev/null || true
             if [ -s "$flag" ]; then timed_out=1; fi
             rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+            rt_end_ns=""
+            if type mono_now > /dev/null 2>&1; then
+              if mono_now; then rt_end_ns="$MONO_NS"; fi
+            fi
+            rt_mono_ms="na"
+            if [ -n "${rt_start_ns:-}" ] && [ -n "$rt_end_ns" ]; then
+              rt_mono_ms=$(( (rt_end_ns - rt_start_ns) / 1000000 ))
+            fi
+            # Un grupo con miembros vivos tras el fin del lider significa que el
+            # proceso principal termino antes que sus descendientes y que el
+            # watchdog tuvo que cortarlos.
+            rt_group_alive="na"
+            if [ "$group" -eq 1 ] && [ -n "$child" ]; then
+              if ps -Ao pgid= 2>/dev/null | awk -v g="$child" '$1 == g { f = 1 } END { exit (f ? 0 : 1) }'; then
+                rt_group_alive=si
+              else
+                rt_group_alive=no
+              fi
+            fi
+            _rt_log "evento=fin rc=$code timeout=$timed_out limite=$limit mono_ms=$rt_mono_ms pared_s=$(( $(date +%s) - rt_start_s )) grupo_residual=$rt_group_alive lider_antes_que_grupo=$rt_group_alive"
             if [ "$timed_out" -eq 1 ]; then
               if command -v timeout_log > /dev/null 2>&1; then
                 timeout_log timeout "$limit" "$code" "$*"
@@ -642,6 +695,570 @@ jobs:
                   | sed "s/^ */$stamp,$name,/" >> "$csv"
               done
             done
+          }
+
+          # ------------------------------------------------------------------
+          # Instrumentacion de CoreSimulator.
+          #
+          # Solo evidencia: nada de aqui arranca, reinicia, borra ni termina
+          # procesos. Las consultas al sistema pasan por run_to (tope propio);
+          # solo las consultas locales de metadatos (`ps -p`, `kill -0`, `ps -A`)
+          # se ejecutan directas, porque no esperan E/S y no pueden bloquearse.
+          #
+          # El formato distingue de forma explicita:
+          #   estado=ausente       el proceso no existe en esta ejecucion.
+          #   estado=presente      existe; cpu_alerta=si cuando pcpu >= 50.
+          #   estado=desaparecido  figuraba en la tabla y dejo de existir.
+          #   estado_tabla=error   `ps` fallo: no se puede afirmar nada.
+          # ------------------------------------------------------------------
+
+          MONO_CLOCK_KIND="${MONO_CLOCK_KIND:-}"
+          MONO_CLOCK_TIMEOUTS="${MONO_CLOCK_TIMEOUTS:-0}"
+          MONO_NS=""
+          INSTR_DEADLINE="${INSTR_DEADLINE:-}"
+          BOOTED_MARK="${BOOTED_MARK:-no}"
+          CORESIM_NAMES="${CORESIM_NAMES:-CoreSimulatorService simdiskimaged diskimagesiod Simulator launchd launchd_sim testmanagerd}"
+          CORESIM_CPU_ALERTA="${CORESIM_CPU_ALERTA:-50}"
+          MOBILEACTIVATION_WINDOW="${MOBILEACTIVATION_WINDOW:-20m}"
+
+          # _mono_sample <comando...>
+          # Ejecuta una fuente de reloj con un tope de ~1.5 s para que una
+          # fuente colgada no bloquee la instrumentacion. Imprime el valor en
+          # nanosegundos o devuelve 1 sin imprimir nada.
+          _mono_sample() {
+            local tmp="" pid="" out="" rc=0 i=0
+            tmp="$(mktemp "${TMPDIR:-/tmp}/appgym-mono.XXXXXX" 2>/dev/null)" || return 1
+            "$@" > "$tmp" 2>/dev/null &
+            pid=$!
+            while [ "$i" -lt 15 ]; do
+              kill -0 "$pid" 2>/dev/null || break
+              if [ "$i" -lt 5 ]; then
+                sleep 0.02 2>/dev/null || sleep 1
+              else
+                sleep 0.1 2>/dev/null || sleep 1
+              fi
+              i=$((i + 1))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -KILL "$pid" 2>/dev/null
+              wait "$pid" 2>/dev/null
+              rm -f "$tmp" 2>/dev/null
+              return 1
+            fi
+            wait "$pid" 2>/dev/null
+            rc=$?
+            out="$(cat "$tmp" 2>/dev/null)"
+            rm -f "$tmp" 2>/dev/null
+            [ "$rc" -eq 0 ] || return 1
+            case "$out" in
+              ''|*[!0-9]*) return 1 ;;
+            esac
+            printf '%s\n' "$out"
+          }
+
+          # mono_detect: elige la fuente monotonica una sola vez por shell.
+          # perl arranca antes que python3 y Time::HiRes es parte del sistema.
+          mono_detect() {
+            if command -v perl > /dev/null 2>&1 \
+               && perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e 'exit 0' > /dev/null 2>&1; then
+              MONO_CLOCK_KIND=perl
+            elif command -v python3 > /dev/null 2>&1 \
+               && python3 -c 'import time; time.monotonic_ns()' > /dev/null 2>&1; then
+              MONO_CLOCK_KIND=python3
+            else
+              MONO_CLOCK_KIND=none
+            fi
+          }
+
+          # mono_now: deja el instante monotonico en MONO_NS. La deteccion se
+          # hace en el propio shell (no en un subshell) para cachear la fuente.
+          # Devuelve 1 si no hay fuente disponible o si no responde al tope.
+          mono_now() {
+            MONO_NS=""
+            [ -n "${MONO_CLOCK_KIND:-}" ] || mono_detect
+            case "${MONO_CLOCK_KIND:-none}" in
+              perl)
+                MONO_NS="$(_mono_sample perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC \
+                  -e 'printf "%.0f\n", clock_gettime(CLOCK_MONOTONIC) * 1000000000')" \
+                  || { MONO_CLOCK_TIMEOUTS=$((MONO_CLOCK_TIMEOUTS + 1)); return 1; }
+                ;;
+              python3)
+                MONO_NS="$(_mono_sample python3 -c 'import time; print(time.monotonic_ns())')" \
+                  || { MONO_CLOCK_TIMEOUTS=$((MONO_CLOCK_TIMEOUTS + 1)); return 1; }
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+            [ -n "$MONO_NS" ]
+          }
+
+          # instr_cap <tope>
+          # Tope efectivo de un comando de instrumentacion. Con INSTR_DEADLINE
+          # fijado (diagnostico de fallo) nunca se rebasa el plazo comun; si ya
+          # vencio devuelve 126 y el llamador no ejecuta el comando.
+          instr_cap() {
+            local cap="${1:-10}"
+            local left=0
+            [ -n "${INSTR_DEADLINE:-}" ] || { printf '%s' "$cap"; return 0; }
+            left=$(( INSTR_DEADLINE - $(date +%s) ))
+            if [ "$left" -le 0 ]; then
+              return 126
+            fi
+            [ "$cap" -gt "$left" ] && cap="$left"
+            printf '%s' "$cap"
+          }
+
+          instr_note() {
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" \
+              >> "$DIAG_DIR/prepare-simulator-timeline.txt" 2>/dev/null || true
+          }
+
+          sample_available() {
+            command -v sample > /dev/null 2>&1
+          }
+
+          # pid_exists <pid>: cierto si el PID existe y no es un zombie. Usa
+          # `ps` y no `kill -0` porque kill -0 falla con EPERM para procesos de
+          # otro usuario (por ejemplo launchd) aunque el proceso exista.
+          pid_exists() {
+            local stat=""
+            [ -n "${1:-}" ] || return 1
+            stat="$(ps -p "$1" -o stat= 2>/dev/null | tr -d ' ')"
+            [ -n "$stat" ] || return 1
+            [ "${stat#Z}" = "$stat" ]
+          }
+
+          # _ps_coresim_table <fichero> <tope>
+          _ps_coresim_table() {
+            local file="$1"
+            local cap="$2"
+            run_to "$file" "$cap" ps -Ao pid=,ppid=,pgid=,stat=,etime=,time=,pcpu=,pmem=,rss=,comm=
+          }
+
+          # proc_snapshot <etiqueta>
+          # Foto de los servicios que gobiernan CoreSimulator: PID, PPID, PGID,
+          # estado, tiempo de ejecucion, CPU acumulada, CPU actual, memoria y
+          # linea de comandos. Nunca hace fallar al paso que la llama.
+          proc_snapshot() {
+            local label="${1:-sin-etiqueta}"
+            local out="$DIAG_DIR/coresimulator-processes.txt"
+            local csv="$DIAG_DIR/snapshots/coresimulator-processes.csv"
+            local table="$DIAG_DIR/logs/ps-coresim.$label.txt"
+            local cap="" rc=0 stamp="" mono="-" name="" pids="" pid="" line=""
+            local cmd="" alerta="" vivo=""
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            cap="$(instr_cap 12)" || { instr_note "procesos: presupuesto agotado ($label)"; return 0; }
+            mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" 2>/dev/null
+            _ps_coresim_table "$table" "$cap" || rc=$?
+            stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            if mono_now; then mono="$MONO_NS"; fi
+            {
+              printf '=== %s etiqueta=%s mono=%s ps_rc=%s tope=%ss ===\n' \
+                "$stamp" "$label" "$mono" "$rc" "$cap"
+              if [ "$rc" -ne 0 ] || [ ! -s "$table" ]; then
+                printf 'estado_tabla=error ps_rc=%s: no se puede clasificar ningun proceso\n' "$rc"
+              else
+                printf 'estado_tabla=ok lineas=%s\n' "$(wc -l < "$table" | tr -d ' ')"
+                for name in $CORESIM_NAMES; do
+                  pids="$(awk -v n="$name" '$NF == n || $NF ~ ("/" n "$") { print $1 }' "$table" 2>/dev/null | paste -sd, -)"
+                  if [ -z "$pids" ]; then
+                    printf 'proceso=%s estado=ausente\n' "$name"
+                    continue
+                  fi
+                  printf 'proceso=%s pids=%s estado=presente\n' "$name" "$pids"
+                  for pid in $(printf '%s' "$pids" | tr ',' ' '); do
+                    line="$(awk -v p="$pid" '$1 == p' "$table" 2>/dev/null | head -1)"
+                    if [ -z "$line" ]; then
+                      printf '  pid=%s estado=desaparecido (figuraba en la tabla y ya no esta)\n' "$pid"
+                      continue
+                    fi
+                    alerta="$(printf '%s\n' "$line" | awk -v thr="$CORESIM_CPU_ALERTA" '{ print (($7 + 0) >= (thr + 0)) ? "si" : "no" }')"
+                    printf '%s\n' "$line" | awk -v al="$alerta" '{
+                      printf "  pid=%s ppid=%s pgid=%s stat=%s etime=%s cpu_total=%s pcpu=%s pmem=%s rss_kb=%s cpu_alerta=%s\n", \
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, al
+                    }'
+                    if pid_exists "$pid"; then vivo=no; else vivo=si; fi
+                    printf '  pid=%s desaparece=%s\n' "$pid" "$vivo"
+                    cmd="$(ps -p "$pid" -o command= 2>/dev/null | head -1)"
+                    printf '  cmd=%s\n' "${cmd:-no_disponible}"
+                    printf '%s,%s,%s,%s,%s,%s\n' "$stamp" "$label" "$name" "$pid" \
+                      "$(printf '%s\n' "$line" | awk '{ print $7 }')" "$alerta" >> "$csv" 2>/dev/null
+                  done
+                done
+              fi
+            } >> "$out" 2>&1
+            return 0
+          }
+
+          # diskimagesiod_timeline <etiqueta>
+          # Linea temporal de simdiskimaged/diskimagesiod: CPU, memoria, tiempo
+          # acumulado y evolucion respecto de la ultima captura. Si la CPU
+          # supera el umbral y `sample` existe, toma una muestra acotada a 20 s.
+          diskimagesiod_timeline() {
+            local label="${1:-sin-etiqueta}"
+            local out="$DIAG_DIR/diskimagesiod-timeline.txt"
+            local table="$DIAG_DIR/logs/ps-coresim.$label.txt"
+            local cap="" rc=0 stamp="" name="" pids="" pid="" line="" pcpu=""
+            local prev="" estado="" alerta="" sc="" sample_out=""
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            cap="$(instr_cap 10)" || { instr_note "diskimagesiod: presupuesto agotado ($label)"; return 0; }
+            mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" 2>/dev/null
+            if [ ! -s "$table" ]; then
+              _ps_coresim_table "$table" "$cap" || rc=$?
+              if [ "$rc" -ne 0 ]; then
+                printf '%s etiqueta=%s proceso=simdiskimaged|diskimagesiod estado=error ps_rc=%s\n' \
+                  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" "$rc" >> "$out" 2>/dev/null
+                return 0
+              fi
+            fi
+            stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            {
+              for name in simdiskimaged diskimagesiod; do
+                pids="$(awk -v n="$name" '$NF == n || $NF ~ ("/" n "$") { print $1 }' "$table" 2>/dev/null | paste -sd, -)"
+                if [ -z "$pids" ]; then
+                  printf '%s etiqueta=%s proceso=%s estado=ausente\n' "$stamp" "$label" "$name"
+                  continue
+                fi
+                for pid in $(printf '%s' "$pids" | tr ',' ' '); do
+                  line="$(awk -v p="$pid" '$1 == p' "$table" 2>/dev/null | head -1)"
+                  [ -n "$line" ] || continue
+                  pcpu="$(printf '%s\n' "$line" | awk '{ print $7 }')"
+                  prev="$(awk -v p="$pid" '{
+                      for (i = 1; i <= NF; i++) {
+                        if ($i == "pid=" p) {
+                          for (j = 1; j <= NF; j++) if ($j ~ /^pcpu=/) last = substr($j, 6)
+                        }
+                      }
+                    } END { print last }' "$out" 2>/dev/null | tail -1)"
+                  alerta="$(printf '%s\n' "$pcpu" | awk -v thr="$CORESIM_CPU_ALERTA" '{ print (($1 + 0) >= (thr + 0)) ? "si" : "no" }')"
+                  if pid_exists "$pid"; then estado=presente; else estado=desaparecido; fi
+                  printf '%s etiqueta=%s proceso=%s pid=%s ppid=%s estado=%s pcpu=%s cpu_total=%s rss_kb=%s cpu_alerta=%s pcpu_previo=%s\n' \
+                    "$stamp" "$label" "$name" "$pid" \
+                    "$(printf '%s\n' "$line" | awk '{ print $2 }')" \
+                    "$estado" "$pcpu" \
+                    "$(printf '%s\n' "$line" | awk '{ print $6 }')" \
+                    "$(printf '%s\n' "$line" | awk '{ print $9 }')" \
+                    "$alerta" "${prev:-na}"
+                  if [ "$alerta" = "si" ] && sample_available; then
+                    sample_out="$DIAG_DIR/snapshots/sample-$name-$pid-$label.txt"
+                    if [ -f "$sample_out" ]; then
+                      printf '  sample=ya_tomado fichero=snapshots/%s\n' "$(basename "$sample_out")"
+                    else
+                      sc="$(instr_cap 20)" && {
+                        if run_to "$sample_out" "$sc" sample "$pid" 1 1; then
+                          printf '  sample=ok fichero=snapshots/%s\n' "$(basename "$sample_out")"
+                        else
+                          printf '  sample=fallo rc=%s\n' "$?"
+                          rm -f "$sample_out" 2>/dev/null
+                        fi
+                      }
+                      [ -n "$sc" ] || printf '  sample=omitido (presupuesto agotado)\n'
+                    fi
+                  elif [ "$alerta" = "si" ]; then
+                    printf '  sample=no_disponible\n'
+                  fi
+                done
+              done
+            } >> "$out" 2>&1
+            return 0
+          }
+
+          # _res_block <etiqueta> <nombre> <tope> <comando...>
+          _res_block() {
+            local label="$1"
+            local name="$2"
+            local cap="$3"
+            local eff="" rc=0 tmp=""
+            shift 3
+            tmp="$DIAG_DIR/logs/.res-$name.$label.tmp"
+            eff="$(instr_cap "$cap")" || { printf '%s\n\n' "-- $name -- omitido (presupuesto agotado)"; return 0; }
+            printf '%s\n' "-- $name (tope ${eff}s) --"
+            run_to "$tmp" "$eff" "$@"
+            rc=$?
+            if [ "$rc" -ne 0 ]; then
+              printf 'rc=%s\n' "$rc"
+            fi
+            sed -n '1,120p' "$tmp" 2>/dev/null
+            rm -f "$tmp" 2>/dev/null
+            printf '\n'
+            return 0
+          }
+
+          # resources_snapshot <etiqueta>
+          # Recursos del host con las herramientas del sistema. La salida
+          # cruda se integra en el aggregate y el temporal se borra: no se
+          # duplican ficheros grandes.
+          resources_snapshot() {
+            local label="${1:-sin-etiqueta}"
+            local out="$DIAG_DIR/coresimulator-resources.txt"
+            local cap=""
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            cap="$(instr_cap 30)" || { instr_note "recursos: presupuesto agotado ($label)"; return 0; }
+            mkdir -p "$DIAG_DIR/logs" 2>/dev/null
+            {
+              printf '=== %s etiqueta=%s tope_global=%ss ===\n' \
+                "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$label" "$cap"
+              _res_block "$label" uptime 10 uptime
+              _res_block "$label" vm_stat 15 vm_stat
+              _res_block "$label" swap 10 sysctl vm.swapusage
+              _res_block "$label" memory_pressure 20 memory_pressure
+              _res_block "$label" df 15 df -h
+              _res_block "$label" top 30 top -l 1 -n 15 -o cpu
+              _res_block "$label" ps_cpu 15 sh -c 'ps -Ao pid=,ppid=,pcpu=,pmem=,rss=,comm= | sort -k3 -nr | head -20'
+            } >> "$out" 2>&1
+            return 0
+          }
+
+          # mobileactivation_scan <etiqueta> [<disparador>]
+          # Contexto de MobileActivation.ErrorDomain Code=-25, "Failed to get a
+          # device identity" y "Client is not supported": frecuencia, primer y
+          # ultimo evento, procesos que los emiten, contexto inmediato y
+          # diferencia respecto de la captura anterior. El error NO se toma
+          # como causa raiz: solo se mide si acompania a los bloqueos.
+          mobileactivation_scan() {
+            local label="${1:-sin-etiqueta}"
+            local motivo="${2:-sin-motivo}"
+            local out="$DIAG_DIR/mobileactivation-errors.txt"
+            local ctx="$DIAG_DIR/mobileactivation-context.txt"
+            local raw="$DIAG_DIR/logs/mobileactivation-logshow.$label.txt"
+            local prev_file="$DIAG_DIR/logs/.mobileactivation-total"
+            local cap="" rc=0 stamp="" total=0 ident=0 code25=0 notsup=0 first="" last=""
+            local prev=0 delta=0 mins=20
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            cap="$(instr_cap 45)" || { instr_note "MobileActivation: presupuesto agotado ($label)"; return 0; }
+            mkdir -p "$DIAG_DIR/logs" 2>/dev/null
+            run_to "$raw" "$cap" log show --style compact --last "$MOBILEACTIVATION_WINDOW" \
+              --predicate 'eventMessage CONTAINS "MobileActivation" OR eventMessage CONTAINS "Failed to get a device identity" OR eventMessage CONTAINS "Client is not supported"'
+            rc=$?
+            stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            case "$MOBILEACTIVATION_WINDOW" in
+              *h) mins=$(( ${MOBILEACTIVATION_WINDOW%h} * 60 )) ;;
+              *m) mins="${MOBILEACTIVATION_WINDOW%m}" ;;
+              *) mins=1 ;;
+            esac
+            case "$mins" in ''|*[!0-9]*|0) mins=1 ;; esac
+            {
+              printf '=== %s etiqueta=%s disparador=%s ventana=%s fase_boot=%s ===\n' \
+                "$stamp" "$label" "$motivo" "$MOBILEACTIVATION_WINDOW" "${BOOTED_MARK:-no}"
+              printf 'log_show_rc=%s tope=%ss\n' "$rc" "$cap"
+              if [ "$rc" -ne 0 ] || [ ! -s "$raw" ]; then
+                printf 'datos=sin_datos (rc=%s)\n' "$rc"
+              else
+                total="$(grep -c -E 'MobileActivation|Failed to get a device identity|Client is not supported' "$raw" 2>/dev/null)"
+                ident="$(grep -c -F 'Failed to get a device identity' "$raw" 2>/dev/null)"
+                code25="$(grep -c -F 'Code=-25' "$raw" 2>/dev/null)"
+                notsup="$(grep -c -F 'Client is not supported' "$raw" 2>/dev/null)"
+                first="$(grep -E 'MobileActivation|Failed to get a device identity|Client is not supported' "$raw" 2>/dev/null | head -1 | awk '{ print $1 " " $2 }')"
+                last="$(grep -E 'MobileActivation|Failed to get a device identity|Client is not supported' "$raw" 2>/dev/null | tail -1 | awk '{ print $1 " " $2 }')"
+                prev=0
+                if [ -f "$prev_file" ]; then prev="$(cat "$prev_file" 2>/dev/null)"; fi
+                case "$prev" in ''|*[!0-9]*) prev=0 ;; esac
+                delta=$((total - prev))
+                printf '%s\n' "$total" > "$prev_file" 2>/dev/null || true
+                printf 'total=%s mobileactivation=%s device_identity=%s code_menos25=%s client_no_soportado=%s\n' \
+                  "$total" "$((total - ident - notsup))" "$ident" "$code25" "$notsup"
+                printf 'primera=%s ultima=%s frecuencia_por_minuto=%s\n' "${first:-na}" "${last:-na}" \
+                  "$(awk -v t="$total" -v m="$mins" 'BEGIN { printf "%.2f", t / m }')"
+                printf 'delta_desde_captura_anterior=%s total_anterior=%s\n' "$delta" "$prev"
+                printf 'coincide_con=%s (captura lanzada por ese evento)\n' "$motivo"
+                printf 'procesos_frecuentes:\n'
+                grep -E 'MobileActivation|Failed to get a device identity|Client is not supported' "$raw" 2>/dev/null \
+                  | sed -E 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+[+-][0-9]{4} +0x[0-9a-fA-F]+ +[A-Za-z]+ +0x[0-9a-fA-F]+ +[0-9]+ +[0-9]+ +([^:]+):.*/\1/' \
+                  | grep -vE '^[0-9]{4}-[0-9]{2}-[0-9]{2} ' \
+                  | sort | uniq -c | sort -rn | head -10 \
+                  | awk '{ c = $1; sub(/^[^ ]+ +/, ""); printf "  frecuencia=%s proceso=%s\n", c, $0 }'
+              fi
+            } >> "$out" 2>&1
+            if [ -s "$raw" ]; then
+              grep -n -E 'MobileActivation|Failed to get a device identity|Client is not supported' "$raw" 2>/dev/null \
+                | head -5 | cut -d: -f1 | while read -r n; do
+                  [ -n "$n" ] || continue
+                  {
+                    printf '%s\n' "--- contexto etiqueta=$label linea=$n fase_boot=${BOOTED_MARK:-no} ---"
+                    [ "$n" -gt 2 ] && from=$((n - 2)) || from=1
+                    sed -n "${from},$((n + 2))p" "$raw" 2>/dev/null
+                  } >> "$ctx" 2>/dev/null
+                done
+            fi
+            instr_note "MobileActivation: etiqueta=$label rc=$rc total=${total:-0} delta=${delta:-0}"
+            return 0
+          }
+
+          # clock_diagnostics
+          # Deja constancia de que reloj usa cada mecanismo del workflow y mide
+          # la desviacion entre el reloj de pared (date +%s) y el monotonico.
+          # Un salto de pared NO se usa para afirmar que un proceso excedio su
+          # timeout: para eso esta la duracion monotonica.
+          clock_diagnostics() {
+            local out="$DIAG_DIR/clock-diagnostics.txt"
+            local cap="" i=1 w1="" w2="" m1="" m2="" pared_ms=0 mono_ms=0 dev=0
+            local avanza=no retrocede=no
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            cap="$(instr_cap 45)" || { instr_note "reloj: presupuesto agotado"; return 0; }
+            mkdir -p "$DIAG_DIR/logs" 2>/dev/null
+            {
+              printf '=== %s ===\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              [ -n "${MONO_CLOCK_KIND:-}" ] || mono_detect
+              printf 'fuente_monotonica=%s muestras_agotadas=%s\n' "${MONO_CLOCK_KIND:-none}" "${MONO_CLOCK_TIMEOUTS:-0}"
+              printf 'date_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              printf 'date_epoch=%s\n' "$(date +%s)"
+              printf 'bash_SECONDS=%s (reloj de pared del shell)\n' "${SECONDS:-na}"
+              printf 'kern_boottime=%s\n' "$(sysctl -n kern.boottime 2>/dev/null)"
+              printf 'uptime=%s\n' "$(uptime 2>/dev/null)"
+              printf '%s\n' '-- reloj de cada mecanismo del workflow --'
+              printf '%s\n' 'run_to: el limite del comando lo impone un contador de sleeps de 1 s, no un reloj.'
+              printf '%s\n' 'watch_stream/supervise_stream/wait_booted/close_stream_pids/snapshot-loop/prepare: date +%s (pared).'
+              printf '%s\n' 'mediciones nuevas: mono_now (monotonico) cuando la fuente responde.'
+              printf '%s\n' '-- calibracion pared vs monotonico (3 muestras) --'
+              i=1
+              while [ "$i" -le 3 ]; do
+                w1="$(date +%s)"; m1=""
+                if mono_now; then m1="$MONO_NS"; fi
+                sleep 0.3 2>/dev/null || sleep 1
+                w2="$(date +%s)"; m2=""
+                if mono_now; then m2="$MONO_NS"; fi
+                if [ -n "$m1" ] && [ -n "$m2" ]; then
+                  pared_ms=$(( (w2 - w1) * 1000 ))
+                  mono_ms=$(( (m2 - m1) / 1000000 ))
+                  dev=$(( pared_ms - mono_ms ))
+                  printf 'muestra=%s pared_delta_ms=%s mono_delta_ms=%s desviacion_ms=%s\n' \
+                    "$i" "$pared_ms" "$mono_ms" "$dev"
+                  if [ "$w2" -lt "$w1" ]; then retrocede=si; fi
+                  if [ "$dev" -gt 1500 ]; then avanza=si; fi
+                  if [ "$dev" -lt -1500 ]; then retrocede=si; fi
+                else
+                  printf 'muestra=%s no_evaluable (sin fuente monotonica)\n' "$i"
+                fi
+                i=$((i + 1))
+              done
+              printf 'reloj_pared_avanza_bruscamente=%s reloj_pared_retrocede=%s\n' "$avanza" "$retrocede"
+              printf '%s\n' '-- desviacion pared vs monotonico por llamada a run_to --'
+              if [ -s "$DIAG_DIR/run-to-timing.txt" ]; then
+                awk '
+                  {
+                    id = ""; ev = ""; mn = ""; ep = ""
+                    for (i = 1; i <= NF; i++) {
+                      if ($i ~ /^id=/) id = substr($i, 4)
+                      else if ($i ~ /^pared=/) ep = substr($i, 7)
+                      else if ($i ~ /^mono=/) mn = substr($i, 6)
+                      else if ($i == "evento=inicio") ev = "inicio"
+                      else if ($i == "evento=fin") ev = "fin"
+                    }
+                    if (id == "" || mn == "" || mn == "-" || ep == "") next
+                    if (ev == "inicio" && !(id in s_ep)) { s_ep[id] = ep; s_mn[id] = mn }
+                    if (ev == "fin") { f_ep[id] = ep; f_mn[id] = mn }
+                  }
+                  END {
+                    for (id in s_mn) {
+                      if (!(id in f_mn)) continue
+                      dp = (f_ep[id] - s_ep[id]) * 1000
+                      dm = (f_mn[id] - s_mn[id]) / 1000000
+                      dv = dp - dm
+                      if (dv < 0) ad = -dv; else ad = dv
+                      n++
+                      sum += ad
+                      if (ad > max) max = ad
+                      if (ad > 2000) saltos++
+                    }
+                    printf "llamadas_con_pared_y_mono=%d desviacion_media_ms=%.0f desviacion_max_ms=%.0f llamadas_con_salto_mayor_2s=%d\n", n, (n ? sum / n : 0), max, saltos
+                  }
+                ' "$DIAG_DIR/run-to-timing.txt" 2>/dev/null
+              else
+                printf '%s\n' 'sin registros de run_to todavia'
+              fi
+              printf '%s\n' '-- avisos del sistema sobre ajustes de reloj (log show acotado) --'
+              if run_to "$DIAG_DIR/logs/clock-wallclock.txt" "$cap" \
+                   log show --style compact --last 30m \
+                     --predicate 'eventMessage CONTAINS[c] "wall clock" OR eventMessage CONTAINS[c] "clock adjustment" OR eventMessage CONTAINS[c] "time adjustment"'; then
+                printf 'log_show_rc=0\n'
+              else
+                printf 'log_show_rc=%s\n' "$?"
+              fi
+              printf 'avisos=%s\n' "$(grep -c -iE 'wall clock|clock adjustment|time adjustment' "$DIAG_DIR/logs/clock-wallclock.txt" 2>/dev/null)"
+              sed -n '1,10p' "$DIAG_DIR/logs/clock-wallclock.txt" 2>/dev/null
+            } >> "$out" 2>&1
+            return 0
+          }
+
+          # run_to_timing_summary
+          # Resume, por llamada, la duracion monotonica frente al limite y
+          # separa lo que es ejecucion de lo que es limpieza. No usa pared para
+          # nada que se afirme como duracion: la columna pared_* es informativa.
+          run_to_timing_summary() {
+            local f="${DIAG_DIR:-}/run-to-timing.txt"
+            local tmp=""
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            [ -s "$f" ] || return 0
+            tmp="$f.resumen.$$"
+            awk '
+              {
+                id = ""; ev = ""; lim = ""; mn = ""; ep = ""; rc = ""; to = ""; it = ""; gr = ""
+                for (i = 1; i <= NF; i++) {
+                  if ($i ~ /^id=/) id = substr($i, 4)
+                  else if ($i ~ /^pared=/) ep = substr($i, 7)
+                  else if ($i ~ /^mono=/) mn = substr($i, 6)
+                  else if ($i == "evento=inicio") ev = "inicio"
+                  else if ($i == "evento=fin") ev = "fin"
+                  else if ($i ~ /^limite=/) lim = substr($i, 8)
+                  else if ($i ~ /^iteraciones=/) it = substr($i, 13)
+                  else if ($i ~ /^rc=/) rc = substr($i, 4)
+                  else if ($i ~ /^timeout=/) to = substr($i, 9)
+                  else if ($i ~ /^grupo_residual=/) gr = substr($i, 16)
+                }
+                if (id == "") next
+                if (ev == "inicio") {
+                  if (!(id in seen)) { seen[id] = 1; calls++; order[calls] = id }
+                  if (lim != "") limit[id] = lim
+                  if (mn != "-" && mn != "") start_ns[id] = mn
+                  if (ep != "") start_s[id] = ep
+                } else if (ev == "fin") {
+                  if (mn != "-" && mn != "") end_ns[id] = mn
+                  if (ep != "") end_s[id] = ep
+                  rcval[id] = rc; toval[id] = to; itval[id] = it; grval[id] = gr
+                }
+              }
+              END {
+                for (k = 1; k <= calls; k++) {
+                  id = order[k]
+                  dur = "na"; delta = "na"; pared = "na"
+                  if ((id in start_ns) && (id in end_ns)) {
+                    dur = int((end_ns[id] - start_ns[id]) / 1000000)
+                    if (limit[id] != "") delta = dur - (limit[id] * 1000)
+                  }
+                  if ((id in start_s) && (id in end_s)) pared = end_s[id] - start_s[id]
+                  printf "run_to id=%s limite=%ss mono_total_ms=%s delta_limite_ms=%s pared_total_s=%s timeout=%s iteraciones=%s rc=%s grupo_residual=%s\n", \
+                    id, (limit[id] == "" ? "?" : limit[id]), dur, delta, pared, \
+                    (toval[id] == "" ? "?" : toval[id]), (itval[id] == "" ? "-" : itval[id]), \
+                    (rcval[id] == "" ? "-" : rcval[id]), (grval[id] == "" ? "-" : grval[id])
+                  total++
+                  if (delta != "na") {
+                    con_mono++
+                    if (delta > 0) {
+                      sobre_limite++
+                      sum_exceso += delta
+                      if (delta > max_exceso) max_exceso = delta
+                    }
+                  }
+                  if (toval[id] == "1") timeouts++
+                  if (grval[id] == "si") residual++
+                }
+                printf "agregado llamadas=%d con_mono=%d timeouts=%d sobre_limite=%d grupo_residual=%d exceso_max_ms=%.0f exceso_medio_ms=%.0f\n", \
+                  total, con_mono, timeouts, sobre_limite, residual, max_exceso, (sobre_limite ? sum_exceso / sobre_limite : 0)
+                print "nota: mono_total_ms = duracion monotonica real de la llamada; delta_limite_ms ="
+                print "mono_total_ms - limite (negativo = termino antes; positivo = se paso). Incluye el"
+                print "sobrecoste de cada sleep del vigilante, la gracia TERM->KILL y la recogida del vigilante."
+              }
+            ' "$f" > "$tmp" 2>/dev/null
+            if [ -s "$tmp" ]; then
+              {
+                printf '\n=== resumen run_to %s ===\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+                cat "$tmp"
+              } >> "$f"
+            fi
+            rm -f "$tmp" 2>/dev/null
+            return 0
           }
 
           # process_gone <pid>
@@ -1593,6 +2210,239 @@ jobs:
             exit 1
           fi
 
+      # Pruebas de la instrumentacion de CoreSimulator (bash, no XCTest: no
+      # alteran el recuento de 289). Simulan con mocks los casos que en un
+      # runner real no se pueden provocar a voluntad: proceso inexistente, CPU
+      # alta, proceso que desaparece durante la captura, `log show` con error,
+      # `sample` ausente, reloj de pared que salta, watchdog que necesita KILL y
+      # presupuesto de diagnostico agotado. NO son pruebas reales de
+      # CoreSimulator ni del simulador.
+      - name: Self-test CoreSimulator instrumentation
+        run: |
+          set +e
+          workflow="${GITHUB_WORKSPACE:-$PWD}/.github/workflows/build.yml"
+          root="${RUNNER_TEMP:-/tmp}/instr_selftest"
+          rm -rf "$root"
+          mkdir -p "$root/diag/logs" "$root/diag/snapshots"
+
+          helper_source="$root/diagnostic-helpers.sh"
+          awk '/diagnostic-helpers\.sh" <<.SH.$/{on=1;next} on && /^[[:space:]]*SH$/{on=0} on' \
+            "$workflow" | sed 's/^          //' > "$helper_source"
+          if [ ! -s "$helper_source" ]; then
+            echo "::error::No se pudo extraer diagnostic-helpers.sh del workflow."
+            exit 1
+          fi
+          if ! bash -n "$helper_source"; then
+            echo "::error::diagnostic-helpers.sh no pasa bash -n."
+            exit 1
+          fi
+
+          export DIAG_DIR="$root/diag"
+          . "$helper_source"
+          mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots"
+          : > "$DIAG_DIR/run-to-timing.txt"
+
+          pass=0
+          fail=0
+          ok() { pass=$((pass + 1)); printf 'PASS  %s\n' "$1"; }
+          ko() { fail=$((fail + 1)); printf 'FAIL  %s\n' "$1"; }
+          expect() {
+            if [ "$2" = "$3" ]; then ok "$1"; else ko "$1 (esperado '$2', obtenido '$3')"; fi
+          }
+          has() {
+            if grep -Fq -- "$2" "$1" 2>/dev/null; then
+              ok "$3"
+            else
+              ko "$3 (falta '$2' en $(basename "$1"))"
+            fi
+          }
+
+          live=$$
+          ps() {
+            case "$*" in
+              *"-Ao pid=,ppid=,pgid=,stat=,etime=,time=,pcpu=,pmem=,rss=,comm="*) cat "$PS_FIXTURE" ;;
+              *) command ps "$@" ;;
+            esac
+          }
+
+          # 1) Proceso inexistente: debe distinguirse de un error de ps.
+          cat > "$root/ps.none" <<EOF
+             1     0     1 S 01:00:00 0:01.23  0.0  0.1  10240 /sbin/launchd
+          $live  $live  $live S 00:00:05 0:00.10  0.1  0.1   2048 /bin/bash
+          EOF
+          PS_FIXTURE="$root/ps.none"
+          proc_snapshot "mock_ausente"
+          has "$DIAG_DIR/coresimulator-processes.txt" "proceso=CoreSimulatorService estado=ausente" "ausente: CoreSimulatorService"
+          has "$DIAG_DIR/coresimulator-processes.txt" "proceso=diskimagesiod estado=ausente" "ausente: diskimagesiod"
+          has "$DIAG_DIR/coresimulator-processes.txt" "proceso=launchd pids=1 estado=presente" "presente: launchd (pid 1)"
+          has "$DIAG_DIR/coresimulator-processes.txt" "estado_tabla=ok" "tabla ps valida"
+          has "$DIAG_DIR/coresimulator-processes.txt" "cmd=" "linea de comandos capturada"
+
+          # 2) Proceso con CPU elevada: pcpu y alerta explicitos.
+          cat > "$root/ps.hot" <<EOF
+          $live  1  $live S 00:12:00 0:35.10 72.1  2.4 204800 /usr/libexec/diskimagesiod
+             1     0     1 S 01:00:00 0:01.23  0.0  0.1  10240 /sbin/launchd
+          EOF
+          PS_FIXTURE="$root/ps.hot"
+          proc_snapshot "mock_cpu"
+          has "$DIAG_DIR/coresimulator-processes.txt" "proceso=diskimagesiod pids=$live estado=presente" "cpu alta: proceso presente"
+          has "$DIAG_DIR/coresimulator-processes.txt" "pcpu=72.1" "cpu alta: pcpu registrado"
+          has "$DIAG_DIR/coresimulator-processes.txt" "cpu_alerta=si" "cpu alta: alerta marcada"
+          : > "$DIAG_DIR/diskimagesiod-timeline.txt"
+          diskimagesiod_timeline "mock_cpu"
+          has "$DIAG_DIR/diskimagesiod-timeline.txt" "pcpu=72.1" "diskimagesiod: pcpu en la linea temporal"
+          has "$DIAG_DIR/diskimagesiod-timeline.txt" "cpu_alerta=si" "diskimagesiod: CPU alta marcada"
+
+          # 3) `sample` no disponible: se declara, no se intenta.
+          sample_available() { return 1; }
+          : > "$DIAG_DIR/diskimagesiod-timeline.txt"
+          diskimagesiod_timeline "mock_cpu"
+          has "$DIAG_DIR/diskimagesiod-timeline.txt" "sample=no_disponible" "sample ausente se declara"
+          unset -f sample_available
+          . "$helper_source"
+
+          # 4) Proceso que desaparece durante la observacion.
+          cat > "$root/ps.gone" <<EOF
+          999999     1 999999 S 00:01 0:00.10  0.0  0.1  1024 /usr/libexec/diskimagesiod
+          EOF
+          PS_FIXTURE="$root/ps.gone"
+          : > "$DIAG_DIR/coresimulator-processes.txt"
+          proc_snapshot "mock_desaparece"
+          has "$DIAG_DIR/coresimulator-processes.txt" "desaparece=si" "proceso que desaparece: marcado"
+
+          # 5) Error al consultar ps: no se afirma ausencia.
+          PS_FIXTURE="$root/no-existe"
+          : > "$DIAG_DIR/coresimulator-processes.txt"
+          proc_snapshot "mock_ps_error"
+          has "$DIAG_DIR/coresimulator-processes.txt" "estado_tabla=error" "ps con error: estado_tabla=error"
+          unset -f ps
+
+          # 6) `log show` devuelve error: se registra y no rompe la captura.
+          log() { return 1; }
+          mobileactivation_scan "mock_log_error" "prueba"
+          unset -f log
+          has "$DIAG_DIR/mobileactivation-errors.txt" "log_show_rc=1" "log show con error: rc registrado"
+          has "$DIAG_DIR/mobileactivation-errors.txt" "datos=sin_datos" "log show con error: sin datos"
+
+          # 7) Presupuesto agotado: la instrumentacion no se ejecuta.
+          before_lines="$(wc -l < "$DIAG_DIR/coresimulator-processes.txt" 2>/dev/null | tr -d ' ')"
+          INSTR_DEADLINE=$(( $(date +%s) - 10 ))
+          proc_snapshot "mock_sin_presupuesto"
+          after_lines="$(wc -l < "$DIAG_DIR/coresimulator-processes.txt" 2>/dev/null | tr -d ' ')"
+          INSTR_DEADLINE=""
+          expect "presupuesto agotado: no ejecuta ni escribe" "$before_lines" "$after_lines"
+
+          # 8) Todos los comandos de la instrumentacion pasan por un tope.
+          calls=0
+          bad=0
+          run_to() {
+            calls=$((calls + 1))
+            case "${2:-}" in
+              ''|*[!0-9]*) bad=$((bad + 1)) ;;
+            esac
+            return 0
+          }
+          proc_snapshot "mock_limites"
+          resources_snapshot "mock_limites"
+          diskimagesiod_timeline "mock_limites"
+          mobileactivation_scan "mock_limites" "prueba"
+          clock_diagnostics
+          if [ "$calls" -gt 0 ] && [ "$bad" -eq 0 ]; then
+            ok "instrumentacion: $calls comandos, todos con tope"
+          else
+            ko "instrumentacion: comandos=$calls sin_tope=$bad"
+          fi
+          unset -f run_to
+          . "$helper_source"
+
+          # 9) Reloj de pared que salta hacia delante y hacia atras.
+          log() { return 0; }
+          _mono_base=0
+          mono_now() { _mono_base=$((_mono_base + 300000000)); MONO_NS="$_mono_base"; }
+          rm -f "$root/date.n"
+          date() {
+            case "$*" in
+              "+%s")
+                n="$(cat "$root/date.n" 2>/dev/null)"
+                n=$(( ${n:-0} + 1 ))
+                printf '%s\n' "$n" > "$root/date.n"
+                if [ "$n" -ge 3 ]; then printf '%s\n' $((1700000000 + 7200)); else printf '%s\n' 1700000000; fi
+                ;;
+              *) command date "$@" ;;
+            esac
+          }
+          : > "$DIAG_DIR/clock-diagnostics.txt"
+          clock_diagnostics
+          has "$DIAG_DIR/clock-diagnostics.txt" "reloj_pared_avanza_bruscamente=si" "reloj de pared: salto adelante detectado"
+          rm -f "$root/date.n"
+          date() {
+            case "$*" in
+              "+%s")
+                n="$(cat "$root/date.n" 2>/dev/null)"
+                n=$(( ${n:-0} + 1 ))
+                printf '%s\n' "$n" > "$root/date.n"
+                if [ "$n" -ge 3 ]; then printf '%s\n' $((1700000000 - 7200)); else printf '%s\n' 1700000000; fi
+                ;;
+              *) command date "$@" ;;
+            esac
+          }
+          : > "$DIAG_DIR/clock-diagnostics.txt"
+          clock_diagnostics
+          has "$DIAG_DIR/clock-diagnostics.txt" "reloj_pared_retrocede=si" "reloj de pared: retroceso detectado"
+          unset -f date mono_now log
+          . "$helper_source"
+
+          # 10) Sin fuente monotonica se degrada, no se inventa.
+          MONO_CLOCK_KIND=none
+          if mono_now; then
+            ko "sin fuente monotonica: mono_now debe devolver 1"
+          else
+            ok "sin fuente monotonica: mono_now degrada"
+          fi
+          MONO_CLOCK_KIND=""
+          . "$helper_source"
+
+          # 11) Watchdog que recibe TERM y necesita KILL, con sus marcas.
+          : > "$DIAG_DIR/run-to-timing.txt"
+          rm -f "$root/kill.pid" "$root/out.kill.txt"
+          run_to "$root/out.kill.txt" 1 sh -c 'trap "" TERM; echo $$ > "$1"; sleep 30' _ "$root/kill.pid"
+          rc=$?
+          expect "watchdog TERM->KILL: rc 124" 124 "$rc"
+          has "$DIAG_DIR/run-to-timing.txt" "evento=timeout" "timing: timeout registrado"
+          has "$DIAG_DIR/run-to-timing.txt" "iteraciones=1" "timing: contador de sleeps registrado"
+          has "$DIAG_DIR/run-to-timing.txt" "evento=term" "timing: TERM registrado"
+          has "$DIAG_DIR/run-to-timing.txt" "evento=kill" "timing: KILL registrado"
+          has "$DIAG_DIR/run-to-timing.txt" "evento=fin" "timing: fin registrado"
+          has "$DIAG_DIR/run-to-timing.txt" "timeout=1" "timing: fin marca timeout"
+          kill_pid="$(cat "$root/kill.pid" 2>/dev/null)"
+          if [ -n "$kill_pid" ] && ! process_gone "$kill_pid"; then
+            ko "watchdog TERM->KILL: el proceso protegido sigue vivo (pid $kill_pid)"
+            kill -KILL "$kill_pid" 2>/dev/null || true
+          else
+            ok "watchdog TERM->KILL: el proceso protegido termino"
+          fi
+
+          # 12) Resumen de tiempos: duracion monotonica separada del limite.
+          run_to_timing_summary
+          has "$DIAG_DIR/run-to-timing.txt" "agregado llamadas=" "resumen run_to generado"
+          has "$DIAG_DIR/run-to-timing.txt" "timeouts=1" "resumen: un timeout"
+          has "$DIAG_DIR/run-to-timing.txt" "sobre_limite=" "resumen: llamadas sobre el limite"
+          has "$DIAG_DIR/run-to-timing.txt" "delta_limite_ms=" "resumen: delta frente al limite"
+          has "$DIAG_DIR/run-to-timing.txt" "mono_total_ms=" "resumen: duracion monotonica"
+
+          # 13) Sin procesos de vigilancia huerfanos.
+          if [ -n "$(jobs -p)" ]; then
+            ko "sin procesos de vigilancia huerfanos"
+          else
+            ok "sin procesos de vigilancia huerfanos"
+          fi
+
+          echo "instrumentation self-test: ${pass} pass, ${fail} fail"
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::instrumentation self-test: ${fail} caso(s) fallido(s)."
+            exit 1
+          fi
+
       # ---------------------------------------------------------------------
       # Prepare Simulator.
       #
@@ -1682,6 +2532,118 @@ jobs:
           if [ -f "$DIAG_DIR/bin/diagnostic-helpers.sh" ]; then
             . "$DIAG_DIR/bin/diagnostic-helpers.sh"
           fi
+
+          # ------------------------------------------------------------------
+          # Evidencia de esta fase. Los ficheros se crean siempre (aunque no
+          # haya datos) para que el artefacto los contenga. La instrumentacion
+          # es solo lectura: no cambia la seleccion del UDID, ni el boot, ni
+          # bootstatus, ni las comprobaciones de disponibilidad, ni el criterio
+          # para iniciar XCTest.
+          # ------------------------------------------------------------------
+          mkdir -p "$DIAG_DIR/logs" "$DIAG_DIR/snapshots" 2>/dev/null
+          for _diag_file in \
+            coresimulator-processes.txt \
+            coresimulator-resources.txt \
+            diskimagesiod-timeline.txt \
+            mobileactivation-errors.txt \
+            mobileactivation-context.txt \
+            run-to-timing.txt \
+            prepare-simulator-timeline.txt \
+            clock-diagnostics.txt; do
+            : >> "$DIAG_DIR/$_diag_file" 2>/dev/null
+          done
+
+          PREP_START_NS=""
+          if type mono_now > /dev/null 2>&1; then
+            if mono_now; then PREP_START_NS="$MONO_NS"; fi
+          fi
+          BOOTED_MARK="no"
+
+          # prep_offset_ms: milisegundos monotonico desde el inicio de la fase.
+          prep_offset_ms() {
+            local now=""
+            [ -n "${PREP_START_NS:-}" ] || { printf 'na'; return 0; }
+            if type mono_now > /dev/null 2>&1 && mono_now; then
+              now="$MONO_NS"
+              printf '%s' "$(( (now - PREP_START_NS) / 1000000 ))"
+            else
+              printf 'na'
+            fi
+          }
+
+          # mark/note de esta fase: ademas del timeline general, dejan el
+          # desplazamiento monotonico en prepare-simulator-timeline.txt. El
+          # resto del workflow sigue leyendo timeline.txt igual que antes.
+          mark() {
+            local ts="" ep="" off="" line=""
+            [ -n "${DIAG_DIR:-}" ] || return 0
+            ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            ep="$(date +%s)"
+            printf '%s %s\n' "$ts" "$*" >> "$DIAG_DIR/timeline.txt" 2>/dev/null
+            off="$(prep_offset_ms)"
+            case "$off" in
+              ''|na) line="$ts pared=$ep mono=na $*" ;;
+              *) line="$ts pared=$ep mono_off_ms=$off $*" ;;
+            esac
+            printf '%s\n' "$line" >> "$DIAG_DIR/prepare-simulator-timeline.txt" 2>/dev/null
+          }
+          note() {
+            mark "$*"
+            printf '%s\n' "$*" >&2
+          }
+
+          # instrument_list_timeout <fase> <intento>
+          # Instrumentacion 3/4: despues de CADA timeout de simctl list devices.
+          instrument_list_timeout() {
+            local fase="$1"
+            local intento="$2"
+            local limit="${INSTR_DEADLINE:-${prep_deadline:-0}}"
+            if ! type proc_snapshot > /dev/null 2>&1; then
+              mark "instrumentacion: omitida tras timeout de simctl list ($fase intento $intento): sin diagnostic-helpers.sh"
+              return 0
+            fi
+            local left=$(( limit - $(date +%s) ))
+            if [ "$left" -lt 8 ]; then
+              mark "instrumentacion: omitida tras timeout de simctl list ($fase intento $intento): quedan ${left}s"
+              return 0
+            fi
+            mark "instrumentacion: timeout de simctl list devices ($fase intento $intento)"
+            proc_snapshot "timeout-$fase-$intento"
+            diskimagesiod_timeline "timeout-$fase-$intento"
+            mobileactivation_scan "timeout-$fase-$intento" "simctl list devices rc=124"
+            rm -f "$DIAG_DIR/logs/ps-coresim.timeout-$fase-$intento.txt" 2>/dev/null
+            return 0
+          }
+
+          # instrument_moment <etiqueta> <motivo> [completo|basico]
+          # 'completo' anade recursos del sistema, MobileActivation y reloj.
+          instrument_moment() {
+            local label="$1"
+            local motivo="$2"
+            local scope="${3:-basico}"
+            local limit="${INSTR_DEADLINE:-${prep_deadline:-0}}"
+            if ! type proc_snapshot > /dev/null 2>&1; then
+              mark "instrumentacion: omitida ($label): sin diagnostic-helpers.sh"
+              return 0
+            fi
+            local left=$(( limit - $(date +%s) ))
+            if [ "$left" -lt 8 ]; then
+              mark "instrumentacion: omitida ($label): quedan ${left}s de presupuesto"
+              return 0
+            fi
+            mark "instrumentacion: $label ($motivo)"
+            proc_snapshot "$label"
+            diskimagesiod_timeline "$label"
+            if [ "$scope" = "completo" ]; then
+              resources_snapshot "$label"
+              mobileactivation_scan "$label" "$motivo"
+              clock_diagnostics
+            fi
+            mark "instrumentacion: $label terminada"
+            rm -f "$DIAG_DIR/logs/ps-coresim.$label.txt" 2>/dev/null
+            return 0
+          }
+
           mark "Prepare Simulator: inicio"
 
           # limit_left <tope> <plazo_absoluto>
@@ -1827,6 +2789,19 @@ jobs:
               echo "diagnostico_plazo=120s"
             } > "$DIAG_DIR/logs/prepare-failure.txt" 2>/dev/null
 
+            # Instrumentacion 4/4: evidencia del fallo definitivo. Se reserva un
+            # maximo de 30 s DENTRO del unico plazo de 120 s fijado arriba:
+            # diag_deadline no se reinicia, asi que el total sigue acotado a
+            # 120 s y diag_left solo concedera lo que quede.
+            INSTR_DEADLINE=$(( $(date +%s) + 30 ))
+            instrument_moment "fallo_definitivo" "fase=$failed_phase" "completo"
+            INSTR_DEADLINE=""
+            if type run_to_timing_summary > /dev/null 2>&1; then
+              run_to_timing_summary
+            fi
+            echo "instrumentacion_plazo=30s (reservado dentro del plazo unico de 120s)" \
+              >> "$DIAG_DIR/logs/prepare-failure.txt" 2>/dev/null
+
             diag_step "$DIAG_DIR/logs/prepare-failure-list.txt" 30 \
               xcrun simctl list devices
             if [ -n "${udid:-}" ]; then
@@ -1910,6 +2885,9 @@ jobs:
                   | sed 's/^/    error: /'
               fi
             } >> "$DIAG_DIR/logs/simulator-readiness.txt" 2>/dev/null
+            if [ "$list_rc" -eq 124 ]; then
+              instrument_list_timeout "resolucion" "$resolve_attempt"
+            fi
             udid="$(grep -E '^[[:space:]]+iPhone' "$DIAG_DIR/logs/prepare-list.start.txt" \
               | head -1 \
               | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/')"
@@ -1941,6 +2919,9 @@ jobs:
           echo "Simulador elegido: $udid"
           mark "Prepare Simulator: UDID resuelto ($udid), estado inicial=${state:-desconocido}"
 
+          # Instrumentacion 1/4: justo antes de solicitar el arranque.
+          instrument_moment "antes_de_boot" "estado_inicial=${state:-desconocido} udid=$udid" "completo"
+
           # 2) Arranque. Si ya esta Booted no se toca. Si esta apagado se pide
           # `simctl boot`; si ya esta arrancando se respeta y solo se espera.
           # Nunca se apaga, borra, resetea ni reinicia.
@@ -1962,7 +2943,11 @@ jobs:
                 run_to "$DIAG_DIR/logs/prepare-list.shutdown.txt" \
                   "$list_limit" \
                   xcrun simctl list devices
-                if [ $? -eq 0 ]; then
+                list_rc_shutdown=$?
+                if [ "$list_rc_shutdown" -eq 124 ]; then
+                  instrument_list_timeout "apagado" "$resolve_attempt"
+                fi
+                if [ "$list_rc_shutdown" -eq 0 ]; then
                   state="$(state_from_list "$udid" "$DIAG_DIR/logs/prepare-list.shutdown.txt")"
                   if [ "$state" = "Shutdown" ] || [ "$state" = "Booted" ]; then break; fi
                 fi
@@ -2023,7 +3008,11 @@ jobs:
               run_to "$DIAG_DIR/logs/prepare-list.boot.txt" \
                 "$list_limit" \
                 xcrun simctl list devices
-              if [ $? -eq 0 ]; then
+              list_rc_boot=$?
+              if [ "$list_rc_boot" -eq 124 ]; then
+                instrument_list_timeout "boot" "$boot_attempt"
+              fi
+              if [ "$list_rc_boot" -eq 0 ]; then
                 state="$(state_from_list "$udid" "$DIAG_DIR/logs/prepare-list.boot.txt")"
               fi
               if [ "$state" = "Booted" ] || [ "$state" = "Booting" ]; then
@@ -2074,6 +3063,10 @@ jobs:
           booted_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           mark "Prepare Simulator: Booted confirmado por bootstatus (${bs_seconds}s)"
 
+          # Instrumentacion 2/4: inmediatamente despues de Booted.
+          BOOTED_MARK="si"
+          instrument_moment "despues_de_booted" "bootstatus_rc=$bs_rc duracion=${bs_seconds}s limite=${bs_limit}s" "completo"
+
           # 4) Disponibilidad real. Booted solo dice que el dispositivo
           # arranco; los servicios pueden seguir sin responder (fue el fallo
           # del 24/11/2026). Se avanza a la siguiente comprobacion solo cuando
@@ -2103,6 +3096,9 @@ jobs:
                 xcrun simctl list devices
               check_rc=$?
               check_seconds=$(( $(date +%s) - check_start ))
+              if [ "$check_rc" -eq 124 ]; then
+                instrument_list_timeout "disponibilidad" "$attempt"
+              fi
               record_check "list devices" "$check_rc" "$check_seconds" \
                 "$DIAG_DIR/logs/prepare-check-list.txt" "xcrun simctl list devices"
               if [ "$check_rc" -eq 0 ] \
@@ -2188,6 +3184,9 @@ jobs:
             prepare_failure "disponibilidad (no se pudo escribir simulator-ready.txt)"
           fi
           mark "Prepare Simulator: simulador disponible; UDID $udid listo para XCTest"
+          if type run_to_timing_summary > /dev/null 2>&1; then
+            run_to_timing_summary
+          fi
           echo "Simulador preparado: $udid"
           exit 0
 
@@ -2240,6 +3239,23 @@ jobs:
             shift 2 2>/dev/null || true
             local flag="" ready="" handoff="" armed=""
             local child="" watchdog="" code=0 timed_out=0 probe="" i=0 g=0
+            local rt_id="$$-${RANDOM}-$(date +%s)" rt_start_s=0 rt_start_ns="" rt_end_ns=""
+            local rt_mono_ms="na" rt_group_alive="na" rt_pgid_txt="na"
+            # _rt_log: registro de tiempos de esta llamada en run-to-timing.txt.
+            # La duracion se mide con mono_now (monotonico); pared= es solo
+            # informativo y nunca se usa para afirmar que se excedio el limite.
+            _rt_log() {
+              local ts="" ep="" mn="-"
+              [ -n "${DIAG_DIR:-}" ] || return 0
+              [ -d "${DIAG_DIR:-/nonexistent}" ] || return 0
+              ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              ep="$(date +%s)"
+              if type mono_now > /dev/null 2>&1; then
+                if mono_now; then mn="$MONO_NS"; fi
+              fi
+              printf '%s pared=%s mono=%s id=%s %s\n' "$ts" "$ep" "$mn" "$rt_id" "$*" \
+                >> "$DIAG_DIR/run-to-timing.txt" 2>/dev/null || true
+            }
             local target="" group=0 monitor_was_on=0 grace=5
 
             # A) Plazo. Solo digitos: se rechazan vacio, signos, decimales y texto. Los
@@ -2315,6 +3331,12 @@ jobs:
               rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
               return 125
             fi
+            rt_start_s="$(date +%s)"
+            rt_start_ns=""
+            if type mono_now > /dev/null 2>&1; then
+              if mono_now; then rt_start_ns="$MONO_NS"; fi
+            fi
+            _rt_log "evento=inicio limite=$limit fichero=$(basename "$file" 2>/dev/null || printf '%s' "$file") padre=$$"
 
             # D) El vigilante arranca y se confirma ANTES del comando: `ready` avisa de
             # que esta vivo y `armed` de que ya tiene el PID del hijo y su grupo. Al
@@ -2345,9 +3367,9 @@ jobs:
                 sleep 1 2>/dev/null || true
                 i=$((i + 1))
                 if [ "$group" -eq 1 ]; then
-                  kill -0 -- "-$target" 2>/dev/null || exit 0
+                  kill -0 -- "-$target" 2>/dev/null || { _rt_log "evento=watchdog_sin_timeout"; exit 0; }
                 else
-                  kill -0 "$target" 2>/dev/null || exit 0
+                  kill -0 "$target" 2>/dev/null || { _rt_log "evento=watchdog_sin_timeout"; exit 0; }
                 fi
               done
               printf 'timeout\n' > "$flag" 2>/dev/null \
@@ -2357,6 +3379,10 @@ jobs:
               else
                 kill -TERM "$target" 2>/dev/null
               fi
+              # El TERM se envia antes de registrar: la muestra de reloj no
+              # retrasa el corte del comando ni la gracia.
+              _rt_log "evento=timeout limite=$limit iteraciones=$i pid=$target grupo=$group"
+              _rt_log "evento=term pid=$target grupo=$group"
               g=0
               while [ "$g" -lt "$grace" ]; do
                 if [ "$group" -eq 1 ]; then
@@ -2367,11 +3393,14 @@ jobs:
                 sleep 1 2>/dev/null || true
                 g=$((g + 1))
               done
+              _rt_log "evento=kill_inmediato pid=$target grupo=$group gracia_iteraciones=$g"
               if [ "$group" -eq 1 ]; then
                 kill -KILL -- "-$target" 2>/dev/null
               else
                 kill -KILL "$target" 2>/dev/null
               fi
+              _rt_log "evento=kill pid=$target grupo=$group"
+              _rt_log "evento=watchdog_fin"
               exit 0
             ) >/dev/null 2>&1 &
             watchdog=$!
@@ -2430,6 +3459,9 @@ jobs:
               rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
               return 125
             fi
+            rt_pgid_txt="$(ps -p "$child" -o pgid= 2>/dev/null | tr -d ' ')"
+            [ -n "$rt_pgid_txt" ] || rt_pgid_txt="na"
+            _rt_log "evento=arranque pid=$child grupo=$group pgid=$rt_pgid_txt"
             i=0
             while [ ! -f "$armed" ] && [ "$i" -lt 20 ]; do
               kill -0 "$watchdog" 2>/dev/null || break
@@ -2471,6 +3503,26 @@ jobs:
             wait "$watchdog" 2>/dev/null || true
             if [ -s "$flag" ]; then timed_out=1; fi
             rm -f "$flag" "$ready" "$handoff" "$armed" 2>/dev/null || true
+            rt_end_ns=""
+            if type mono_now > /dev/null 2>&1; then
+              if mono_now; then rt_end_ns="$MONO_NS"; fi
+            fi
+            rt_mono_ms="na"
+            if [ -n "${rt_start_ns:-}" ] && [ -n "$rt_end_ns" ]; then
+              rt_mono_ms=$(( (rt_end_ns - rt_start_ns) / 1000000 ))
+            fi
+            # Un grupo con miembros vivos tras el fin del lider significa que el
+            # proceso principal termino antes que sus descendientes y que el
+            # watchdog tuvo que cortarlos.
+            rt_group_alive="na"
+            if [ "$group" -eq 1 ] && [ -n "$child" ]; then
+              if ps -Ao pgid= 2>/dev/null | awk -v g="$child" '$1 == g { f = 1 } END { exit (f ? 0 : 1) }'; then
+                rt_group_alive=si
+              else
+                rt_group_alive=no
+              fi
+            fi
+            _rt_log "evento=fin rc=$code timeout=$timed_out limite=$limit mono_ms=$rt_mono_ms pared_s=$(( $(date +%s) - rt_start_s )) grupo_residual=$rt_group_alive lider_antes_que_grupo=$rt_group_alive"
             if [ "$timed_out" -eq 1 ]; then
               if command -v timeout_log > /dev/null 2>&1; then
                 timeout_log timeout "$limit" "$code" "$*"
