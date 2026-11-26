@@ -807,6 +807,30 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         }
     }
 
+    /// Intervalo de ajuste del temporizador Big Picture. El temporizador
+    /// normal y el minimizado mantienen sus incrementos de 10 s.
+    public static let bigPictureRestAdjustmentSeconds: Int = 15
+
+    /// Tiempo restante del descanso por tiempo, con una sola lógica para los
+    /// dos modos de la interfaz.
+    ///
+    /// - Pausado: devuelve el valor guardado por `pauseRest()`. Al pausar se
+    ///   anula `restTimerEndDate`, así que leer solo esa fecha daría cero.
+    /// - En marcha: se descuenta de `restTimerEndDate` con el mismo redondeo
+    ///   (`ceil`) que usaba el temporizador normal.
+    /// - Sin fecha de fin: la última lectura guardada, nunca cero por defecto.
+    public func restRemainingSeconds(at date: Date = Date()) -> Int {
+        if isRestPaused {
+            return max(0, restTimeRemaining)
+        }
+
+        guard let endDate: Date = restTimerEndDate else {
+            return max(0, restTimeRemaining)
+        }
+
+        return max(0, Int(ceil(endDate.timeIntervalSince(date))))
+    }
+
     public func add10Seconds() {
         guard isResting, let condition = currentRestCondition, case .timer = condition else { return }
 
@@ -863,6 +887,51 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         if !isRestFinishing {
             refreshLiveActivity()
         }
+        persistState()
+    }
+
+    /// Ajusta el descanso en curso en ±N segundos.
+    ///
+    /// Es el único punto que cambia el tiempo restante sin terminar el
+    /// descanso: nunca llama a `skipRest()` ni a `finishRest()`, y conserva el
+    /// estado de pausa o de marcha.
+    ///
+    /// - En marcha: mueve `restTimerEndDate` y reprograma el aviso.
+    /// - En pausa: actualiza el tiempo guardado y no programa nada.
+    public func adjustRestTime(by seconds: Int) {
+        guard seconds != 0, isResting, !isRestFinishing else { return }
+        guard let condition: RestCondition = currentRestCondition, case .timer = condition else { return }
+        // En marcha se exige un temporizador vivo: un toque tardío no debe
+        // mover una fecha de fin vencida ni programar un aviso incorrecto.
+        guard isRestPaused || hasActiveRestTimer else { return }
+
+        let current: Int = restRemainingSeconds()
+        // Restar por debajo del último intervalo se ignora en lugar de cerrar
+        // el descanso: para eso está SALTAR. La vista además deshabilita el
+        // botón cuando quedan 15 s o menos.
+        guard current + seconds > 0 else { return }
+
+        let adjusted: Int = current + seconds
+
+        if isRestPaused {
+            restTimeRemaining = adjusted
+            timerTargetDuration = adjusted
+            totalRestSeconds = max(adjusted, totalRestSeconds + seconds)
+            refreshLiveActivity()
+            persistState()
+            return
+        }
+
+        guard let endDate: Date = restTimerEndDate else { return }
+
+        let newEndDate: Date = endDate.addingTimeInterval(TimeInterval(seconds))
+        restTimerEndDate = newEndDate
+        restTimeRemaining = max(0, Int(ceil(newEndDate.timeIntervalSinceNow)))
+        timerTargetDuration = max(restTimeRemaining, timerTargetDuration + seconds)
+        totalRestSeconds = max(restTimeRemaining, totalRestSeconds + seconds)
+        isRestTimerActive = true
+        NotificationManager.shared.scheduleRestFinishedNotification(endingAt: newEndDate)
+        refreshLiveActivity()
         persistState()
     }
 
@@ -1727,23 +1796,49 @@ public final class ActiveWorkoutViewModel: ObservableObject {
         toggleSetStopwatch(for: id, setIndex: setIndex, modelContext: modelContext)
     }
 
+    /// El panel del descanso sigue visible mientras el descanso exista, también
+    /// en pausa.
+    ///
+    /// `hasActiveRestTimer` exige una fecha de fin futura y `pauseRest()` la
+    /// anula, así que no sirve como única condición aquí. Su semántica **no**
+    /// cambia: `ActiveWorkoutView` la usa para decidir si el temporizador
+    /// minimizado sigue vivo.
     public var bigPictureIsTimerShowing: Bool {
-        isResting && hasActiveRestTimer
+        isResting && (isRestPaused || hasActiveRestTimer)
     }
 
+    /// Tiempo restante de Big Picture: la misma lectura que el temporizador
+    /// normal, también durante la pausa.
     public var bigPictureRemainingTime: Int {
-        guard let endDate = restTimerEndDate else { return 0 }
-        return max(0, Int(ceil(endDate.timeIntervalSinceNow)))
+        return restRemainingSeconds()
     }
 
     public var bigPictureRemainingTimeFormatted: String {
-        let seconds = bigPictureRemainingTime
+        let seconds: Int = bigPictureRemainingTime
         return String(format: "%02d:%02d", seconds / 60, seconds % 60)
     }
 
+    /// Fracción de descanso que queda (1 = recién empezado, 0 = terminado). Se
+    /// congela al pausar porque el tiempo restante también se congela.
     public var bigPictureRestProgress: Double {
         guard totalRestSeconds > 0 else { return 0 }
         return max(0, min(1, Double(bigPictureRemainingTime) / Double(totalRestSeconds)))
+    }
+
+    /// `+15 s` solo tiene sentido en un descanso por tiempo activo o pausado.
+    public var bigPictureCanAdjustRestTime: Bool {
+        guard isResting, !isRestFinishing else { return false }
+        guard let condition: RestCondition = currentRestCondition, case .timer = condition else {
+            return false
+        }
+        return isRestPaused || hasActiveRestTimer
+    }
+
+    /// Restar nunca deja el descanso en cero: el último intervalo queda
+    /// bloqueado y la vista deshabilita el botón.
+    public var bigPictureCanSubtractRestTime: Bool {
+        return bigPictureCanAdjustRestTime
+            && bigPictureRemainingTime > ActiveWorkoutViewModel.bigPictureRestAdjustmentSeconds
     }
 
     public func bigPictureUpdateWeight(_ weight: Double, modelContext: ModelContext) {

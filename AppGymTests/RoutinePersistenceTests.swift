@@ -3871,3 +3871,759 @@ final class RestNotificationManagerTests: XCTestCase {
         XCTAssertEqual(recorder.added.first?.timeInterval ?? 0.0, 45.0, accuracy: 0.001)
     }
 }
+
+// MARK: - Temporizador de descanso en Big Picture
+
+/// Pruebas de la pausa, la reanudación y el ajuste de ±15 s del temporizador de
+/// descanso de Big Picture.
+///
+/// No hay esperas: se comprueban las fechas de finalización
+/// (`restTimerEndDate`) y el tiempo guardado (`restTimeRemaining`). Donde el
+/// reloj puede cruzar un segundo entre dos llamadas se usa una tolerancia de un
+/// segundo; el resto de comparaciones son exactas.
+@MainActor
+final class BigPictureRestTimerTests: XCTestCase {
+
+    private var container: ModelContainer!
+    private var context: ModelContext!
+    private var previousHeartRateSetting: Any?
+    /// ViewModels vivos del test, incluidos los creados al restaurar. Se
+    /// detienen en `tearDown` para no dejar tareas de cuenta atrás ni avisos
+    /// pendientes apuntando a sesiones ya terminadas.
+    private var viewModels: [ActiveWorkoutViewModel] = []
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+
+        // El ViewModel pide HealthKit al arrancar si la medición está activa: se
+        // desactiva durante la prueba y se restaura al terminar.
+        previousHeartRateSetting = UserDefaults.standard.object(
+            forKey: UserSettingsManager.isHeartRateTrackingEnabledKey
+        )
+        UserDefaults.standard.set(false, forKey: UserSettingsManager.isHeartRateTrackingEnabledKey)
+        ActiveWorkoutStateStore.clear()
+
+        let schema: Schema = Schema(versionedSchema: AppSchemaV6.self)
+        container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        context = ModelContext(container)
+    }
+
+    override func tearDownWithError() throws {
+        // Pausar cancela la tarea de cuenta atrás y el aviso programado. Un
+        // descanso ya pausado no tiene ninguno de los dos, así que se respeta.
+        for viewModel in viewModels where viewModel.isResting && !viewModel.isRestPaused {
+            viewModel.pauseRest()
+        }
+        viewModels.removeAll()
+
+        ActiveWorkoutStateStore.clear()
+
+        if let previousHeartRateSetting {
+            UserDefaults.standard.set(
+                previousHeartRateSetting,
+                forKey: UserSettingsManager.isHeartRateTrackingEnabledKey
+            )
+        } else {
+            UserDefaults.standard.removeObject(forKey: UserSettingsManager.isHeartRateTrackingEnabledKey)
+        }
+
+        context = nil
+        container = nil
+        try super.tearDownWithError()
+    }
+
+    // MARK: - Utilidades
+
+    /// Crea una rutina de una serie y deja el descanso ya iniciado, igual que
+    /// ocurre al completar una serie en la app.
+    private func makeRestingWorkout(
+        restSeconds: Int
+    ) throws -> (viewModel: ActiveWorkoutViewModel, session: WorkoutSession, routine: Routine) {
+        let exercise: Exercise = Exercise(
+            name: "Press banca",
+            muscleGroup: .chest,
+            defaultRestCondition: .timer(seconds: restSeconds)
+        )
+        context.insert(exercise)
+
+        let routineExercise: RoutineExercise = RoutineExercise(
+            exercise: exercise,
+            defaultSets: 1,
+            targetRepsMin: 6,
+            targetRepsMax: 8,
+            sortOrder: 0,
+            defaultWeight: 80.0,
+            restSeconds: restSeconds
+        )
+        context.insert(routineExercise)
+
+        let routine: Routine = Routine(name: "PUSH", exercises: [routineExercise])
+        context.insert(routine)
+
+        let session: WorkoutSession = WorkoutSession(startDate: Date(), routineName: "PUSH")
+        context.insert(session)
+
+        try context.save()
+
+        let viewModel: ActiveWorkoutViewModel = makeViewModel(session: session, routine: routine)
+        viewModel.toggleSetCompletion(
+            for: routineExercise.id,
+            setIndex: 0,
+            modelContext: context
+        )
+
+        return (viewModel, session, routine)
+    }
+
+    /// Crea un ViewModel sobre la sesión y la rutina dadas y lo registra para
+    /// que `tearDown` detenga su descanso si queda en marcha.
+    private func makeViewModel(
+        session: WorkoutSession,
+        routine: Routine
+    ) -> ActiveWorkoutViewModel {
+        let viewModel: ActiveWorkoutViewModel = ActiveWorkoutViewModel(
+            session: session,
+            routine: routine,
+            modelContext: context
+        )
+        viewModels.append(viewModel)
+        return viewModel
+    }
+
+    // MARK: - Pausa y reanudación
+
+    func testPausingKeepsTheRemainingTime() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        XCTAssertTrue(workout.viewModel.isResting)
+
+        let remainingBefore: Int = workout.viewModel.restRemainingSeconds()
+        workout.viewModel.pauseRest()
+
+        XCTAssertTrue(workout.viewModel.isResting)
+        XCTAssertTrue(workout.viewModel.isRestPaused)
+        XCTAssertGreaterThan(workout.viewModel.restTimeRemaining, 0)
+        XCTAssertEqual(
+            Double(workout.viewModel.restTimeRemaining),
+            Double(remainingBefore),
+            accuracy: 1.0
+        )
+    }
+
+    func testBigPictureKeepsTheTimerVisibleWhilePaused() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        workout.viewModel.pauseRest()
+
+        XCTAssertTrue(workout.viewModel.bigPictureIsTimerShowing)
+        // `hasActiveRestTimer` conserva su semántica: al pausar ya no hay fecha
+        // de fin, aunque Big Picture siga mostrando el panel.
+        XCTAssertFalse(workout.viewModel.hasActiveRestTimer)
+    }
+
+    func testBigPictureRemainingTimeMatchesTheStoredValueWhilePaused() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        workout.viewModel.pauseRest()
+
+        XCTAssertEqual(workout.viewModel.bigPictureRemainingTime, workout.viewModel.restTimeRemaining)
+        XCTAssertGreaterThan(workout.viewModel.bigPictureRemainingTime, 0)
+    }
+
+    func testProgressBarKeepsItsPositionWhenPaused() throws {
+        let workout = try makeRestingWorkout(restSeconds: 120)
+        let totalBefore: Int = workout.viewModel.totalRestSeconds
+        workout.viewModel.pauseRest()
+
+        XCTAssertEqual(workout.viewModel.totalRestSeconds, totalBefore)
+
+        let expected: Double = Double(workout.viewModel.restTimeRemaining) / Double(totalBefore)
+        XCTAssertEqual(workout.viewModel.bigPictureRestProgress, expected, accuracy: 0.0001)
+        XCTAssertGreaterThan(workout.viewModel.bigPictureRestProgress, 0.0)
+        XCTAssertLessThan(workout.viewModel.bigPictureRestProgress, 1.0)
+
+        // La barra se dibuja como `1 - restProgress`: no debe aparecer consumida.
+        XCTAssertGreaterThan(1.0 - workout.viewModel.bigPictureRestProgress, 0.0)
+    }
+
+    func testResumingContinuesFromTheStoredTime() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        workout.viewModel.pauseRest()
+        let paused: Int = workout.viewModel.restTimeRemaining
+
+        workout.viewModel.resumeRest()
+
+        XCTAssertFalse(workout.viewModel.isRestPaused)
+        XCTAssertTrue(workout.viewModel.bigPictureIsTimerShowing)
+        XCTAssertTrue(workout.viewModel.isRestTimerActive)
+        let endDate: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+        XCTAssertEqual(endDate.timeIntervalSinceNow, Double(paused), accuracy: 1.5)
+        XCTAssertGreaterThan(workout.viewModel.restRemainingSeconds(), 0)
+    }
+
+    // MARK: - Ajuste de ±15 s
+
+    func testAddingFifteenSecondsWhileRunningMovesTheEndDate() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        let endBefore: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+        let totalBefore: Int = workout.viewModel.totalRestSeconds
+
+        workout.viewModel.adjustRestTime(by: ActiveWorkoutViewModel.bigPictureRestAdjustmentSeconds)
+
+        let endAfter: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+        XCTAssertEqual(endAfter.timeIntervalSince(endBefore), 15.0, accuracy: 0.001)
+        XCTAssertEqual(workout.viewModel.totalRestSeconds, totalBefore + 15)
+        XCTAssertFalse(workout.viewModel.isRestPaused)
+        XCTAssertTrue(workout.viewModel.isResting)
+    }
+
+    func testAddingFifteenSecondsWhilePausedUpdatesTheStoredTime() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        workout.viewModel.pauseRest()
+        let paused: Int = workout.viewModel.restTimeRemaining
+
+        workout.viewModel.adjustRestTime(by: ActiveWorkoutViewModel.bigPictureRestAdjustmentSeconds)
+
+        XCTAssertEqual(workout.viewModel.restTimeRemaining, paused + 15)
+        XCTAssertEqual(workout.viewModel.bigPictureRemainingTime, paused + 15)
+        XCTAssertNil(workout.viewModel.restTimerEndDate)
+        XCTAssertTrue(workout.viewModel.isRestPaused)
+        XCTAssertTrue(workout.viewModel.isResting)
+    }
+
+    func testSubtractingFifteenSecondsWhileRunningReducesTheTime() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        let endBefore: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+
+        workout.viewModel.adjustRestTime(by: -ActiveWorkoutViewModel.bigPictureRestAdjustmentSeconds)
+
+        let endAfter: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+        XCTAssertEqual(endAfter.timeIntervalSince(endBefore), -15.0, accuracy: 0.001)
+        XCTAssertTrue(workout.viewModel.isResting)
+        XCTAssertFalse(workout.viewModel.isRestFinishing)
+        XCTAssertFalse(workout.viewModel.isRestPaused)
+    }
+
+    func testSubtractingFifteenSecondsWhilePausedReducesTheStoredTime() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        workout.viewModel.pauseRest()
+        let paused: Int = workout.viewModel.restTimeRemaining
+
+        workout.viewModel.adjustRestTime(by: -ActiveWorkoutViewModel.bigPictureRestAdjustmentSeconds)
+
+        XCTAssertEqual(workout.viewModel.restTimeRemaining, paused - 15)
+        XCTAssertEqual(workout.viewModel.bigPictureRemainingTime, paused - 15)
+        XCTAssertNil(workout.viewModel.restTimerEndDate)
+        XCTAssertTrue(workout.viewModel.isRestPaused)
+    }
+
+    func testSubtractIsDisabledWithFifteenSecondsOrLess() throws {
+        let short = try makeRestingWorkout(restSeconds: 15)
+
+        XCTAssertLessThanOrEqual(short.viewModel.bigPictureRemainingTime, 15)
+        XCTAssertFalse(short.viewModel.bigPictureCanSubtractRestTime)
+        // Sumar sigue disponible en el último intervalo.
+        XCTAssertTrue(short.viewModel.bigPictureCanAdjustRestTime)
+
+        let long = try makeRestingWorkout(restSeconds: 90)
+        XCTAssertTrue(long.viewModel.bigPictureCanSubtractRestTime)
+    }
+
+    func testAdjustingTimeNeverFinishesOrSkipsTheRest() throws {
+        let workout = try makeRestingWorkout(restSeconds: 20)
+
+        workout.viewModel.adjustRestTime(by: -15)
+
+        XCTAssertTrue(workout.viewModel.isResting)
+        XCTAssertFalse(workout.viewModel.isRestFinishing)
+        XCTAssertGreaterThan(workout.viewModel.restRemainingSeconds(), 0)
+
+        // Segundo intento: se ignora en lugar de cerrar el descanso.
+        let remainingAfterFirst: Int = workout.viewModel.restRemainingSeconds()
+        workout.viewModel.adjustRestTime(by: -15)
+
+        XCTAssertTrue(workout.viewModel.isResting)
+        XCTAssertFalse(workout.viewModel.isRestFinishing)
+        XCTAssertEqual(
+            Double(workout.viewModel.restRemainingSeconds()),
+            Double(remainingAfterFirst),
+            accuracy: 1.0
+        )
+
+        // Lo mismo en pausa: restar por debajo del último intervalo no termina.
+        workout.viewModel.pauseRest()
+        workout.viewModel.adjustRestTime(by: -15)
+
+        XCTAssertTrue(workout.viewModel.isResting)
+        XCTAssertTrue(workout.viewModel.isRestPaused)
+        XCTAssertFalse(workout.viewModel.isRestFinishing)
+        XCTAssertGreaterThan(workout.viewModel.restTimeRemaining, 0)
+
+        // Un toque tardío tampoco puede mover una fecha de fin ya vencida.
+        workout.viewModel.resumeRest()
+        let expired: Date = Date().addingTimeInterval(-1.0)
+        workout.viewModel.restTimerEndDate = expired
+        XCTAssertFalse(workout.viewModel.hasActiveRestTimer)
+
+        let totalBeforeExpired: Int = workout.viewModel.totalRestSeconds
+        workout.viewModel.adjustRestTime(by: 15)
+
+        XCTAssertEqual(workout.viewModel.restTimerEndDate, expired)
+        XCTAssertEqual(workout.viewModel.totalRestSeconds, totalBeforeExpired)
+        XCTAssertFalse(workout.viewModel.isRestFinishing)
+    }
+
+    // MARK: - Compatibilidad con el temporizador normal
+
+    func testNormalTimerKeepsItsTenSecondAdjustments() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+        let endBefore: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+        let totalBefore: Int = workout.viewModel.totalRestSeconds
+
+        workout.viewModel.add10Seconds()
+
+        let endAfterAdd: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+        XCTAssertEqual(endAfterAdd.timeIntervalSince(endBefore), 10.0, accuracy: 0.001)
+        XCTAssertEqual(workout.viewModel.totalRestSeconds, totalBefore + 10)
+
+        workout.viewModel.sub10Seconds()
+
+        let endAfterSub: Date = try XCTUnwrap(workout.viewModel.restTimerEndDate)
+        XCTAssertEqual(endAfterSub.timeIntervalSince(endAfterAdd), -10.0, accuracy: 0.001)
+        XCTAssertEqual(workout.viewModel.totalRestSeconds, totalBefore)
+    }
+
+    // MARK: - Notificaciones y persistencia
+
+    func testPauseAndResumeUpdateThePendingRestNotificationState() throws {
+        let workout = try makeRestingWorkout(restSeconds: 90)
+
+        // El aviso no se inspecciona en `UNUserNotificationCenter`: lo que se
+        // fija es el estado del que depende su programación o cancelación.
+        // En marcha: fecha de fin y aviso activo.
+        XCTAssertNotNil(workout.viewModel.restTimerEndDate)
+        XCTAssertTrue(workout.viewModel.isRestTimerActive)
+
+        workout.viewModel.pauseRest()
+
+        // Pausado: `pauseRest()` cancela el aviso (se queda sin fecha de fin).
+        XCTAssertNil(workout.viewModel.restTimerEndDate)
+        XCTAssertFalse(workout.viewModel.isRestTimerActive)
+
+        workout.viewModel.resumeRest()
+
+        // Reanudado: se vuelve a programar con la nueva fecha.
+        XCTAssertNotNil(workout.viewModel.restTimerEndDate)
+        XCTAssertTrue(workout.viewModel.isRestTimerActive)
+    }
+
+    func testRestoringAPausedRestKeepsItsTime() throws {
+        let workout = try makeRestingWorkout(restSeconds: 120)
+        workout.viewModel.pauseRest()
+        let paused: Int = workout.viewModel.restTimeRemaining
+        let total: Int = workout.viewModel.totalRestSeconds
+
+        // `pauseRest()` persiste el estado; un ViewModel nuevo sobre la misma
+        // sesión y rutina lo restaura, como al reabrir la app.
+        let restored: ActiveWorkoutViewModel = makeViewModel(
+            session: workout.session,
+            routine: workout.routine
+        )
+
+        XCTAssertTrue(restored.isResting)
+        XCTAssertTrue(restored.isRestPaused)
+        XCTAssertEqual(restored.restTimeRemaining, paused)
+        XCTAssertEqual(restored.bigPictureRemainingTime, paused)
+        XCTAssertTrue(restored.bigPictureIsTimerShowing)
+        XCTAssertEqual(restored.totalRestSeconds, total)
+        XCTAssertNil(restored.restTimerEndDate)
+    }
+}
+
+// MARK: - Filtrado compartido del catálogo
+
+/// Pruebas del estado de filtrado compartido por la pestaña Ejercicios y por el
+/// selector de sustitución. No necesitan SwiftData: los `Exercise` se crean en
+/// memoria y solo se comprueban las reglas de búsqueda y combinación.
+final class ExerciseFilterStateTests: XCTestCase {
+
+    /// Catálogo de prueba. La clasificación `isCompound` es explícita en cada
+    /// ejercicio para que las pruebas de TIPO no dependan de valores por
+    /// defecto: compuestos = press banca, press inclinado y remo con barra;
+    /// aislamiento = aperturas, curl, plancha y bici.
+    private func catalog() -> [Exercise] {
+        return [
+            Exercise(name: "Press banca", muscleGroup: .chest, equipmentType: .olympicBar, isCompound: true, trackingMode: .reps),
+            Exercise(name: "Press inclinado con mancuernas", muscleGroup: .chest, equipmentType: .dumbbell, isCompound: true, trackingMode: .reps),
+            Exercise(name: "Aperturas en polea", muscleGroup: .chest, equipmentType: .cable, isCompound: false, trackingMode: .reps),
+            Exercise(name: "Remo con barra", muscleGroup: .lats, equipmentType: .olympicBar, isCompound: true, trackingMode: .reps),
+            Exercise(name: "Curl de bíceps", muscleGroup: .biceps, equipmentType: .dumbbell, isCompound: false, trackingMode: .reps),
+            Exercise(name: "Plancha", muscleGroup: .abs, equipmentType: .bodyweight, isCompound: false, trackingMode: .seconds),
+            Exercise(name: "Bici estática", muscleGroup: .cardio, equipmentType: .cardioMachine, isCompound: false, trackingMode: .minutes)
+        ]
+    }
+
+    private func names(_ exercises: [Exercise]) -> [String] {
+        exercises.map(\.name)
+    }
+
+    func testSearchMatchesByName() {
+        var filter = ExerciseFilterState()
+        filter.searchText = "press"
+
+        XCTAssertEqual(
+            names(filter.apply(to: catalog())),
+            ["Press banca", "Press inclinado con mancuernas"]
+        )
+    }
+
+    func testSearchIgnoresCase() {
+        var filter = ExerciseFilterState(searchText: "PRESS")
+        XCTAssertEqual(filter.apply(to: catalog()).count, 2)
+
+        filter.searchText = "pReSs BaNcA"
+        XCTAssertEqual(names(filter.apply(to: catalog())), ["Press banca"])
+
+        // La búsqueda por nombre no depende de acentos de otro idioma ni del
+        // orden de la lista: se conserva el orden recibido.
+        filter.searchText = "remo"
+        XCTAssertEqual(names(filter.apply(to: catalog())), ["Remo con barra"])
+    }
+
+    func testFilterByMuscleGroup() {
+        let filter = ExerciseFilterState(selectedMuscleGroup: .chest)
+
+        XCTAssertEqual(
+            names(filter.apply(to: catalog())),
+            ["Press banca", "Press inclinado con mancuernas", "Aperturas en polea"]
+        )
+    }
+
+    func testFilterByEquipment() {
+        let filter = ExerciseFilterState(selectedEquipment: .dumbbell)
+
+        XCTAssertEqual(
+            names(filter.apply(to: catalog())),
+            ["Press inclinado con mancuernas", "Curl de bíceps"]
+        )
+    }
+
+    func testFilterByCompoundClassification() {
+        // COMPUESTO: solo los ejercicios marcados con `isCompound == true`.
+        var filter = ExerciseFilterState(selectedIsCompound: true)
+        XCTAssertEqual(
+            names(filter.apply(to: catalog())),
+            ["Press banca", "Press inclinado con mancuernas", "Remo con barra"]
+        )
+        XCTAssertTrue(filter.apply(to: catalog()).allSatisfy { $0.isCompound })
+
+        // AISLAMIENTO: complementario exacto, sin solapamientos con el anterior.
+        filter.selectedIsCompound = false
+        XCTAssertEqual(
+            names(filter.apply(to: catalog())),
+            ["Aperturas en polea", "Curl de bíceps", "Plancha", "Bici estática"]
+        )
+        XCTAssertTrue(filter.apply(to: catalog()).allSatisfy { !$0.isCompound })
+
+        // Sin selección: vuelve el catálogo completo, no una tercera categoría.
+        filter.selectedIsCompound = nil
+        XCTAssertEqual(filter.apply(to: catalog()).count, catalog().count)
+        XCTAssertFalse(filter.hasActiveCriteria)
+    }
+
+    func testCombinedCriteriaMatchSimultaneously() {
+        var filter = ExerciseFilterState(
+            searchText: "press",
+            selectedMuscleGroup: .chest,
+            selectedEquipment: .dumbbell,
+            selectedIsCompound: true
+        )
+
+        XCTAssertEqual(
+            names(filter.apply(to: catalog())),
+            ["Press inclinado con mancuernas"]
+        )
+
+        // El mismo filtro con la clasificación contraria no deja nada: el
+        // criterio de TIPO es excluyente, no una suma de resultados.
+        filter.selectedIsCompound = false
+        XCTAssertTrue(filter.apply(to: catalog()).isEmpty)
+        filter.selectedIsCompound = true
+
+        // Cambiar solo el material mantiene los demás criterios.
+        filter.selectedEquipment = .olympicBar
+        XCTAssertEqual(names(filter.apply(to: catalog())), ["Press banca"])
+    }
+
+    func testResetClearsSearchAndFilters() {
+        var filter = ExerciseFilterState(
+            searchText: "press",
+            selectedMuscleGroup: .chest,
+            selectedEquipment: .dumbbell,
+            selectedIsCompound: true
+        )
+        XCTAssertTrue(filter.hasActiveCriteria)
+
+        filter.reset()
+
+        XCTAssertEqual(filter, ExerciseFilterState())
+        XCTAssertFalse(filter.hasActiveCriteria)
+        XCTAssertEqual(filter.apply(to: catalog()).count, catalog().count)
+    }
+
+    func testEmptyResultWhenNoExerciseMatches() {
+        let noName = ExerciseFilterState(searchText: "sentadilla bulgara")
+        XCTAssertTrue(noName.apply(to: catalog()).isEmpty)
+        XCTAssertTrue(noName.hasActiveCriteria)
+
+        // Combinación imposible con el catálogo de prueba: pecho + cardio.
+        let impossible = ExerciseFilterState(
+            selectedMuscleGroup: .chest,
+            selectedEquipment: .cardioMachine
+        )
+        XCTAssertTrue(impossible.apply(to: catalog()).isEmpty)
+    }
+}
+
+// MARK: - Sustitución de ejercicio en una rutina
+
+/// Pruebas del único punto de mutación de la sustitución: el mismo
+/// `RoutineExercise` cambia de ejercicio sin perder su configuración, sin
+/// alterar el resto de la rutina y sin tocar el historial.
+final class RoutineExerciseSubstitutionTests: XCTestCase {
+
+    /// UUID estable de la rutina personal PUSH. Se usa solo como identidad de un
+    /// objeto creado en un contenedor de memoria, para comprobar que la
+    /// sustitución no toca el identificador de la rutina protegida.
+    private static let protectedPushID: UUID = UUID(
+        uuidString: "6F0E1A10-0001-4000-8000-000000000001"
+    )!
+
+    private var container: ModelContainer!
+    private var context: ModelContext!
+
+    private struct Fixture {
+        let routine: Routine
+        let target: RoutineExercise
+        let other: RoutineExercise
+        let previousExercise: Exercise
+        let replacementExercise: Exercise
+        let otherExercise: Exercise
+    }
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+
+        let schema: Schema = Schema(versionedSchema: AppSchemaV6.self)
+        container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        context = ModelContext(container)
+    }
+
+    override func tearDownWithError() throws {
+        context = nil
+        container = nil
+        try super.tearDownWithError()
+    }
+
+    private func makeFixture() throws -> Fixture {
+        let previousExercise = Exercise(
+            name: "Press banca",
+            muscleGroup: .chest,
+            equipmentType: .olympicBar
+        )
+        let replacementExercise = Exercise(
+            name: "Press inclinado con mancuernas",
+            muscleGroup: .chest,
+            equipmentType: .dumbbell
+        )
+        let otherExercise = Exercise(
+            name: "Aperturas en polea",
+            muscleGroup: .chest,
+            equipmentType: .cable
+        )
+        context.insert(previousExercise)
+        context.insert(replacementExercise)
+        context.insert(otherExercise)
+
+        let target = RoutineExercise(
+            exercise: previousExercise,
+            defaultSets: 5,
+            targetRepsMin: 5,
+            targetRepsMax: 7,
+            sortOrder: 0,
+            defaultWeight: 82.5,
+            restSeconds: 150,
+            notes: "Codos a 45 grados",
+            hasCustomRest: true
+        )
+        let other = RoutineExercise(
+            exercise: otherExercise,
+            defaultSets: 3,
+            targetRepsMin: 10,
+            targetRepsMax: 12,
+            sortOrder: 1,
+            defaultWeight: 15.0,
+            restSeconds: 60,
+            notes: "Polea alta",
+            hasCustomRest: false
+        )
+        context.insert(target)
+        context.insert(other)
+
+        let routine = Routine(
+            id: Self.protectedPushID,
+            name: "PUSH",
+            exercises: [target, other]
+        )
+        context.insert(routine)
+
+        try context.save()
+
+        return Fixture(
+            routine: routine,
+            target: target,
+            other: other,
+            previousExercise: previousExercise,
+            replacementExercise: replacementExercise,
+            otherExercise: otherExercise
+        )
+    }
+
+    private func makeReplacedFixture() throws -> Fixture {
+        let fixture = try makeFixture()
+        fixture.target.replaceExercise(with: fixture.replacementExercise)
+        return fixture
+    }
+
+    func testReplacementSwapsTheExerciseOfTheTargetRow() throws {
+        let fixture = try makeFixture()
+
+        XCTAssertTrue(fixture.target.replaceExercise(with: fixture.replacementExercise))
+        XCTAssertEqual(fixture.target.exercise?.id, fixture.replacementExercise.id)
+        XCTAssertEqual(fixture.target.exercise?.name, "Press inclinado con mancuernas")
+
+        // Elegir el mismo ejercicio no cambia nada.
+        XCTAssertFalse(fixture.target.replaceExercise(with: fixture.replacementExercise))
+    }
+
+    func testReplacementKeepsTheRoutineExerciseIdentity() throws {
+        let fixture = try makeFixture()
+        let routineExerciseID: UUID = fixture.target.id
+
+        fixture.target.replaceExercise(with: fixture.replacementExercise)
+        try context.save()
+
+        XCTAssertEqual(fixture.target.id, routineExerciseID)
+        XCTAssertEqual(fixture.routine.id, Self.protectedPushID)
+        XCTAssertEqual(fixture.routine.name, "PUSH")
+
+        let stored: [RoutineExercise] = try context.fetch(FetchDescriptor<RoutineExercise>())
+        XCTAssertEqual(stored.filter { $0.id == routineExerciseID }.count, 1)
+    }
+
+    func testReplacementKeepsTheSetCount() throws {
+        let fixture = try makeReplacedFixture()
+        XCTAssertEqual(fixture.target.defaultSets, 5)
+    }
+
+    func testReplacementKeepsTheRepRanges() throws {
+        let fixture = try makeReplacedFixture()
+        XCTAssertEqual(fixture.target.targetRepsMin, 5)
+        XCTAssertEqual(fixture.target.targetRepsMax, 7)
+    }
+
+    func testReplacementKeepsTheDefaultWeight() throws {
+        let fixture = try makeReplacedFixture()
+        XCTAssertEqual(fixture.target.defaultWeight, 82.5, accuracy: 0.0001)
+    }
+
+    func testReplacementKeepsTheRestSeconds() throws {
+        let fixture = try makeReplacedFixture()
+        XCTAssertEqual(fixture.target.restSeconds, 150)
+    }
+
+    func testReplacementKeepsHasCustomRest() throws {
+        let custom = try makeReplacedFixture()
+        XCTAssertTrue(custom.target.hasCustomRest)
+        XCTAssertFalse(custom.other.hasCustomRest)
+    }
+
+    func testReplacementKeepsTheNotes() throws {
+        let fixture = try makeReplacedFixture()
+        XCTAssertEqual(fixture.target.notes, "Codos a 45 grados")
+    }
+
+    func testReplacementKeepsTheSortOrder() throws {
+        let fixture = try makeReplacedFixture()
+        XCTAssertEqual(fixture.target.sortOrder, 0)
+        XCTAssertEqual(fixture.other.sortOrder, 1)
+    }
+
+    func testReplacementDoesNotAddExercises() throws {
+        let fixture = try makeReplacedFixture()
+        try context.save()
+
+        XCTAssertEqual(fixture.routine.exercises.count, 2)
+
+        let stored: [RoutineExercise] = try context.fetch(FetchDescriptor<RoutineExercise>())
+        XCTAssertEqual(stored.count, 2)
+    }
+
+    func testReplacementDoesNotTouchOtherRows() throws {
+        let fixture = try makeReplacedFixture()
+
+        XCTAssertEqual(fixture.other.exercise?.id, fixture.otherExercise.id)
+        XCTAssertEqual(fixture.other.exercise?.name, "Aperturas en polea")
+        XCTAssertEqual(fixture.other.defaultSets, 3)
+        XCTAssertEqual(fixture.other.targetRepsMin, 10)
+        XCTAssertEqual(fixture.other.targetRepsMax, 12)
+        XCTAssertEqual(fixture.other.defaultWeight, 15.0, accuracy: 0.0001)
+        XCTAssertEqual(fixture.other.restSeconds, 60)
+        XCTAssertEqual(fixture.other.notes, "Polea alta")
+    }
+
+    func testReplacementDoesNotTouchTrainingHistory() throws {
+        let fixture = try makeFixture()
+
+        let session = WorkoutSession(
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            routineName: "PUSH"
+        )
+        context.insert(session)
+
+        let log = WorkoutSetLog(
+            date: Date(timeIntervalSince1970: 1_700_000_100),
+            weight: 80.0,
+            reps: 7,
+            targetRepsMin: 5,
+            targetRepsMax: 7,
+            isCompleted: true,
+            routineExerciseID: fixture.target.id,
+            setNumber: 1,
+            exercise: fixture.previousExercise,
+            session: session
+        )
+        context.insert(log)
+        session.setsCompleted = [log]
+        try context.save()
+
+        let logID: UUID = log.id
+        fixture.target.replaceExercise(with: fixture.replacementExercise)
+        try context.save()
+
+        XCTAssertEqual(session.setsCompleted.count, 1)
+        XCTAssertEqual(session.setsCompleted.first?.id, logID)
+        XCTAssertEqual(log.exercise?.id, fixture.previousExercise.id)
+        XCTAssertEqual(log.weight, 80.0, accuracy: 0.0001)
+        XCTAssertEqual(log.reps, 7)
+        XCTAssertEqual(log.routineExerciseID, fixture.target.id)
+        XCTAssertTrue(log.isCompleted)
+
+        let stored: [WorkoutSetLog] = try context.fetch(FetchDescriptor<WorkoutSetLog>())
+        XCTAssertEqual(stored.filter { $0.id == logID }.count, 1)
+        XCTAssertEqual(stored.first?.exercise?.id, fixture.previousExercise.id)
+    }
+}

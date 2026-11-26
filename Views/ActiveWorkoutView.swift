@@ -666,16 +666,12 @@ public struct ActiveWorkoutView: View {
         }
     }
 
+    /// Tiempo que muestran el temporizador maximizado y el minimizado. La
+    /// fórmula vive en el ViewModel (`restRemainingSeconds`) para que Big
+    /// Picture muestre exactamente el mismo valor y no haya dos lecturas
+    /// distintas del mismo descanso.
     private func displayedRestTime(at date: Date) -> Int {
-        if viewModel.isRestPaused {
-            return viewModel.restTimeRemaining
-        }
-
-        guard let endDate = viewModel.restTimerEndDate else {
-            return viewModel.restTimeRemaining
-        }
-
-        return max(0, Int(ceil(endDate.timeIntervalSince(date))))
+        return viewModel.restRemainingSeconds(at: date)
     }
 
     /// Célula de pulso aislada: es la única vista del HUD que observa

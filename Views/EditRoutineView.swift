@@ -11,11 +11,12 @@ struct EditRoutineView: View {
     @Bindable var routine: Routine
     let isNewRoutine: Bool
 
-    @Query(sort: \Exercise.name) private var exercises: [Exercise]
-
     @State private var showingExercisePicker = false
     @State private var exercisePendingRemoval: RoutineExercise?
     @State private var exerciseToConfigure: Exercise?
+    /// Fila cuya sustitución de ejercicio está abierta. Se guarda el propio
+    /// `RoutineExercise` (identidad estable) en lugar de un índice de la lista.
+    @State private var exercisePendingReplacement: RoutineExercise?
 
     private var sortedExercises: [RoutineExercise] {
         routine.exercises.sorted { $0.sortOrder < $1.sortOrder }
@@ -36,9 +37,9 @@ struct EditRoutineView: View {
                         ForEach(Array(sortedExercises.enumerated()), id: \.element.id) { index, routineExercise in
                             RoutineExerciseEditorRow(
                                 routineExercise: routineExercise,
-                                exercises: exercises,
                                 index: index,
-                                onRemove: { exercisePendingRemoval = routineExercise }
+                                onRemove: { exercisePendingRemoval = routineExercise },
+                                onChangeExercise: { exercisePendingReplacement = routineExercise }
                             )
                         }
                     }
@@ -112,6 +113,17 @@ struct EditRoutineView: View {
                     modelContext.insert(routineExercise)
                 }
                 routine.exercises.append(routineExercise)
+                if !isNewRoutine {
+                    PersistenceService.save(modelContext, operation: "guardar la rutina")
+                }
+            }
+        }
+        .sheet(item: $exercisePendingReplacement) { routineExercise in
+            // El selector no conoce la rutina: devuelve el ejercicio y aquí se
+            // aplica el único cambio permitido, sobre la misma fila.
+            ExerciseSelectionView(currentExerciseID: routineExercise.exercise?.id) { exercise in
+                guard routineExercise.replaceExercise(with: exercise) else { return }
+
                 if !isNewRoutine {
                     PersistenceService.save(modelContext, operation: "guardar la rutina")
                 }
@@ -225,9 +237,10 @@ struct EditRoutineView: View {
 
 private struct RoutineExerciseEditorRow: View {
     @Bindable var routineExercise: RoutineExercise
-    let exercises: [Exercise]
     let index: Int
     let onRemove: () -> Void
+    /// Abre el selector independiente. La fila no conoce el catálogo.
+    let onChangeExercise: () -> Void
 
     @State private var notesExpanded = false
 
@@ -351,23 +364,12 @@ private struct RoutineExerciseEditorRow: View {
                 .disabled(routineExercise.exercise == nil)
                 .accessibilityLabel("Nombre del ejercicio")
 
-            Menu {
-                ForEach(exercises) { exercise in
-                    Button {
-                        routineExercise.exercise = exercise
-                    } label: {
-                        if routineExercise.exercise?.id == exercise.id {
-                            Label(exercise.name, systemImage: "checkmark")
-                        } else {
-                            Text(exercise.name)
-                        }
-                    }
-                }
-            } label: {
+            Button(action: onChangeExercise) {
                 Image(systemName: "arrow.triangle.2.circlepath")
                     .font(EndfieldFont.mono(12.0, weight: .bold))
             }
             .buttonStyle(EndfieldSquareButtonStyle(tint: EndfieldPalette.accentCyan, size: 34.0))
+            .disabled(routineExercise.exercise == nil)
             .accessibilityLabel("Cambiar ejercicio")
         }
     }

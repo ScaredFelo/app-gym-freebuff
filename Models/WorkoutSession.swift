@@ -204,3 +204,110 @@ public final class WorkoutSetLog {
         self.session = session
     }
 }
+
+// MARK: - Días de entrenamiento (Progreso)
+
+/// Calendario único de la pestaña Progreso.
+///
+/// Se construye en cada acceso (`static var`, no `static let`) para que un
+/// cambio de zona horaria o de configuración regional se refleje sin reiniciar
+/// la app. Marcadores, claves de día, comparación y selección usan siempre la
+/// misma instancia lógica, así que no pueden discrepar.
+enum WorkoutDayCalendar {
+    static var calendar: Calendar {
+        var calendar: Calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "es_ES")
+        calendar.firstWeekday = 2
+        calendar.timeZone = .current
+        return calendar
+    }
+
+    /// Inicio del día en el calendario compartido. Es la clave con la que se
+    /// comparan dos fechas: dos instantes del mismo día producen el mismo valor
+    /// y días distintos nunca lo comparten, sea cual sea la hora.
+    static func dayKey(for date: Date) -> Date {
+        return calendar.startOfDay(for: date)
+    }
+}
+
+extension WorkoutSession {
+    /// Solo las sesiones cerradas ofrecen estadísticas finales. Una sesión en
+    /// curso (`endDate == nil`) no es historial y no debe comportarse como tal.
+    var isFinishedWorkout: Bool {
+        return endDate != nil
+    }
+}
+
+/// Selección de un día del calendario de Progreso: la fecha pulsada y las
+/// sesiones finalizadas de ese día, ya ordenadas por hora de inicio.
+///
+/// Conserva las instancias reales de `WorkoutSession`: abrir estadísticas no
+/// copia ni recrea el modelo de SwiftData.
+struct WorkoutDaySelection: Identifiable {
+    /// Identidad nueva por selección. Pulsar el mismo día dos veces produce una
+    /// presentación nueva y limpia, nunca una hoja reutilizada con estado viejo.
+    let id: UUID = UUID()
+    let day: Date
+    let sessions: [WorkoutSession]
+
+    /// Con una única sesión las estadísticas se abren directamente, sin lista
+    /// intermedia.
+    var singleSession: WorkoutSession? {
+        return sessions.count == 1 ? sessions.first : nil
+    }
+}
+
+/// Criterio único para decidir qué sesiones pertenecen a un día y qué días
+/// llevan marcador.
+///
+/// El calendario, el inicio de día y la exigencia de `endDate` viven aquí para
+/// que el marcador del calendario y la selección no puedan divergir: todo día
+/// marcado tiene una acción coherente y ningún día sin estadísticas se marca.
+enum WorkoutDayCatalog {
+    /// Días que deben mostrar marcador: los que tienen alguna sesión finalizada.
+    static func markedDays(from sessions: [WorkoutSession]) -> Set<Date> {
+        // Un solo calendario para todo el recorrido: el calendario se pinta en
+        // 241 páginas y crear una instancia por sesión no sería gratis.
+        let calendar: Calendar = WorkoutDayCalendar.calendar
+        var days: Set<Date> = Set<Date>()
+
+        for session in sessions where session.isFinishedWorkout {
+            days.insert(calendar.startOfDay(for: session.startDate))
+        }
+
+        return days
+    }
+
+    /// Sesiones finalizadas del día indicado, ordenadas por hora de inicio.
+    static func finishedSessions(
+        on day: Date,
+        from sessions: [WorkoutSession]
+    ) -> [WorkoutSession] {
+        let calendar: Calendar = WorkoutDayCalendar.calendar
+        let key: Date = calendar.startOfDay(for: day)
+
+        return sessions
+            .filter { (session: WorkoutSession) -> Bool in
+                return session.isFinishedWorkout
+                    && calendar.startOfDay(for: session.startDate) == key
+            }
+            .sorted { (lhs: WorkoutSession, rhs: WorkoutSession) -> Bool in
+                return lhs.startDate < rhs.startDate
+            }
+    }
+
+    /// Presentación que corresponde al pulsar un día. `nil` significa que ese
+    /// día no tiene estadísticas que abrir, así que tampoco lleva marcador.
+    static func selection(
+        on day: Date,
+        from sessions: [WorkoutSession]
+    ) -> WorkoutDaySelection? {
+        let finished: [WorkoutSession] = finishedSessions(on: day, from: sessions)
+        guard !finished.isEmpty else { return nil }
+
+        return WorkoutDaySelection(
+            day: WorkoutDayCalendar.dayKey(for: day),
+            sessions: finished
+        )
+    }
+}

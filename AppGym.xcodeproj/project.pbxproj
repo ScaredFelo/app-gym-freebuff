@@ -28,6 +28,8 @@
 		BC221EAF9FFA23FAF42FE310 /* BPMManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = B25522A6E8A844357703F614 /* BPMManager.swift */; };
 		C16B11F0A649585A13DB9B39 /* Routine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DD8C216849F8578850A3715 /* Routine.swift */; };
 		C68F9BFA9A6B2167CEF5A4EA /* CircularTimerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DE3AB36A9EA9EB14C832565 /* CircularTimerView.swift */; };
+		AA9A00000000000000000001 /* ExerciseFilterState.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA9A00000000000000000002 /* ExerciseFilterState.swift */; };
+		AA9A00000000000000000003 /* ExerciseSelectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA9A00000000000000000004 /* ExerciseSelectionView.swift */; };
 		E26B6FD984268F30DA5DCEBF /* AppGymWidgets.appex in Sources */ = {isa = PBXBuildFile; fileRef = 69CB4C65BF488F890B5D5613 /* AppGymWidgets.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		E525D0FD2769369CD9B914F2 /* AnalyticsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4EF0CC94701D1C636E62D2 /* AnalyticsView.swift */; };
 		EA6C253F7DC48308D5A518FE /* ActiveWorkoutViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ACE7C52B64E15AB73DAC0AD /* ActiveWorkoutViewModel.swift */; };
@@ -104,6 +106,8 @@
 		3ACE7C52B64E15AB73DAC0AD /* ActiveWorkoutViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveWorkoutViewModel.swift; sourceTree = "<group>"; };
 		53F3EE88A0CFE902AE067FEB /* LiveActivityManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityManager.swift; sourceTree = "<group>"; };
 		5DE3AB36A9EA9EB14C832565 /* CircularTimerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CircularTimerView.swift; sourceTree = "<group>"; };
+		AA9A00000000000000000002 /* ExerciseFilterState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseFilterState.swift; sourceTree = "<group>"; };
+		AA9A00000000000000000004 /* ExerciseSelectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseSelectionView.swift; sourceTree = "<group>"; };
 		6560C2BE72F2FF984366E393 /* AppGym.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AppGym.entitlements; sourceTree = "<group>"; };
 		69CB4C65BF488F890B5D5613 /* AppGymWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AppGymWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		6DD8C216849F8578850A3715 /* Routine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Routine.swift; sourceTree = "<group>"; };
@@ -239,6 +243,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 			isa = PBXGroup;
 			children = (
 				5DE3AB36A9EA9EB14C832565 /* CircularTimerView.swift */,
+				AA9A00000000000000000004 /* ExerciseSelectionView.swift */,
 				AA2000000000000000000010 /* EquipmentVisualizerView.swift */,
 				AA2000000000000000000012 /* MonthlyCalendarPagerView.swift */,
 				AA2000000000000000000022 /* AnatomicalMuscleMapView.swift */,
@@ -326,6 +331,7 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 			isa = PBXGroup;
 			children = (
 				9D5FD65528501527F55D75EE /* Enums.swift */,
+				AA9A00000000000000000002 /* ExerciseFilterState.swift */,
 				AA2000000000000000000020 /* MuscleGroup.swift */,
 				84B6D982922C3997DC5B7B4D /* Exercise.swift */,
 				AA2000000000000000000050 /* CardioType.swift */,
@@ -470,6 +476,8 @@ AA4000000000000000000001 /* EndfieldTheme.swift */ = {isa = PBXFileReference; la
 				8914AF81A75A248FAE78BBFF /* MainTabView.swift in Sources */,
 				483108C260DE975EAF81A0A2 /* RoutineListView.swift in Sources */,
 				C68F9BFA9A6B2167CEF5A4EA /* CircularTimerView.swift in Sources */,
+				AA9A00000000000000000001 /* ExerciseFilterState.swift in Sources */,
+				AA9A00000000000000000003 /* ExerciseSelectionView.swift in Sources */,
 				48FE8E49986913AA3F7CDF61 /* ExercisePickerView.swift in Sources */,
 				F4B85B0BF42ABA8A176BCACC /* MinimizedTimerView.swift in Sources */,
 				AA1000000000000000000003 /* ActiveWorkoutStateStore.swift in Sources */,

@@ -13,12 +13,9 @@ public struct AnalyticsView: View {
     @State private var sessionPendingDeletion: WorkoutSession?
     @State private var saveErrorMessage: String?
 
-    // Selección de un día del calendario y review de una sesión histórica.
-    @State private var selectedDayDate: Date?
-    @State private var selectedDaySessions: [WorkoutSession] = []
-    @State private var showingDaySessions = false
-    @State private var sessionToReviewAfterSheet: WorkoutSession?
-    @State private var reviewSession: WorkoutSession?
+    /// Única fuente de presentación del calendario. La hoja muestra la lista de
+    /// sesiones del día o, si solo hay una, sus estadísticas directamente.
+    @State private var daySelection: WorkoutDaySelection?
 
     public var body: some View {
         NavigationStack {
@@ -88,21 +85,14 @@ public struct AnalyticsView: View {
             } message: {
                 Text("Esta acción no se puede deshacer.")
             }
-            .sheet(isPresented: $showingDaySessions, onDismiss: openPendingReviewSession) {
-                DaySessionsSheet(
-                    date: selectedDayDate ?? Date(),
-                    sessions: selectedDaySessions,
-                    onSelect: { (session: WorkoutSession) in
-                        sessionToReviewAfterSheet = session
-                        showingDaySessions = false
-                    }
-                )
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(EndfieldPalette.bgPrimary)
-            }
-            .fullScreenCover(item: $reviewSession) { (session: WorkoutSession) in
-                WorkoutReviewView(session: session, isPostWorkout: false)
+            // Una sola presentación: la lista del día y las estadísticas viven
+            // en la misma hoja, así que no hay un segundo modal encadenado al
+            // cierre del primero.
+            .sheet(item: $daySelection) { (selection: WorkoutDaySelection) in
+                ProgressDaySheet(selection: selection)
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+                    .presentationBackground(EndfieldPalette.bgPrimary)
             }
         }
     }
@@ -286,31 +276,13 @@ public struct AnalyticsView: View {
 
     // MARK: - Selección de día y review histórico
 
-    /// Filtra las sesiones iniciadas en el día pulsado y abre el selector.
-    /// Si no hay entrenamientos ese día no se presenta nada.
+    /// Abre las sesiones del día pulsado con el criterio compartido del
+    /// calendario (`WorkoutDayCatalog`). Un día sin sesiones finalizadas no
+    /// abre nada y tampoco lleva marcador, así que no queda una acción
+    /// incoherente. La selección se reemplaza siempre: nunca sobreviven las
+    /// sesiones del día anterior.
     private func selectDay(_ date: Date) {
-        let calendar: Calendar = Calendar.current
-        let daySessions: [WorkoutSession] = sessions
-            .filter { (session: WorkoutSession) -> Bool in
-                return session.endDate != nil && calendar.isDate(session.startDate, inSameDayAs: date)
-            }
-            .sorted { (lhs: WorkoutSession, rhs: WorkoutSession) -> Bool in
-                return lhs.startDate < rhs.startDate
-            }
-
-        guard !daySessions.isEmpty else { return }
-
-        selectedDayDate = date
-        selectedDaySessions = daySessions
-        showingDaySessions = true
-    }
-
-    /// Se ejecuta al cerrarse el sheet del día. Solo abre el review cuando el
-    /// cierre se ha producido por seleccionar una rutina concreta.
-    private func openPendingReviewSession() {
-        guard let session: WorkoutSession = sessionToReviewAfterSheet else { return }
-        sessionToReviewAfterSheet = nil
-        reviewSession = session
+        daySelection = WorkoutDayCatalog.selection(on: date, from: sessions)
     }
 
     // MARK: - Eliminación de sesiones
@@ -321,13 +293,6 @@ public struct AnalyticsView: View {
     private func deletePendingSession() {
         guard let session: WorkoutSession = sessionPendingDeletion else { return }
         sessionPendingDeletion = nil
-
-        if reviewSession?.id == session.id {
-            reviewSession = nil
-        }
-        if sessionToReviewAfterSheet?.id == session.id {
-            sessionToReviewAfterSheet = nil
-        }
 
         let sessionLogs: [WorkoutSetLog] = session.setsCompleted
         for log in sessionLogs {
@@ -342,6 +307,39 @@ public struct AnalyticsView: View {
 
         // La sesión borrada deja de contar para la racha semanal.
         WidgetStreakStore.refresh(modelContext: modelContext)
+    }
+}
+
+// MARK: - Contenedor único de la selección de un día
+
+/// Único propietario de la presentación del calendario.
+///
+/// Evita encadenar una hoja y un `fullScreenCover`: la lista del día y las
+/// estadísticas comparten jerarquía, así que elegir una sesión es un cambio de
+/// estado dentro de la hoja ya presentada y cerrar el informe vuelve directo al
+/// calendario. No se duplica ni se recrea ninguna `WorkoutSession`.
+private struct ProgressDaySheet: View {
+    let selection: WorkoutDaySelection
+
+    /// Sesión elegida dentro de la hoja. `nil` mientras se muestra la lista.
+    /// Con una sola sesión no se usa: se abre directamente su informe.
+    @State private var reviewedSession: WorkoutSession?
+
+    var body: some View {
+        Group {
+            if let session: WorkoutSession = reviewedSession ?? selection.singleSession {
+                WorkoutReviewView(session: session, isPostWorkout: false)
+            } else {
+                DaySessionsSheet(
+                    date: selection.day,
+                    sessions: selection.sessions,
+                    onSelect: { (session: WorkoutSession) in
+                        reviewedSession = session
+                    }
+                )
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 

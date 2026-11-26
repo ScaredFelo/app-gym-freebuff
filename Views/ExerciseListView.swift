@@ -8,9 +8,9 @@ public struct ExerciseListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Exercise.name) private var exercises: [Exercise]
 
-    @State private var selectedMuscleGroup: MuscleGroup? = nil
-    @State private var selectedEquipment: EquipmentType? = nil
-    @State private var searchText = ""
+    /// Mismo estado y mismas reglas de filtrado que el selector de sustitución
+    /// de ejercicios: una sola implementación.
+    @State private var filter = ExerciseFilterState()
     @State private var showingAddModal = false
     @State private var selectedExerciseForDetail: Exercise?
     @State private var selectedExerciseToEdit: Exercise?
@@ -72,7 +72,7 @@ public struct ExerciseListView: View {
             .sheet(item: $selectedExerciseToEdit) { exercise in
                 ExerciseSettingsView(exercise: exercise)
             }
-            .searchable(text: $searchText, prompt: "Buscar ejercicio...")
+            .searchable(text: $filter.searchText, prompt: "Buscar ejercicio...")
             .alert(
                 "EJERCICIO NO ELIMINADO",
                 isPresented: Binding(
@@ -95,15 +95,15 @@ public struct ExerciseListView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 5.0) {
                 // All button
-                FilterChip(title: "Todos", isSelected: selectedMuscleGroup == nil && selectedEquipment == nil) {
-                    selectedMuscleGroup = nil
-                    selectedEquipment = nil
+                FilterChip(title: "Todos", isSelected: filter.selectedMuscleGroup == nil && filter.selectedEquipment == nil) {
+                    filter.selectedMuscleGroup = nil
+                    filter.selectedEquipment = nil
                 }
 
                 // Muscle Groups
                 ForEach(MuscleGroup.allCases) { group in
-                    FilterChip(title: group.shortName, isSelected: selectedMuscleGroup == group) {
-                        selectedMuscleGroup = (selectedMuscleGroup == group) ? nil : group
+                    FilterChip(title: group.shortName, isSelected: filter.selectedMuscleGroup == group) {
+                        filter.selectedMuscleGroup = (filter.selectedMuscleGroup == group) ? nil : group
                     }
                 }
             }
@@ -113,12 +113,7 @@ public struct ExerciseListView: View {
     }
 
     private var filteredExercises: [Exercise] {
-        exercises.filter { exercise in
-            let matchesSearch = searchText.isEmpty || exercise.name.localizedCaseInsensitiveContains(searchText)
-            let matchesMuscle = selectedMuscleGroup == nil || exercise.muscleGroup == selectedMuscleGroup
-            let matchesEquipment = selectedEquipment == nil || exercise.equipmentType == selectedEquipment
-            return matchesSearch && matchesMuscle && matchesEquipment
-        }
+        filter.apply(to: exercises)
     }
 
     /// Borra solo los ejercicios que no dejan ningún dato histórico ni rutina

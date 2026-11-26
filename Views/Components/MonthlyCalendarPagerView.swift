@@ -22,16 +22,8 @@ private enum MonthlyCalendarMetrics {
         return cellHeight - 4.0
     }
 
-    static var calendar: Calendar {
-        var calendar: Calendar = Calendar(identifier: .gregorian)
-        calendar.locale = locale
-        calendar.firstWeekday = 2
-        calendar.timeZone = .current
-        return calendar
-    }
-
     static func monthStart(offset: Int, from date: Date = Date()) -> Date {
-        let calendar: Calendar = self.calendar
+        let calendar: Calendar = WorkoutDayCalendar.calendar
         let components: DateComponents = calendar.dateComponents([.year, .month], from: date)
         let currentStart: Date = calendar.date(from: components) ?? date
         return calendar.date(byAdding: .month, value: offset, to: currentStart) ?? currentStart
@@ -50,18 +42,11 @@ struct MonthlyCalendarPagerView: View {
 
     private static let monthOffsetRange: ClosedRange<Int> = -120...120
 
-    /// Días con entrenamiento, normalizados al inicio del día para comparar
-    /// fechas de forma segura e independiente de la hora.
+    /// Días con entrenamiento finalizado. Usa el mismo criterio que la
+    /// selección (`WorkoutDayCatalog`), así que todo día marcado abre sus
+    /// estadísticas y ningún día sin estadísticas se marca.
     private var workoutDays: Set<Date> {
-        let calendar: Calendar = MonthlyCalendarMetrics.calendar
-        var days: Set<Date> = Set<Date>()
-
-        for session in sessions {
-            let day: Date = calendar.startOfDay(for: session.startDate)
-            days.insert(day)
-        }
-
-        return days
+        return WorkoutDayCatalog.markedDays(from: sessions)
     }
 
     var body: some View {
@@ -155,7 +140,7 @@ struct MonthlyCalendarPagerView: View {
     private var monthTitle: String {
         let date: Date = MonthlyCalendarMetrics.monthStart(offset: monthOffset)
         let formatter: DateFormatter = DateFormatter()
-        formatter.calendar = MonthlyCalendarMetrics.calendar
+        formatter.calendar = WorkoutDayCalendar.calendar
         formatter.locale = MonthlyCalendarMetrics.locale
         formatter.timeZone = .current
 
@@ -193,7 +178,7 @@ struct MonthGridPageView: View {
     let onSelectDate: (Date) -> Void
 
     var body: some View {
-        let calendar: Calendar = MonthlyCalendarMetrics.calendar
+        let calendar: Calendar = WorkoutDayCalendar.calendar
         let dates: [Date?] = cellDates(using: calendar)
         let columns: [GridItem] = Array(
             repeating: GridItem(.flexible(), spacing: MonthlyCalendarMetrics.gridSpacing),
@@ -209,6 +194,8 @@ struct MonthGridPageView: View {
                         CalendarDayCellView(
                             dayNumber: calendar.component(.day, from: date),
                             isToday: calendar.isDateInToday(date),
+                            // `calendar` ya es `WorkoutDayCalendar.calendar`: el
+                            // mismo inicio de día que usa la selección.
                             hasWorkout: workoutDays.contains(calendar.startOfDay(for: date))
                         )
                     }

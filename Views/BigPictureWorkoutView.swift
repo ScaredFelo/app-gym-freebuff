@@ -277,41 +277,96 @@ public struct BigPictureWorkoutView: View {
         }
     }
 
+    /// Controles del descanso: ajuste de ±15 s en la fila superior y
+    /// PAUSAR/REANUDAR + SALTAR debajo. Las dos filas evitan que cuatro botones
+    /// se apilen en pantallas estrechas y que el ajuste roce el salto.
     private var bigPictureTimerControls: some View {
-        HStack(spacing: 8.0) {
-            Button {
-                if viewModel.isRestPaused {
-                    viewModel.resumeRest()
-                } else {
-                    viewModel.pauseRest()
+        VStack(spacing: 8.0) {
+            HStack(spacing: 8.0) {
+                restAdjustmentButton(
+                    systemName: "gobackward.15",
+                    title: "−15 S",
+                    tint: EndfieldPalette.textPrimary,
+                    isEnabled: viewModel.bigPictureCanSubtractRestTime,
+                    accessibilityLabel: "Restar 15 segundos"
+                ) {
+                    viewModel.adjustRestTime(by: -ActiveWorkoutViewModel.bigPictureRestAdjustmentSeconds)
                 }
-            } label: {
-                HStack(spacing: 6.0) {
-                    Image(systemName: viewModel.isRestPaused ? "play" : "pause")
-                        .font(EndfieldFont.mono(11.0, weight: .bold))
 
-                    Text(viewModel.isRestPaused ? "REANUDAR" : "PAUSAR")
-                        .font(EndfieldFont.mono(11.0, weight: .bold))
-                        .tracking(1.0)
-                }
-            }
-            .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.textPrimary))
-
-            Button {
-                viewModel.skipRest()
-            } label: {
-                HStack(spacing: 6.0) {
-                    Image(systemName: "forward.end")
-                        .font(EndfieldFont.mono(11.0, weight: .bold))
-
-                    Text("SALTAR")
-                        .font(EndfieldFont.mono(11.0, weight: .bold))
-                        .tracking(1.0)
+                restAdjustmentButton(
+                    systemName: "goforward.15",
+                    title: "+15 S",
+                    tint: EndfieldPalette.accentCyan,
+                    isEnabled: viewModel.bigPictureCanAdjustRestTime,
+                    accessibilityLabel: "Añadir 15 segundos"
+                ) {
+                    viewModel.adjustRestTime(by: ActiveWorkoutViewModel.bigPictureRestAdjustmentSeconds)
                 }
             }
-            .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentRed))
+
+            HStack(spacing: 8.0) {
+                Button {
+                    if viewModel.isRestPaused {
+                        viewModel.resumeRest()
+                    } else {
+                        viewModel.pauseRest()
+                    }
+                } label: {
+                    HStack(spacing: 6.0) {
+                        Image(systemName: viewModel.isRestPaused ? "play" : "pause")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                        Text(viewModel.isRestPaused ? "REANUDAR" : "PAUSAR")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .tracking(1.0)
+                    }
+                }
+                .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.textPrimary))
+
+                Button {
+                    viewModel.skipRest()
+                } label: {
+                    HStack(spacing: 6.0) {
+                        Image(systemName: "forward.end")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                        Text("SALTAR")
+                            .font(EndfieldFont.mono(11.0, weight: .bold))
+                            .tracking(1.0)
+                    }
+                }
+                .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentRed))
+            }
         }
         .padding(.horizontal, 16.0)
+    }
+
+    /// Botón de ajuste del descanso. El estado deshabilitado se ve atenuado
+    /// para que el límite del −15 s no parezca un fallo táctil.
+    private func restAdjustmentButton(
+        systemName: String,
+        title: String,
+        tint: Color,
+        isEnabled: Bool,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6.0) {
+                Image(systemName: systemName)
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+
+                Text(title)
+                    .font(EndfieldFont.mono(11.0, weight: .bold))
+                    .tracking(1.0)
+                    .monospacedDigit()
+            }
+        }
+        .buttonStyle(EndfieldSecondaryButtonStyle(tint: tint))
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1.0 : 0.35)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Ajusta el descanso sin saltarlo")
     }
 
     // MARK: - Notas del ejercicio

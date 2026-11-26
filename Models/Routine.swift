@@ -115,3 +115,20 @@ public final class RoutineExercise {
         }
     }
 }
+
+extension RoutineExercise {
+    /// Sustituye el ejercicio de la fila conservando su identidad y toda su
+    /// configuración: series, rango de repeticiones, orden, peso, descanso,
+    /// `hasCustomRest` y notas.
+    ///
+    /// Es el único punto de mutación de la sustitución: no crea ni elimina
+    /// `RoutineExercise`, no reordena la rutina y no toca los registros
+    /// históricos (que apuntan al ejercicio anterior por su propia relación).
+    /// Devuelve `false` cuando el ejercicio elegido ya era el de la fila.
+    @discardableResult
+    public func replaceExercise(with exercise: Exercise) -> Bool {
+        guard self.exercise?.id != exercise.id else { return false }
+        self.exercise = exercise
+        return true
+    }
+}
