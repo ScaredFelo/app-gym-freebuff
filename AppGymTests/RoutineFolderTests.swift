@@ -801,6 +801,49 @@ final class RoutineFolderTests: XCTestCase {
         )
     }
 
+    // MARK: - 28. El umbral del deslizamiento es exactamente la distancia guardada
+
+    func testTheSwipeThresholdRequiresCrossingTheStoredDistance() {
+        XCTAssertEqual(RoutineFolderService.swipeThreshold, 120.0)
+
+        // Sin alcanzar el umbral no se ejecuta ninguna acción, en ninguna dirección.
+        XCTAssertEqual(
+            RoutineFolderService.swipeAction(horizontal: 119.9, vertical: 0.0),
+            .none
+        )
+        XCTAssertEqual(
+            RoutineFolderService.swipeAction(horizontal: -119.9, vertical: 0.0),
+            .none
+        )
+
+        // Justo en el umbral, cada dirección mantiene su acción.
+        XCTAssertEqual(
+            RoutineFolderService.swipeAction(horizontal: 120.0, vertical: 0.0),
+            .deleteRoutine
+        )
+        XCTAssertEqual(
+            RoutineFolderService.swipeAction(horizontal: -120.0, vertical: 0.0),
+            .moveToFolder
+        )
+    }
+
+    // MARK: - 29. Un gesto vertical nunca se interpreta como deslizamiento
+
+    func testAVerticalGestureNeverProducesASwipeAction() {
+        XCTAssertEqual(
+            RoutineFolderService.swipeAction(horizontal: 0.0, vertical: 200.0),
+            .none
+        )
+        XCTAssertEqual(
+            RoutineFolderService.swipeAction(horizontal: 200.0, vertical: -260.0),
+            .none
+        )
+        XCTAssertEqual(
+            RoutineFolderService.swipeAction(horizontal: -200.0, vertical: 260.0),
+            .none
+        )
+    }
+
     // MARK: - Nombres
 
     func testFolderNamesCannotBeEmptyOrOnlySpaces() throws {

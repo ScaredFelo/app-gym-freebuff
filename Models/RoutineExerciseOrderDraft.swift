@@ -133,6 +133,72 @@ public struct RoutineExerciseOrderDraft: Equatable {
     }
 }
 
+/// Estado de un arrastre vertical de la lista compacta.
+///
+/// Separa las cuatro magnitudes que intervienen para que ninguna realimente a
+/// las demás:
+///
+/// 1. `startIndex`: posición del ejercicio en el momento de agarrarlo.
+/// 2. `currentIndex`: posición que ocupa ahora mismo en el borrador.
+/// 3. `translation`: desplazamiento **absoluto** del dedo, medido en el sistema
+///    de coordenadas del contenedor de la lista, nunca respecto de la fila que
+///    se mueve (esa fila cambia de sitio al reordenar).
+/// 4. `visualOffset`: desplazamiento residual que mantiene la fila agarrada bajo
+///    el dedo una vez recolocada en su nueva posición.
+///
+/// Es un valor puro: no conoce SwiftUI. El destino se calcula siempre desde
+/// `startIndex` y `translation`, así que repetir el mismo fotograma da el mismo
+/// resultado y un reordenado intermedio no puede desviar el gesto.
+public struct RoutineReorderDrag: Equatable {
+    /// Identificador del `RoutineExercise` agarrado. Nunca un índice.
+    public let id: UUID
+    /// Posición al agarrar la fila: la única referencia fija del arrastre.
+    public let startIndex: Int
+    /// Posición que ocupa ahora mismo en el borrador.
+    public private(set) var currentIndex: Int
+    /// Desplazamiento total del dedo desde que agarró la fila.
+    public private(set) var translation: CGFloat
+
+    public init(id: UUID, startIndex: Int) {
+        self.id = id
+        self.startIndex = startIndex
+        self.currentIndex = startIndex
+        self.translation = 0.0
+    }
+
+    /// Posición destino para un desplazamiento total del dedo.
+    ///
+    /// Usa las métricas compartidas de la lista compacta (46 pt de fila + 6 pt
+    /// de separación = 52 pt por posición, umbral de 26 pt), de modo que no
+    /// existe una segunda fuente de verdad para las distancias.
+    public func destinationIndex(translation: CGFloat, count: Int) -> Int {
+        return RoutineExerciseOrderDraft.destinationIndex(
+            startIndex: startIndex,
+            translation: translation,
+            rowStride: RoutineReorderRowMetrics.rowStride,
+            count: count
+        )
+    }
+
+    /// Registra un fotograma: desplazamiento del dedo y posición ya aplicada al
+    /// borrador.
+    public mutating func apply(translation: CGFloat, destination: Int) {
+        self.translation = translation
+        self.currentIndex = destination
+    }
+
+    /// Desplazamiento visual que deja la fila justo bajo el dedo.
+    ///
+    /// La fila ya ocupa `currentIndex` en el layout, así que solo hay que
+    /// descontar la distancia recorrida en el layout; el resto es lo que el dedo
+    /// ha avanzado dentro de la posición actual (siempre menos de media
+    /// separación de 26 pt). Al soltar se descarta y la fila se queda en su
+    /// posición definitiva.
+    public var visualOffset: CGFloat {
+        return translation - CGFloat(currentIndex - startIndex) * RoutineReorderRowMetrics.rowStride
+    }
+}
+
 extension Routine {
     /// Ejercicios en el orden que muestra la app.
     public var orderedExercises: [RoutineExercise] {

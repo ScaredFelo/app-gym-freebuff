@@ -18,6 +18,13 @@ struct EditRoutineView: View {
     @Bindable var routine: Routine
     let isNewRoutine: Bool
 
+    /// Nombre del sistema de coordenadas del contenedor de la lista compacta.
+    ///
+    /// Se declara una sola vez y no depende del orden: el contenedor no se mueve
+    /// cuando las filas se recolocan, así que la traslación del dedo se mide
+    /// siempre contra la misma referencia espacial.
+    private static let reorderCoordinateSpaceName: String = "appgym.routine.reorder"
+
     @State private var showingExercisePicker = false
     @State private var exercisePendingRemoval: RoutineExercise?
     @State private var exerciseToConfigure: Exercise?
@@ -262,7 +269,8 @@ struct EditRoutineView: View {
                     routineExercise: routineExercise,
                     index: index,
                     isDragging: reorderDrag?.id == routineExercise.id,
-                    offset: reorderDrag?.id == routineExercise.id ? (reorderDrag?.offset ?? 0.0) : 0.0,
+                    offset: reorderDrag?.id == routineExercise.id ? (reorderDrag?.visualOffset ?? 0.0) : 0.0,
+                    coordinateSpaceName: Self.reorderCoordinateSpaceName,
                     onGrab: { grab(routineExercise.id) },
                     onDragChanged: { translation in
                         updateDrag(routineExercise.id, translation: translation)
@@ -282,6 +290,10 @@ struct EditRoutineView: View {
                 .padding(.top, 4.0)
                 .accessibilityLabel("Mantén pulsado un ejercicio y arrástralo para cambiar el orden")
         }
+        // Todas las filas miden su gesto en este contenedor, que no cambia de
+        // sitio mientras se reordena: la referencia espacial no se desplaza con
+        // la fila agarrada.
+        .coordinateSpace(.named(Self.reorderCoordinateSpaceName))
     }
 
     /// Ejercicios en el orden del borrador. Se resuelven contra la rutina por
@@ -314,37 +326,34 @@ struct EditRoutineView: View {
               let index = orderDraft.index(of: id) else { return }
 
         reorderImpact?.prepare()
-        reorderDrag = RoutineReorderDrag(
-            id: id,
-            startIndex: index,
-            currentIndex: index,
-            offset: 0.0
-        )
+        reorderDrag = RoutineReorderDrag(id: id, startIndex: index)
     }
 
-    /// Un fotograma del arrastre: calcula la posición destino y, si el
-    /// ejercicio ha cambiado de sitio de verdad, reordena el borrador y emite
-    /// una señal por cada posición cruzada.
+    /// Un fotograma del arrastre.
+    ///
+    /// `translation` es el desplazamiento total del dedo en el sistema de
+    /// coordenadas del contenedor. El destino se calcula desde la posición
+    /// inicial y ese desplazamiento —nunca desde la posición actual de la fila—
+    /// y el resto se conserva como desplazamiento visual para no separarse del
+    /// dedo. Ambas mutaciones van en la misma transacción: la fila agarrada
+    /// mantiene su posición visual mientras el resto se recoloca.
     private func updateDrag(_ id: UUID, translation: CGFloat) {
         guard var drag = reorderDrag, drag.id == id else { return }
 
-        let destination: Int = RoutineExerciseOrderDraft.destinationIndex(
-            startIndex: drag.startIndex,
+        let from: Int = drag.currentIndex
+        let destination: Int = drag.destinationIndex(
             translation: translation,
-            rowStride: RoutineReorderRowMetrics.rowStride,
             count: orderDraft.orderedIDs.count
         )
+        drag.apply(translation: translation, destination: destination)
 
-        let crossed: Int = orderDraft.move(from: drag.currentIndex, to: destination)
-        drag.currentIndex = destination
-        // El desplazamiento residual se mide con la misma separación efectiva
-        // que el cálculo de destino: la fila queda exactamente bajo el dedo.
-        drag.offset = translation - CGFloat(destination - drag.startIndex) * RoutineReorderRowMetrics.rowStride
+        let animation: Animation? = destination == from
+            ? nil
+            : .spring(response: 0.22, dampingFraction: 0.86)
 
-        let animation: Animation? = crossed > 0
-            ? .spring(response: 0.22, dampingFraction: 0.86)
-            : nil
+        var crossed: Int = 0
         withAnimation(animation) {
+            crossed = orderDraft.move(from: from, to: destination)
             reorderDrag = drag
         }
 
@@ -411,23 +420,14 @@ struct EditRoutineView: View {
 
 // MARK: - Reordenación compacta
 
-/// Arrastre en curso de una fila.
-private struct RoutineReorderDrag {
-    let id: UUID
-    /// Posición al agarrar la fila: el destino se calcula siempre desde aquí.
-    let startIndex: Int
-    /// Posición que ocupa ahora mismo en el borrador.
-    var currentIndex: Int
-    /// Desplazamiento visual que mantiene la fila bajo el dedo.
-    var offset: CGFloat
-}
-
 /// Fila del modo reordenación: solo el nombre y el asa.
 private struct RoutineReorderRow: View {
     let routineExercise: RoutineExercise
     let index: Int
     let isDragging: Bool
     let offset: CGFloat
+    /// Sistema de coordenadas del contenedor, compartido por todas las filas.
+    let coordinateSpaceName: String
     let onGrab: () -> Void
     let onDragChanged: (CGFloat) -> Void
     let onDragEnded: (CGFloat) -> Void
@@ -439,8 +439,16 @@ private struct RoutineReorderRow: View {
     private static let grabDelay: Double = 0.15
 
     private var reorderGesture: some Gesture {
+        // La traslación se mide en el contenedor, no en la fila: la fila cambia
+        // de sitio al reordenar y una referencia local desplazaría el punto de
+        // partida en cada fotograma, realimentando el cálculo del destino.
         LongPressGesture(minimumDuration: Self.grabDelay)
-            .sequenced(before: DragGesture(minimumDistance: 0.0))
+            .sequenced(
+                before: DragGesture(
+                    minimumDistance: 0.0,
+                    coordinateSpace: .named(coordinateSpaceName)
+                )
+            )
             .onChanged { value in
                 switch value {
                 case .first(true):

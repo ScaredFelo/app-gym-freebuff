@@ -5119,4 +5119,166 @@ final class RoutineExerciseReorderTests: XCTestCase {
         XCTAssertEqual(routine.exercises.map(\.sortOrder), before)
         XCTAssertEqual(names(), ["Press banca", "Press inclinado", "Aperturas", "Cruces en polea"])
     }
+
+    // MARK: Arrastre medido en un sistema de coordenadas estable
+
+    /// Simula un arrastre fotograma a fotograma tal y como lo hace la vista: el
+    /// dedo informa de su desplazamiento **total**, medido en el contenedor, y
+    /// el destino se recalcula siempre desde la posición inicial.
+    private func simulateDrag(
+        from startIndex: Int,
+        id: UUID,
+        translations: [CGFloat],
+        draft: inout RoutineExerciseOrderDraft
+    ) -> RoutineReorderDrag {
+        var drag = RoutineReorderDrag(id: id, startIndex: startIndex)
+        for translation in translations {
+            let destination: Int = drag.destinationIndex(
+                translation: translation,
+                count: draft.orderedIDs.count
+            )
+            draft.move(from: drag.currentIndex, to: destination)
+            drag.apply(translation: translation, destination: destination)
+        }
+        return drag
+    }
+
+    func testTheDragDestinationOnlyDependsOnTheStartingPositionAndTheFinger() {
+        var draft = beginDraft()
+        let drag = simulateDrag(
+            from: 0,
+            id: links[0].id,
+            translations: [10.0, 30.0, 55.0, 80.0],
+            draft: &draft
+        )
+
+        // 80 pt = una separación completa (52 pt) más 28 pt de la siguiente.
+        XCTAssertEqual(drag.startIndex, 0)
+        XCTAssertEqual(drag.currentIndex, 2)
+        XCTAssertEqual(drag.translation, 80.0)
+
+        // Repetir el mismo fotograma no acumula nada: el destino coincide con
+        // el que sale de la posición inicial y el desplazamiento total.
+        XCTAssertEqual(drag.destinationIndex(translation: 80.0, count: 4), 2)
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(
+                startIndex: 0,
+                translation: 80.0,
+                rowStride: RoutineReorderRowMetrics.rowStride,
+                count: 4
+            ),
+            2
+        )
+
+        // Volver a la altura de partida devuelve la fila a su sitio.
+        XCTAssertEqual(drag.destinationIndex(translation: 0.0, count: 4), 0)
+    }
+
+    func testCrossingSeveralPositionsProducesTheExpectedDraftOrder() {
+        var draft = beginDraft()
+        let translations: [CGFloat] = (1...16).map { CGFloat($0) * -10.0 }
+        let drag = simulateDrag(
+            from: 3,
+            id: links[3].id,
+            translations: translations,
+            draft: &draft
+        )
+
+        XCTAssertEqual(drag.currentIndex, 0)
+        XCTAssertEqual(draft.orderedIDs, [links[3].id, links[0].id, links[1].id, links[2].id])
+
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(names(), ["Cruces en polea", "Press banca", "Press inclinado", "Aperturas"])
+    }
+
+    func testTheResidualOffsetKeepsTheRowUnderTheFingerWithinHalfARowStride() {
+        var draft = beginDraft()
+        var drag = RoutineReorderDrag(id: links[0].id, startIndex: 0)
+
+        for step in 0...30 {
+            let translation: CGFloat = CGFloat(step) * 5.0
+            let destination: Int = drag.destinationIndex(
+                translation: translation,
+                count: draft.orderedIDs.count
+            )
+            draft.move(from: drag.currentIndex, to: destination)
+            drag.apply(translation: translation, destination: destination)
+
+            // Coherente con la separación efectiva de 52 pt...
+            XCTAssertEqual(
+                drag.visualOffset,
+                translation - CGFloat(destination - drag.startIndex) * RoutineReorderRowMetrics.rowStride,
+                accuracy: 0.0001
+            )
+            // ...y nunca superior a media separación (el umbral de 26 pt).
+            XCTAssertLessThanOrEqual(
+                abs(drag.visualOffset),
+                RoutineReorderRowMetrics.moveThreshold + 0.0001
+            )
+        }
+    }
+
+    func testTheDraggedRowKeepsItsIdentityForTheWholeGesture() {
+        let identities: Set<UUID> = Set(links.map(\.id))
+        var draft = beginDraft()
+        var drag = RoutineReorderDrag(id: links[1].id, startIndex: 1)
+
+        for step in 1...12 {
+            let translation: CGFloat = CGFloat(step) * -10.0
+            let destination: Int = drag.destinationIndex(
+                translation: translation,
+                count: draft.orderedIDs.count
+            )
+            draft.move(from: drag.currentIndex, to: destination)
+            drag.apply(translation: translation, destination: destination)
+
+            // Ninguna fila cambia de identidad ni desaparece al reordenar.
+            XCTAssertEqual(draft.orderedIDs.count, identities.count)
+            XCTAssertEqual(Set(draft.orderedIDs), identities)
+            // La fila agarrada sigue estando en la posición que declara el arrastre.
+            XCTAssertEqual(draft.orderedIDs[drag.currentIndex], links[1].id)
+            XCTAssertEqual(drag.id, links[1].id)
+        }
+
+        XCTAssertEqual(draft.orderedIDs, [links[1].id, links[0].id, links[2].id, links[3].id])
+    }
+
+    func testCancellingTheGestureRestoresTheStartingPositionOnly() {
+        let storedOrder: [Int] = routine.exercises.map(\.sortOrder)
+        let storedIDs: [UUID] = ids()
+        var draft = beginDraft()
+        let drag = simulateDrag(
+            from: 3,
+            id: links[3].id,
+            translations: [CGFloat(-20), CGFloat(-60), CGFloat(-120), CGFloat(-160)],
+            draft: &draft
+        )
+
+        XCTAssertEqual(drag.currentIndex, 0)
+        XCTAssertNotEqual(draft.orderedIDs, storedIDs)
+
+        // Cancelación: la fila vuelve a la posición donde se agarró...
+        XCTAssertTrue(draft.restore(drag.id, to: drag.startIndex))
+        XCTAssertEqual(draft.orderedIDs, storedIDs)
+
+        // ...y la rutina nunca se ha tocado mientras el gesto estaba activo.
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), storedOrder)
+        XCTAssertEqual(ids(), storedIDs)
+    }
+
+    func testConfirmingAfterTheDragAppliesExactlyTheDraggedOrder() {
+        var draft = beginDraft()
+        let drag = simulateDrag(
+            from: 0,
+            id: links[0].id,
+            translations: [CGFloat(12), CGFloat(70), CGFloat(110)],
+            draft: &draft
+        )
+
+        XCTAssertEqual(drag.currentIndex, 2)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(ids(), [links[1].id, links[2].id, links[0].id, links[3].id])
+        XCTAssertEqual(routine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+        XCTAssertEqual(names(), ["Press inclinado", "Aperturas", "Press banca", "Cruces en polea"])
+    }
 }

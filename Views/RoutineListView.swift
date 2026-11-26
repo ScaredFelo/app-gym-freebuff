@@ -996,28 +996,33 @@ struct RoutineRowView: View {
 
     private let deleteThreshold: CGFloat = RoutineFolderService.swipeThreshold
 
+    /// Sistema de coordenadas del viewport de esta fila. El gesto se mide aquí,
+    /// no en la tarjeta que se desplaza, para que su offset no mueva la
+    /// referencia espacial de la traslación. El nombre es único por rutina.
+    private var swipeCoordinateSpaceName: String {
+        return "appgym.routine.row.\(routine.id.uuidString)"
+    }
+
     var body: some View {
-        ZStack {
-            if isEditing && abs(dragOffset) > 24 {
-                if dragOffset > 0 {
-                    deleteBackground
-                        .opacity(min(1, abs(dragOffset) / deleteThreshold))
-                } else {
-                    moveBackground
-                        .opacity(min(1, abs(dragOffset) / deleteThreshold))
+        // Tres responsabilidades separadas:
+        // 1. Tarjeta: bloque completo que se desplaza con `.offset`.
+        // 2. Fondo de acciones: se adjunta con `.background`, así que nunca
+        //    propone un tamaño distinto ni altera el layout de la tarjeta.
+        // 3. Viewport: ancho estable de la fila y único punto de recorte.
+        cardSurface
+            .offset(x: dragOffset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                swipeActionBackground
+            }
+            .coordinateSpace(.named(swipeCoordinateSpaceName))
+            .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cornerCut))
+            .id(routine.id)
+            .onChange(of: isEditing) { _, editing in
+                if !editing {
+                    resetSwipe(animated: false)
                 }
             }
-
-            cardSurface
-        }
-        .clipShape(ChamferedRectangle(cut: EndfieldMetrics.cornerCut))
-        .id(routine.id)
-        .onChange(of: isEditing) { _, editing in
-            if !editing {
-                dragOffset = 0
-                thresholdHapticTriggered = false
-            }
-        }
     }
 
     private var cardSurface: some View {
@@ -1025,12 +1030,51 @@ struct RoutineRowView: View {
             routineContent
             trailingControls
         }
+        // Ancho estable: la tarjeta ocupa siempre el viewport completo, así que
+        // desplazarla no recompone su contenido ni recorta sus textos por dentro.
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(EndfieldPalette.bgPanel)
         .overlay(
             ChamferedRectangle(cut: EndfieldMetrics.cornerCut)
                 .stroke(isEditing ? EndfieldPalette.borderActive : EndfieldPalette.borderSubtle, lineWidth: 1.0)
         )
-        .offset(x: dragOffset)
+    }
+
+    /// Fondo de las acciones. Se dibuja detrás de la tarjeta y está sujeto al
+    /// tamaño del viewport, de modo que aparecer o desaparecer no cambia ninguna
+    /// propuesta de tamaño durante el gesto.
+    @ViewBuilder
+    private var swipeActionBackground: some View {
+        if swipeProgress > 0.0 {
+            ZStack {
+                if dragOffset > 0.0 {
+                    deleteBackground
+                } else {
+                    moveBackground
+                }
+            }
+            .opacity(swipeProgress)
+        }
+    }
+
+    private var swipeProgress: Double {
+        guard isEditing, abs(dragOffset) > 24.0 else { return 0.0 }
+        return min(1.0, abs(dragOffset) / deleteThreshold)
+    }
+
+    /// Devuelve la tarjeta a su posición de reposo y limpia el estado del gesto.
+    private func resetSwipe(animated: Bool = true) {
+        thresholdHapticTriggered = false
+
+        guard dragOffset != 0.0 else { return }
+
+        if animated {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
+                dragOffset = 0.0
+            }
+        } else {
+            dragOffset = 0.0
+        }
     }
 
     private var routineContent: some View {
@@ -1197,10 +1241,16 @@ struct RoutineRowView: View {
     }
 
     private var swipeGesture: some Gesture {
-        DragGesture(minimumDistance: 12)
+        DragGesture(minimumDistance: 12.0, coordinateSpace: .named(swipeCoordinateSpaceName))
             .onChanged { value in
                 guard isEditing else { return }
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+
+                guard abs(value.translation.width) > abs(value.translation.height) else {
+                    // El dedo ha tomado una dirección vertical: la tarjeta vuelve
+                    // a su sitio y no queda ningún desplazamiento provisional.
+                    resetSwipe()
+                    return
+                }
 
                 dragOffset = value.translation.width
 
@@ -1218,10 +1268,9 @@ struct RoutineRowView: View {
                     threshold: deleteThreshold
                 )
 
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) {
-                    dragOffset = 0
-                }
-                thresholdHapticTriggered = false
+                // La tarjeta vuelve a su posición y el texto recupera su
+                // presentación completa al margen de la acción que toque.
+                resetSwipe()
 
                 switch action {
                 case .none:
