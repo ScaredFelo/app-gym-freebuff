@@ -1,5 +1,6 @@
 import XCTest
 import Foundation
+import CoreGraphics
 import SwiftData
 import UserNotifications
 
@@ -4625,5 +4626,497 @@ final class RoutineExerciseSubstitutionTests: XCTestCase {
         let stored: [WorkoutSetLog] = try context.fetch(FetchDescriptor<WorkoutSetLog>())
         XCTAssertEqual(stored.filter { $0.id == logID }.count, 1)
         XCTAssertEqual(stored.first?.exercise?.id, fixture.previousExercise.id)
+    }
+}
+
+// MARK: - Reordenación de ejercicios
+
+/// Pruebas del modo reordenación: el borrador decide cuántas posiciones cambia
+/// un arrastre —la vista emite una señal háptica por cada una— y ningún
+/// arrastre escribe en SwiftData: la rutina solo renumera `sortOrder` al
+/// confirmar con «HECHO». Ni identidades, ni configuración, ni historial
+/// cambian.
+@MainActor
+final class RoutineExerciseReorderTests: XCTestCase {
+
+    private var container: ModelContainer!
+    private var context: ModelContext!
+    private var routine: Routine!
+    private var links: [RoutineExercise]!
+    private var catalog: [Exercise]!
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+
+        let schema: Schema = Schema(versionedSchema: AppSchemaV6.self)
+        container = try ModelContainer(
+            for: schema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        context = ModelContext(container)
+
+        catalog = [
+            Exercise(name: "Press banca", muscleGroup: .chest, equipmentType: .olympicBar),
+            Exercise(name: "Press inclinado", muscleGroup: .chest, equipmentType: .dumbbell),
+            Exercise(name: "Aperturas", muscleGroup: .chest, equipmentType: .cable),
+            Exercise(name: "Cruces en polea", muscleGroup: .chest, equipmentType: .cable)
+        ]
+        for exercise in catalog {
+            context.insert(exercise)
+        }
+
+        links = [
+            RoutineExercise(
+                exercise: catalog[0],
+                defaultSets: 5,
+                targetRepsMin: 5,
+                targetRepsMax: 7,
+                sortOrder: 0,
+                defaultWeight: 82.5,
+                restSeconds: 150,
+                notes: "Codos a 45 grados",
+                hasCustomRest: true
+            ),
+            RoutineExercise(
+                exercise: catalog[1],
+                defaultSets: 4,
+                targetRepsMin: 8,
+                targetRepsMax: 10,
+                sortOrder: 1,
+                defaultWeight: 30.0,
+                restSeconds: 120,
+                notes: "Banco a 30 grados",
+                hasCustomRest: true
+            ),
+            RoutineExercise(
+                exercise: catalog[2],
+                defaultSets: 3,
+                targetRepsMin: 12,
+                targetRepsMax: 15,
+                sortOrder: 2,
+                defaultWeight: 15.0,
+                restSeconds: 60,
+                notes: "Polea alta",
+                hasCustomRest: false
+            ),
+            RoutineExercise(
+                exercise: catalog[3],
+                defaultSets: 3,
+                targetRepsMin: 12,
+                targetRepsMax: 15,
+                sortOrder: 3,
+                defaultWeight: 10.0,
+                restSeconds: 45,
+                notes: "Cruce bajo",
+                hasCustomRest: true
+            )
+        ]
+        for link in links {
+            context.insert(link)
+        }
+
+        routine = Routine(name: "PUSH", sortOrder: 0, exercises: links)
+        context.insert(routine)
+        try context.save()
+    }
+
+    override func tearDownWithError() throws {
+        context = nil
+        container = nil
+        routine = nil
+        links = nil
+        catalog = nil
+        try super.tearDownWithError()
+    }
+
+    // MARK: Utilidades
+
+    private func beginDraft() -> RoutineExerciseOrderDraft {
+        var draft = RoutineExerciseOrderDraft()
+        draft.begin(with: routine.exercises)
+        return draft
+    }
+
+    private func names() -> [String] {
+        routine.orderedExercises.map { $0.exercise?.name ?? "SIN EJERCICIO" }
+    }
+
+    private func ids() -> [UUID] {
+        routine.orderedExercises.map(\.id)
+    }
+
+    // MARK: Modo
+
+    func testEnteringAndLeavingTheModeDoesNotTouchTheRoutine() {
+        var draft = RoutineExerciseOrderDraft()
+        XCTAssertFalse(draft.isActive)
+
+        XCTAssertTrue(draft.begin(with: routine.exercises))
+        XCTAssertTrue(draft.isActive)
+        XCTAssertEqual(draft.orderedIDs, ids())
+        XCTAssertEqual(names(), ["Press banca", "Press inclinado", "Aperturas", "Cruces en polea"])
+
+        draft.finish()
+        XCTAssertFalse(draft.isActive)
+        XCTAssertTrue(draft.orderedIDs.isEmpty)
+        XCTAssertEqual(routine.exercises.map(\.sortOrder).sorted(), [0, 1, 2, 3])
+    }
+
+    func testTheModeCannotStartWithoutExercises() {
+        var draft = RoutineExerciseOrderDraft()
+
+        XCTAssertFalse(draft.begin(with: []))
+        XCTAssertFalse(draft.isActive)
+        XCTAssertTrue(draft.orderedIDs.isEmpty)
+    }
+
+    // MARK: Arrastre
+
+    func testMovingOnePositionUpKeepsEveryOtherRowInPlace() {
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 2, to: 1), 1)
+        XCTAssertEqual(draft.orderedIDs, [links[0].id, links[2].id, links[1].id, links[3].id])
+
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(names(), ["Press banca", "Aperturas", "Press inclinado", "Cruces en polea"])
+        XCTAssertEqual(routine.exercises.map(\.sortOrder).sorted(), [0, 1, 2, 3])
+    }
+
+    func testMovingOnePositionDownKeepsEveryOtherRowInPlace() {
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 0, to: 1), 1)
+        XCTAssertEqual(draft.orderedIDs, [links[1].id, links[0].id, links[2].id, links[3].id])
+
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(names(), ["Press inclinado", "Press banca", "Aperturas", "Cruces en polea"])
+    }
+
+    func testMovingSeveralPositionsReportsEveryCrossedPosition() {
+        var draft = beginDraft()
+
+        // De la última a la primera: tres posiciones, tres señales.
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(names(), ["Cruces en polea", "Press banca", "Press inclinado", "Aperturas"])
+        XCTAssertEqual(ids(), [links[3].id, links[0].id, links[1].id, links[2].id])
+    }
+
+    func testMovingTheFirstExerciseToTheEnd() {
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 0, to: 3), 3)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(names(), ["Press inclinado", "Aperturas", "Cruces en polea", "Press banca"])
+    }
+
+    func testMovingToTheSamePositionChangesNothingAndDoesNotSignal() {
+        var draft = beginDraft()
+        let before: [Int] = routine.exercises.map(\.sortOrder)
+
+        XCTAssertEqual(draft.move(from: 1, to: 1), 0)
+        XCTAssertEqual(draft.orderedIDs, ids())
+
+        // Sin cambio de posición no hay nada que aplicar ni que señalar.
+        XCTAssertFalse(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), before)
+    }
+
+    func testDragTranslationMapsToAPositionOnlyWhenTheRowActuallyMoves() {
+        let stride: CGFloat = RoutineReorderRowMetrics.rowStride
+
+        // Umbral real: media separación efectiva (26 pt), no media altura.
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 2, translation: 25.9, rowStride: stride, count: 4),
+            2
+        )
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 2, translation: 26.0, rowStride: stride, count: 4),
+            3
+        )
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 2, translation: -25.9, rowStride: stride, count: 4),
+            2
+        )
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 2, translation: -26.0, rowStride: stride, count: 4),
+            1
+        )
+
+        // Una separación completa entre filas (52 pt) equivale a una posición.
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 0, translation: 52.0, rowStride: stride, count: 4),
+            1
+        )
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 0, translation: 104.0, rowStride: stride, count: 4),
+            2
+        )
+
+        // Tres filas de golpe: tres cambios efectivos, uno por señal.
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 3, translation: -156.0, rowStride: stride, count: 4),
+            0
+        )
+
+        // Fuera de la lista se queda en el borde.
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 3, translation: 500.0, rowStride: stride, count: 4),
+            3
+        )
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(startIndex: 0, translation: -500.0, rowStride: stride, count: 4),
+            0
+        )
+    }
+
+    func testRowMetricsMatchTheCompactListSeparation() {
+        // La vista usa estas mismas métricas: fila de 46 pt + 6 pt de separación.
+        XCTAssertEqual(RoutineReorderRowMetrics.rowHeight, 46.0)
+        XCTAssertEqual(RoutineReorderRowMetrics.rowSpacing, 6.0)
+        XCTAssertEqual(RoutineReorderRowMetrics.rowStride, 52.0)
+        XCTAssertEqual(RoutineReorderRowMetrics.moveThreshold, 26.0)
+
+        // Con la métrica antigua (solo 46 pt) el umbral habría sido 23 pt: 24 pt
+        // no deben mover la fila porque aún no ha llegado al punto medio real.
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.destinationIndex(
+                startIndex: 1,
+                translation: 24.0,
+                rowStride: RoutineReorderRowMetrics.rowStride,
+                count: 4
+            ),
+            1
+        )
+    }
+
+    // MARK: Borrador frente a SwiftData
+
+    func testADragChangesOnlyTheDraft() {
+        let storedOrder: [Int] = routine.exercises.map(\.sortOrder)
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+
+        // El arrastre solo ha movido el borrador...
+        XCTAssertEqual(draft.orderedIDs, [links[3].id, links[0].id, links[1].id, links[2].id])
+        // ...y la rutina guardada sigue exactamente igual.
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), storedOrder)
+        XCTAssertEqual(names(), ["Press banca", "Press inclinado", "Aperturas", "Cruces en polea"])
+        XCTAssertEqual(ids(), [links[0].id, links[1].id, links[2].id, links[3].id])
+    }
+
+    func testTwoDragsAccumulateInTheDraft() {
+        let storedOrder: [Int] = routine.exercises.map(\.sortOrder)
+        var draft = beginDraft()
+
+        // Primer arrastre: la última fila al principio.
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        // Segundo arrastre sobre esa misma fila, que ahora ocupa la posición 0.
+        XCTAssertEqual(draft.move(from: 0, to: 2), 2)
+
+        XCTAssertEqual(draft.orderedIDs, [links[0].id, links[1].id, links[3].id, links[2].id])
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), storedOrder)
+    }
+
+    func testCancellingADragRestoresOnlyItsProvisionalMove() {
+        var draft = beginDraft()
+
+        // Primer arrastre completado: se queda en el borrador.
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        let afterFirstDrag: [UUID] = draft.orderedIDs
+
+        // Segundo arrastre, cancelado por el sistema.
+        XCTAssertEqual(draft.move(from: 0, to: 2), 2)
+        XCTAssertEqual(draft.orderedIDs, [links[0].id, links[1].id, links[3].id, links[2].id])
+
+        XCTAssertTrue(draft.restore(links[3].id, to: 0))
+        XCTAssertEqual(draft.orderedIDs, afterFirstDrag)
+
+        // Cancelar otra vez no deshace el primer arrastre.
+        XCTAssertFalse(draft.restore(links[3].id, to: 0))
+        XCTAssertEqual(draft.orderedIDs, afterFirstDrag)
+        XCTAssertEqual(routine.exercises.map(\.sortOrder).sorted(), [0, 1, 2, 3])
+    }
+
+    func testConfirmingTheModeAppliesTheWholeDraft() {
+        var draft = beginDraft()
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        XCTAssertEqual(draft.move(from: 0, to: 2), 2)
+
+        // «HECHO»: valida el borrador y aplica el orden completo de una vez.
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        XCTAssertEqual(ids(), draft.orderedIDs)
+        XCTAssertEqual(routine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+        XCTAssertEqual(names(), ["Press banca", "Press inclinado", "Cruces en polea", "Aperturas"])
+
+        // Aplicar de nuevo no cambia nada: el orden ya está puesto.
+        XCTAssertFalse(routine.applyExerciseOrder(draft.orderedIDs))
+
+        draft.finish()
+        XCTAssertFalse(draft.isActive)
+    }
+
+    func testLeavingTheModeUnconfirmedKeepsTheStoredOrder() throws {
+        var draft = beginDraft()
+        XCTAssertEqual(draft.move(from: 3, to: 1), 2)
+
+        // Abandonar sin «HECHO»: el borrador se descarta y no hay escritura.
+        draft.finish()
+        XCTAssertTrue(draft.orderedIDs.isEmpty)
+        XCTAssertEqual(names(), ["Press banca", "Press inclinado", "Aperturas", "Cruces en polea"])
+
+        // Ni un guardado posterior arrastra el orden descartado.
+        try context.save()
+        let reloadedContext = ModelContext(container)
+        let storedRoutines: [Routine] = try reloadedContext.fetch(FetchDescriptor<Routine>())
+        let storedRoutine: Routine = try XCTUnwrap(storedRoutines.first)
+
+        XCTAssertEqual(
+            storedRoutine.orderedExercises.compactMap { $0.exercise?.name },
+            ["Press banca", "Press inclinado", "Aperturas", "Cruces en polea"]
+        )
+        XCTAssertEqual(storedRoutine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+    }
+
+    // MARK: Integridad
+
+    func testReorderingKeepsTheIdentityOfEveryRoutineExercise() throws {
+        let identities: [UUID] = links.map(\.id)
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        try context.save()
+
+        XCTAssertEqual(routine.exercises.count, 4)
+        XCTAssertEqual(Set(ids()), Set(identities))
+
+        let stored: [RoutineExercise] = try context.fetch(FetchDescriptor<RoutineExercise>())
+        XCTAssertEqual(stored.count, 4)
+        XCTAssertEqual(Set(stored.map(\.id)), Set(identities))
+    }
+
+    func testReorderingKeepsTheConfigurationOfEachRow() {
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 0, to: 3), 3)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+
+        let bench: RoutineExercise? = routine.orderedExercises.first { $0.id == links[0].id }
+        XCTAssertEqual(bench?.defaultSets, 5)
+        XCTAssertEqual(bench?.targetRepsMin, 5)
+        XCTAssertEqual(bench?.targetRepsMax, 7)
+        XCTAssertEqual(bench?.defaultWeight ?? 0.0, 82.5, accuracy: 0.0001)
+        XCTAssertEqual(bench?.restSeconds, 150)
+        XCTAssertEqual(bench?.hasCustomRest, true)
+        XCTAssertEqual(bench?.notes, "Codos a 45 grados")
+        XCTAssertEqual(bench?.sortOrder, 3)
+
+        let cruces: RoutineExercise? = routine.orderedExercises.first { $0.id == links[3].id }
+        XCTAssertEqual(cruces?.defaultSets, 3)
+        XCTAssertEqual(cruces?.targetRepsMin, 12)
+        XCTAssertEqual(cruces?.targetRepsMax, 15)
+        XCTAssertEqual(cruces?.defaultWeight ?? 0.0, 10.0, accuracy: 0.0001)
+        XCTAssertEqual(cruces?.restSeconds, 45)
+        XCTAssertEqual(cruces?.hasCustomRest, true)
+        XCTAssertEqual(cruces?.notes, "Cruce bajo")
+        XCTAssertEqual(cruces?.sortOrder, 0)
+
+        // La fila intermedia mantiene su propio descanso manual a `false`.
+        let aperturas: RoutineExercise? = routine.orderedExercises.first { $0.id == links[2].id }
+        XCTAssertEqual(aperturas?.hasCustomRest, false)
+        XCTAssertEqual(aperturas?.restSeconds, 60)
+    }
+
+    func testReorderingKeepsTheExerciseRelationshipOfEachRow() {
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 1, to: 2), 1)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+
+        let ordered: [RoutineExercise] = routine.orderedExercises
+        XCTAssertEqual(ordered.map { $0.exercise?.id }, [catalog[0].id, catalog[2].id, catalog[1].id, catalog[3].id])
+        XCTAssertEqual(
+            ordered.compactMap { $0.exercise?.name },
+            ["Press banca", "Aperturas", "Press inclinado", "Cruces en polea"]
+        )
+        XCTAssertEqual(catalog.count, 4)
+    }
+
+    func testReorderingSurvivesSaveAndReload() throws {
+        var draft = beginDraft()
+
+        XCTAssertEqual(draft.move(from: 3, to: 1), 2)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        try context.save()
+
+        let reloadedContext = ModelContext(container)
+        let storedRoutines: [Routine] = try reloadedContext.fetch(FetchDescriptor<Routine>())
+        let storedRoutine: Routine = try XCTUnwrap(storedRoutines.first)
+
+        XCTAssertEqual(
+            storedRoutine.orderedExercises.compactMap { $0.exercise?.name },
+            ["Press banca", "Cruces en polea", "Press inclinado", "Aperturas"]
+        )
+        XCTAssertEqual(storedRoutine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+        XCTAssertEqual(Set(storedRoutine.orderedExercises.map(\.id)), Set(links.map(\.id)))
+    }
+
+    func testReorderingDoesNotTouchTrainingHistory() throws {
+        let session = WorkoutSession(
+            startDate: Date(timeIntervalSince1970: 1_700_000_000),
+            routineName: "PUSH"
+        )
+        context.insert(session)
+
+        let log = WorkoutSetLog(
+            date: Date(timeIntervalSince1970: 1_700_000_100),
+            weight: 80.0,
+            reps: 6,
+            targetRepsMin: 5,
+            targetRepsMax: 7,
+            isCompleted: true,
+            routineExerciseID: links[0].id,
+            setNumber: 1,
+            exercise: catalog[0],
+            session: session
+        )
+        context.insert(log)
+        session.setsCompleted = [log]
+        try context.save()
+
+        var draft = beginDraft()
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        XCTAssertTrue(routine.applyExerciseOrder(draft.orderedIDs))
+        try context.save()
+
+        XCTAssertEqual(session.setsCompleted.count, 1)
+        XCTAssertEqual(session.setsCompleted.first?.id, log.id)
+        XCTAssertEqual(log.routineExerciseID, links[0].id)
+        XCTAssertEqual(log.exercise?.id, catalog[0].id)
+        XCTAssertEqual(log.reps, 6)
+        XCTAssertEqual(log.weight, 80.0, accuracy: 0.0001)
+        XCTAssertEqual(log.setNumber, 1)
+        XCTAssertTrue(log.isCompleted)
+
+        let storedLogs: [WorkoutSetLog] = try context.fetch(FetchDescriptor<WorkoutSetLog>())
+        XCTAssertEqual(storedLogs.count, 1)
+    }
+
+    func testAnOrderThatDoesNotMatchTheRoutineIsNotApplied() {
+        let before: [Int] = routine.exercises.map(\.sortOrder)
+        var draft = beginDraft()
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+
+        // Falta un ejercicio: el orden no se escribe a medias.
+        XCTAssertFalse(routine.applyExerciseOrder(Array(draft.orderedIDs.dropLast())))
+
+        // Sobra un identificador que no pertenece a la rutina.
+        XCTAssertFalse(routine.applyExerciseOrder(draft.orderedIDs + [UUID()]))
+
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), before)
+        XCTAssertEqual(names(), ["Press banca", "Press inclinado", "Aperturas", "Cruces en polea"])
     }
 }

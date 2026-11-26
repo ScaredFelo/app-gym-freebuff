@@ -1,9 +1,16 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 /// Editor de rutinas con la identidad "Endfield": paneles angulares, telemetría
 /// monoespaciada y controles `−  valor  +` en lugar de los `Form`/`Stepper`
 /// nativos. Toda la lógica de persistencia se mantiene intacta.
+///
+/// Incluye el modo reordenación: una pulsación larga sobre el nombre de un
+/// ejercicio comprime todas las filas a su nombre y activa el arrastre. Mientras
+/// se arrastra solo cambia el borrador de orden: la rutina no se toca hasta
+/// pulsar «HECHO», y entonces solo se renumera `sortOrder`, sin modificar
+/// ninguna otra propiedad ni el historial.
 struct EditRoutineView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
@@ -18,8 +25,18 @@ struct EditRoutineView: View {
     /// `RoutineExercise` (identidad estable) en lugar de un índice de la lista.
     @State private var exercisePendingReplacement: RoutineExercise?
 
+    /// Orden que se está viendo en el modo reordenación. Vive aparte de la
+    /// rutina para no escribir en SwiftData en cada fotograma del arrastre.
+    @State private var orderDraft = RoutineExerciseOrderDraft()
+    /// Arrastre en curso. Guarda el identificador de la fila, su posición al
+    /// agarrarla y el desplazamiento del dedo, nunca un índice inestable.
+    @State private var reorderDrag: RoutineReorderDrag?
+    /// Generador preparado al entrar en el modo, para que la señal de cambio de
+    /// posición no llegue con retardo. Se descarta al salir del modo.
+    @State private var reorderImpact: UIImpactFeedbackGenerator?
+
     private var sortedExercises: [RoutineExercise] {
-        routine.exercises.sorted { $0.sortOrder < $1.sortOrder }
+        routine.orderedExercises
     }
 
     var body: some View {
@@ -31,13 +48,16 @@ struct EditRoutineView: View {
                     modePanel
                     namePanel
 
-                    if sortedExercises.isEmpty {
+                    if orderDraft.isActive {
+                        reorderList
+                    } else if sortedExercises.isEmpty {
                         emptyStatePanel
                     } else {
                         ForEach(Array(sortedExercises.enumerated()), id: \.element.id) { index, routineExercise in
                             RoutineExerciseEditorRow(
                                 routineExercise: routineExercise,
                                 index: index,
+                                onBeginReorder: beginReordering,
                                 onRemove: { exercisePendingRemoval = routineExercise },
                                 onChangeExercise: { exercisePendingReplacement = routineExercise }
                             )
@@ -68,35 +88,45 @@ struct EditRoutineView: View {
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Menu {
-                    ForEach(sortedExercises) { routineExercise in
-                        if let exercise = routineExercise.exercise {
-                            Button {
-                                exerciseToConfigure = exercise
-                            } label: {
-                                Label(exercise.name, systemImage: "gearshape")
+                if orderDraft.isActive {
+                    // Salida explícita del modo: guarda el orden y devuelve la
+                    // vista normal con toda la información de cada ejercicio.
+                    Button("HECHO") {
+                        finishReordering()
+                    }
+                    .fontWeight(.bold)
+                    .accessibilityLabel("Terminar de reordenar los ejercicios")
+                } else {
+                    Menu {
+                        ForEach(sortedExercises) { routineExercise in
+                            if let exercise = routineExercise.exercise {
+                                Button {
+                                    exerciseToConfigure = exercise
+                                } label: {
+                                    Label(exercise.name, systemImage: "gearshape")
+                                }
                             }
                         }
+                    } label: {
+                        Image(systemName: "gearshape.fill")
                     }
-                } label: {
-                    Image(systemName: "gearshape.fill")
+                    .disabled(sortedExercises.isEmpty)
+                    .accessibilityLabel("Ajustar ejercicio")
+
+                    Button("GUARDAR") {
+                        for routineExercise in routine.exercises where routineExercise.modelContext == nil {
+                            modelContext.insert(routineExercise)
+                        }
+
+                        if routine.modelContext == nil {
+                            modelContext.insert(routine)
+                        }
+
+                        PersistenceService.save(modelContext, operation: "guardar la rutina")
+                        dismiss()
+                    }
+                    .fontWeight(.bold)
                 }
-                .disabled(sortedExercises.isEmpty)
-                .accessibilityLabel("Ajustar ejercicio")
-
-                Button("GUARDAR") {
-                    for routineExercise in routine.exercises where routineExercise.modelContext == nil {
-                        modelContext.insert(routineExercise)
-                    }
-
-                    if routine.modelContext == nil {
-                        modelContext.insert(routine)
-                    }
-
-                    PersistenceService.save(modelContext, operation: "guardar la rutina")
-                    dismiss()
-                }
-                .fontWeight(.bold)
             }
         }
         .sheet(isPresented: $showingExercisePicker) {
@@ -215,15 +245,161 @@ struct EditRoutineView: View {
             }
         }
         .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentCyan))
+        .disabled(orderDraft.isActive)
+        .opacity(orderDraft.isActive ? 0.4 : 1.0)
         .accessibilityLabel("Añadir ejercicio a la rutina")
+    }
+
+    // MARK: - Modo reordenación
+
+    /// Lista compacta: una fila por ejercicio con su nombre y el asa de
+    /// arrastre. La información secundaria no se borra, solo deja de pintarse
+    /// mientras el modo está activo.
+    private var reorderList: some View {
+        VStack(spacing: RoutineReorderRowMetrics.rowSpacing) {
+            ForEach(Array(compactExercises.enumerated()), id: \.element.id) { index, routineExercise in
+                RoutineReorderRow(
+                    routineExercise: routineExercise,
+                    index: index,
+                    isDragging: reorderDrag?.id == routineExercise.id,
+                    offset: reorderDrag?.id == routineExercise.id ? (reorderDrag?.offset ?? 0.0) : 0.0,
+                    onGrab: { grab(routineExercise.id) },
+                    onDragChanged: { translation in
+                        updateDrag(routineExercise.id, translation: translation)
+                    },
+                    onDragEnded: { translation in
+                        endDrag(routineExercise.id, translation: translation)
+                    },
+                    onDragCancelled: { cancelDrag(routineExercise.id) }
+                )
+                .zIndex(reorderDrag?.id == routineExercise.id ? 1.0 : 0.0)
+            }
+
+            Text("Mantén pulsado un ejercicio y arrástralo. El resto de datos no cambia.")
+                .font(EndfieldFont.mono(9.0))
+                .foregroundStyle(EndfieldPalette.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4.0)
+                .accessibilityLabel("Mantén pulsado un ejercicio y arrástralo para cambiar el orden")
+        }
+    }
+
+    /// Ejercicios en el orden del borrador. Se resuelven contra la rutina por
+    /// identificador: si algo no coincide, esa fila no se pinta en lugar de
+    /// mostrarse desordenada.
+    private var compactExercises: [RoutineExercise] {
+        let byID: [UUID: RoutineExercise] = Dictionary(
+            uniqueKeysWithValues: routine.exercises.map { ($0.id, $0) }
+        )
+        return orderDraft.orderedIDs.compactMap { byID[$0] }
+    }
+
+    /// Entra en el modo tras la pulsación larga. Afecta a todas las filas y
+    /// confirma la activación con una señal breve.
+    private func beginReordering() {
+        guard !orderDraft.isActive else { return }
+
+        guard orderDraft.begin(with: routine.exercises) else { return }
+
+        let impact = UIImpactFeedbackGenerator(style: .light)
+        impact.prepare()
+        reorderImpact = impact
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    /// Agarra una fila. Solo prepara el generador y fija el punto de partida:
+    /// ningún toque normal activa nada.
+    private func grab(_ id: UUID) {
+        guard orderDraft.isActive, reorderDrag == nil,
+              let index = orderDraft.index(of: id) else { return }
+
+        reorderImpact?.prepare()
+        reorderDrag = RoutineReorderDrag(
+            id: id,
+            startIndex: index,
+            currentIndex: index,
+            offset: 0.0
+        )
+    }
+
+    /// Un fotograma del arrastre: calcula la posición destino y, si el
+    /// ejercicio ha cambiado de sitio de verdad, reordena el borrador y emite
+    /// una señal por cada posición cruzada.
+    private func updateDrag(_ id: UUID, translation: CGFloat) {
+        guard var drag = reorderDrag, drag.id == id else { return }
+
+        let destination: Int = RoutineExerciseOrderDraft.destinationIndex(
+            startIndex: drag.startIndex,
+            translation: translation,
+            rowStride: RoutineReorderRowMetrics.rowStride,
+            count: orderDraft.orderedIDs.count
+        )
+
+        let crossed: Int = orderDraft.move(from: drag.currentIndex, to: destination)
+        drag.currentIndex = destination
+        // El desplazamiento residual se mide con la misma separación efectiva
+        // que el cálculo de destino: la fila queda exactamente bajo el dedo.
+        drag.offset = translation - CGFloat(destination - drag.startIndex) * RoutineReorderRowMetrics.rowStride
+
+        let animation: Animation? = crossed > 0
+            ? .spring(response: 0.22, dampingFraction: 0.86)
+            : nil
+        withAnimation(animation) {
+            reorderDrag = drag
+        }
+
+        // Una señal por cada posición efectiva, ni una sin cambio de sitio.
+        if crossed > 0 {
+            for _ in 0..<crossed {
+                reorderImpact?.impactOccurred()
+            }
+        }
+    }
+
+    /// Suelta la fila: fija la última posición **en el borrador**. No escribe en
+    /// SwiftData; el orden se aplica de una vez al pulsar «HECHO».
+    private func endDrag(_ id: UUID, translation: CGFloat) {
+        guard let drag = reorderDrag, drag.id == id else { return }
+
+        updateDrag(id, translation: translation)
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            reorderDrag = nil
+        }
+    }
+
+    /// El sistema ha cancelado el gesto: se deshace solo el movimiento
+    /// provisional de este arrastre. Los anteriores siguen en el borrador y la
+    /// rutina no se ha tocado en ningún momento.
+    private func cancelDrag(_ id: UUID) {
+        guard let drag = reorderDrag, drag.id == id else { return }
+
+        orderDraft.restore(id, to: drag.startIndex)
+        withAnimation(.spring(response: 0.22, dampingFraction: 0.86)) {
+            reorderDrag = nil
+        }
+    }
+
+    /// «HECHO»: valida el borrador contra la rutina, aplica el orden completo
+    /// de una vez, persiste si la rutina ya existía y recupera la vista normal.
+    private func finishReordering() {
+        // `applyExerciseOrder` exige exactamente los mismos UUID que la rutina:
+        // si algo no coincide, no escribe nada y no se guarda nada.
+        let applied: Bool = routine.applyExerciseOrder(orderDraft.orderedIDs)
+
+        reorderDrag = nil
+        reorderImpact = nil
+        orderDraft.finish()
+
+        if applied && !isNewRoutine {
+            PersistenceService.save(modelContext, operation: "guardar el orden de la rutina")
+        }
     }
 
     // MARK: - Lógica
 
     private func normalizeSortOrder() {
-        for (index, routineExercise) in routine.exercises.sorted(by: { $0.sortOrder < $1.sortOrder }).enumerated() {
-            routineExercise.sortOrder = index
-        }
+        // Misma regla que la reordenación: solo se renumera `sortOrder`.
+        routine.applyExerciseOrder(routine.orderedExercises.map(\.id))
     }
 
     private func discardNewRoutineIfNeeded() {
@@ -233,11 +409,124 @@ struct EditRoutineView: View {
     }
 }
 
+// MARK: - Reordenación compacta
+
+/// Arrastre en curso de una fila.
+private struct RoutineReorderDrag {
+    let id: UUID
+    /// Posición al agarrar la fila: el destino se calcula siempre desde aquí.
+    let startIndex: Int
+    /// Posición que ocupa ahora mismo en el borrador.
+    var currentIndex: Int
+    /// Desplazamiento visual que mantiene la fila bajo el dedo.
+    var offset: CGFloat
+}
+
+/// Fila del modo reordenación: solo el nombre y el asa.
+private struct RoutineReorderRow: View {
+    let routineExercise: RoutineExercise
+    let index: Int
+    let isDragging: Bool
+    let offset: CGFloat
+    let onGrab: () -> Void
+    let onDragChanged: (CGFloat) -> Void
+    let onDragEnded: (CGFloat) -> Void
+    let onDragCancelled: () -> Void
+
+    /// Pulsación mantenida antes de agarrar la fila. Corta a propósito: el
+    /// toque simple no mueve nada y el gesto no se queda el scroll hasta que el
+    /// dedo se queda quieto.
+    private static let grabDelay: Double = 0.15
+
+    private var reorderGesture: some Gesture {
+        LongPressGesture(minimumDuration: Self.grabDelay)
+            .sequenced(before: DragGesture(minimumDistance: 0.0))
+            .onChanged { value in
+                switch value {
+                case .first(true):
+                    onGrab()
+
+                case .second(true, let drag):
+                    onGrab()
+                    if let drag {
+                        onDragChanged(drag.translation.height)
+                    }
+
+                default:
+                    break
+                }
+            }
+            .onEnded { value in
+                switch value {
+                case .second(true, let drag):
+                    if let drag {
+                        onDragEnded(drag.translation.height)
+                    } else {
+                        onDragCancelled()
+                    }
+
+                default:
+                    onDragCancelled()
+                }
+            }
+    }
+
+    var body: some View {
+        HStack(spacing: 10.0) {
+            Text("EX-\(String(format: "%02d", index + 1))")
+                .font(EndfieldFont.mono(10.0, weight: .heavy))
+                .tracking(0.8)
+                .foregroundStyle(EndfieldPalette.accentYellow)
+                .monospacedDigit()
+                .fixedSize()
+
+            Text((routineExercise.exercise?.name ?? "SIN EJERCICIO").uppercased())
+                .font(EndfieldFont.mono(12.0, weight: .bold))
+                .foregroundStyle(EndfieldPalette.textPrimary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Spacer(minLength: 0.0)
+
+            Image(systemName: "line.3.horizontal")
+                .font(EndfieldFont.mono(11.0, weight: .bold))
+                .foregroundStyle(
+                    isDragging ? EndfieldPalette.accentYellow : EndfieldPalette.textSecondary
+                )
+                .fixedSize()
+        }
+        .padding(.horizontal, 12.0)
+        .frame(height: RoutineReorderRowMetrics.rowHeight)
+        .background(
+            ChamferedRectangle(cut: 6.0)
+                .fill(isDragging ? EndfieldPalette.bgElevated : EndfieldPalette.bgPanel)
+        )
+        .overlay {
+            ChamferedRectangle(cut: 6.0)
+                .stroke(
+                    isDragging
+                        ? EndfieldPalette.accentYellow.opacity(0.8)
+                        : EndfieldPalette.borderSubtle,
+                    lineWidth: 1.0
+                )
+        }
+        .shadow(color: Color.black.opacity(isDragging ? 0.35 : 0.0), radius: 8.0, y: 3.0)
+        .offset(y: offset)
+        .contentShape(Rectangle())
+        .gesture(reorderGesture)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Posición \(index + 1): \(routineExercise.exercise?.name ?? "sin ejercicio")")
+        .accessibilityAddTraits(isDragging ? [.isSelected] : [])
+    }
+}
+
 // MARK: - Fila de ejercicio
 
 private struct RoutineExerciseEditorRow: View {
     @Bindable var routineExercise: RoutineExercise
     let index: Int
+    /// Pulsación larga sobre el nombre: activa el modo reordenación.
+    let onBeginReorder: () -> Void
     let onRemove: () -> Void
     /// Abre el selector independiente. La fila no conoce el catálogo.
     let onChangeExercise: () -> Void
@@ -343,6 +632,12 @@ private struct RoutineExerciseEditorRow: View {
                 .foregroundStyle(EndfieldPalette.textPrimary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+                .contentShape(Rectangle())
+                // Solo la pulsación larga entra en el modo: el toque normal
+                // sigue sirviendo para el resto de controles de la fila.
+                .onLongPressGesture(minimumDuration: 0.5) {
+                    onBeginReorder()
+                }
 
             Rectangle()
                 .fill(EndfieldPalette.borderSubtle)
