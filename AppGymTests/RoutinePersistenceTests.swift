@@ -5281,4 +5281,330 @@ final class RoutineExerciseReorderTests: XCTestCase {
         XCTAssertEqual(routine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
         XCTAssertEqual(names(), ["Press inclinado", "Aperturas", "Press banca", "Cruces en polea"])
     }
+
+    // MARK: - Fase 04.1: cualquier fila, toque inofensivo, cancelar y confirmar
+
+    /// Arranca la interacción como lo hace la vista: pulsación larga reconocida,
+    /// un movimiento por debajo del umbral y el primer desplazamiento real.
+    /// Devuelve el arrastre creado y aplica ese primer fotograma al borrador.
+    private func gestureFirstFrame(
+        id: UUID,
+        translation: CGFloat,
+        draft: inout RoutineExerciseOrderDraft,
+        gesture: inout RoutineReorderGestureState
+    ) -> RoutineReorderDrag? {
+        XCTAssertEqual(gesture.longPressRecognized(id), .holding(id: id))
+        XCTAssertEqual(
+            gesture.moved(id, translation: RoutineReorderGestureState.startDistance - 0.1),
+            .ignored
+        )
+
+        guard case .began(let draggedID, let started) = gesture.moved(id, translation: translation),
+              draggedID == id,
+              let startIndex = draft.index(of: id) else {
+            return nil
+        }
+
+        var drag = RoutineReorderDrag(id: id, startIndex: startIndex)
+        let destination: Int = drag.destinationIndex(
+            translation: started,
+            count: draft.orderedIDs.count
+        )
+        draft.move(from: drag.currentIndex, to: destination)
+        drag.apply(translation: started, destination: destination)
+        return drag
+    }
+
+    /// Comprueba el contrato completo de un arrastre iniciado en cualquier fila:
+    /// todas siguen presentes, la agarrada conserva su identidad y el borrador
+    /// se puede resolver contra la rutina sin ocultar ninguna fila.
+    private func assertDragFromPosition(
+        _ startIndex: Int,
+        translation: CGFloat,
+        expectedIndex: Int
+    ) {
+        var draft = beginDraft()
+        var gesture = RoutineReorderGestureState()
+        let identities: Set<UUID> = Set(links.map(\.id))
+        let dragged: RoutineExercise = links[startIndex]
+
+        guard let drag = gestureFirstFrame(
+            id: dragged.id,
+            translation: translation,
+            draft: &draft,
+            gesture: &gesture
+        ) else {
+            return XCTFail("El arrastre debe empezar desde la posición \(startIndex)")
+        }
+
+        XCTAssertEqual(drag.id, dragged.id)
+        XCTAssertEqual(drag.startIndex, startIndex)
+        XCTAssertEqual(drag.currentIndex, expectedIndex)
+        XCTAssertTrue(gesture.isDragging)
+
+        // Ninguna fila desaparece ni cambia de identidad.
+        XCTAssertEqual(draft.orderedIDs.count, identities.count)
+        XCTAssertEqual(Set(draft.orderedIDs), identities)
+        XCTAssertEqual(draft.orderedIDs[expectedIndex], dragged.id)
+
+        // El borrador se resuelve completo contra la rutina, sin huecos.
+        XCTAssertEqual(draft.resolve(against: routine.exercises), .ordered(draft.orderedIDs))
+
+        // La rutina sigue intacta: el arrastre solo ha tocado el borrador.
+        XCTAssertEqual(ids(), links.map(\.id))
+        XCTAssertEqual(routine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+    }
+
+    // MARK: A. Inicio del arrastre desde cualquier posición
+
+    func testStartingADragFromTheFirstPositionKeepsEveryExerciseResolvable() {
+        assertDragFromPosition(0, translation: 52.0, expectedIndex: 1)
+    }
+
+    func testStartingADragFromTheSecondPositionKeepsEveryExerciseResolvable() {
+        assertDragFromPosition(1, translation: 52.0, expectedIndex: 2)
+    }
+
+    func testStartingADragFromTheThirdPositionKeepsEveryExerciseResolvable() {
+        assertDragFromPosition(2, translation: -52.0, expectedIndex: 1)
+    }
+
+    func testStartingADragFromTheLastPositionKeepsEveryExerciseResolvable() {
+        assertDragFromPosition(3, translation: -52.0, expectedIndex: 2)
+    }
+
+    // MARK: B. Toque rápido sin arrastre
+
+    func testAQuickTapDoesNotStartADragNorChangeTheDraft() {
+        var draft = beginDraft()
+        var gesture = RoutineReorderGestureState()
+        let before: [UUID] = draft.orderedIDs
+        let storedOrder: [Int] = routine.orderedExercises.map(\.sortOrder)
+
+        XCTAssertEqual(gesture.longPressRecognized(links[2].id), .holding(id: links[2].id))
+        // Por debajo del umbral no hay arrastre: el estado sigue en `holding`.
+        XCTAssertEqual(gesture.moved(links[2].id, translation: 2.9), .ignored)
+        XCTAssertFalse(gesture.isDragging)
+
+        // El dedo se levanta sin haberse movido: vuelve a reposo sin efecto.
+        XCTAssertEqual(gesture.ended(links[2].id, translation: 2.9), .ignored)
+        XCTAssertEqual(gesture, RoutineReorderGestureState())
+
+        XCTAssertEqual(draft.orderedIDs, before)
+        XCTAssertTrue(draft.isActive)
+        XCTAssertEqual(routine.orderedExercises.map(\.sortOrder), storedOrder)
+
+        // Un evento suelto de otra fila en reposo tampoco arranca nada.
+        XCTAssertEqual(gesture.moved(links[0].id, translation: 40.0), .ignored)
+        XCTAssertFalse(gesture.isDragging)
+        XCTAssertEqual(draft.orderedIDs, before)
+    }
+
+    func testTheGestureSequenceCanRepeatAndALaterDragStillWorks() {
+        var draft = beginDraft()
+        var gesture = RoutineReorderGestureState()
+        let before: [UUID] = draft.orderedIDs
+
+        // Toque sin movimiento.
+        XCTAssertEqual(gesture.longPressRecognized(links[1].id), .holding(id: links[1].id))
+        XCTAssertEqual(gesture.ended(links[1].id, translation: 0.0), .ignored)
+
+        // Toque cancelado por el sistema antes de moverse.
+        XCTAssertEqual(gesture.longPressRecognized(links[2].id), .holding(id: links[2].id))
+        XCTAssertEqual(gesture.cancelled(links[2].id), .ignored)
+
+        // Tercer intento: aviso repetido del mismo gesto (no vuelve a agarrar),
+        // desplazamiento real y finalización exactamente una vez.
+        XCTAssertEqual(gesture.longPressRecognized(links[3].id), .holding(id: links[3].id))
+        XCTAssertEqual(gesture.longPressRecognized(links[3].id), .ignored)
+
+        guard case .began(let id, let started) = gesture.moved(links[3].id, translation: -31.0) else {
+            return XCTFail("El arrastre posterior debe empezar tras el desplazamiento real")
+        }
+        XCTAssertEqual(id, links[3].id)
+        XCTAssertEqual(started, -31.0)
+        XCTAssertTrue(gesture.isDragging)
+
+        XCTAssertEqual(
+            gesture.ended(links[3].id, translation: -52.0),
+            .ended(id: links[3].id, translation: -52.0)
+        )
+        XCTAssertFalse(gesture.isDragging)
+        XCTAssertEqual(gesture, RoutineReorderGestureState())
+
+        // Ninguno de los toques ha tocado el borrador.
+        XCTAssertEqual(draft.orderedIDs, before)
+    }
+
+    func testAStaleDragDoesNotBlockTheNextInteraction() {
+        var gesture = RoutineReorderGestureState()
+
+        XCTAssertEqual(gesture.longPressRecognized(links[0].id), .holding(id: links[0].id))
+        XCTAssertEqual(
+            gesture.moved(links[0].id, translation: 30.0),
+            .began(id: links[0].id, translation: 30.0)
+        )
+        XCTAssertTrue(gesture.isDragging)
+
+        // Gesto sin aviso de fin: una pulsación nueva toma el control y declara
+        // el arrastre anterior como cancelado, para que la vista lo deshaga.
+        XCTAssertEqual(
+            gesture.longPressRecognized(links[2].id),
+            .cancelled(id: links[0].id)
+        )
+        XCTAssertFalse(gesture.isDragging)
+        XCTAssertEqual(gesture.activeID, links[2].id)
+
+        // Repetir el aviso del gesto ya en curso no lo interrumpe.
+        XCTAssertEqual(gesture.longPressRecognized(links[2].id), .ignored)
+
+        // Y el arrastre de la fila nueva funciona con normalidad.
+        guard case .began(let id, _) = gesture.moved(links[2].id, translation: 6.0) else {
+            return XCTFail("La interacción nueva debe poder arrastrar")
+        }
+        XCTAssertEqual(id, links[2].id)
+        XCTAssertTrue(gesture.isDragging)
+    }
+
+    // MARK: C. Cancelación completa de la sesión
+
+    func testCancellingTheWholeSessionDiscardsEveryProvisionalMove() throws {
+        var draft = beginDraft()
+        let originalIDs: [UUID] = draft.orderedIDs
+        let storedSortOrders: [Int] = routine.exercises.map(\.sortOrder).sorted()
+
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        XCTAssertEqual(draft.move(from: 1, to: 3), 2)
+        XCTAssertEqual(
+            draft.orderedIDs,
+            [links[3].id, links[1].id, links[2].id, links[0].id]
+        )
+        XCTAssertNotEqual(draft.orderedIDs, originalIDs)
+        XCTAssertEqual(draft.originalIDs, originalIDs)
+
+        // Mientras la sesión está abierta, la rutina no se ha tocado.
+        XCTAssertEqual(ids(), originalIDs)
+        XCTAssertEqual(routine.exercises.map(\.sortOrder).sorted(), storedSortOrders)
+
+        // Cancelar la sesión completa devuelve el borrador a la instantánea
+        // original y lo desactiva.
+        draft.cancel()
+        XCTAssertFalse(draft.isActive)
+        XCTAssertEqual(draft.orderedIDs, originalIDs)
+        XCTAssertTrue(draft.originalIDs.isEmpty)
+
+        // Sin aplicar `sortOrder` ni perder ningún ejercicio.
+        XCTAssertEqual(ids(), originalIDs)
+        XCTAssertEqual(routine.exercises.map(\.sortOrder).sorted(), storedSortOrders)
+        XCTAssertEqual(routine.exercises.count, 4)
+
+        // Un guardado posterior y una recarga conservan el orden original.
+        try context.save()
+        let reloadedContext = ModelContext(container)
+        let storedRoutine: Routine = try XCTUnwrap(
+            try reloadedContext.fetch(FetchDescriptor<Routine>()).first
+        )
+        XCTAssertEqual(storedRoutine.orderedExercises.map(\.id), originalIDs)
+        XCTAssertEqual(storedRoutine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+        XCTAssertEqual(storedRoutine.exercises.count, 4)
+    }
+
+    // MARK: D. Confirmación con «HECHO»
+
+    func testConfirmingTheSessionAppliesExactlyTheDraftOrder() throws {
+        var draft = beginDraft()
+        XCTAssertEqual(draft.move(from: 0, to: 2), 2)
+        XCTAssertEqual(draft.move(from: 3, to: 1), 2)
+
+        // «HECHO» valida el borrador contra la rutina antes de aplicar nada.
+        XCTAssertEqual(draft.resolve(against: routine.exercises), .ordered(draft.orderedIDs))
+        let confirmed: [UUID] = draft.orderedIDs
+
+        XCTAssertTrue(routine.applyExerciseOrder(confirmed))
+        draft.finish()
+        XCTAssertFalse(draft.isActive)
+
+        XCTAssertEqual(routine.orderedExercises.map(\.id), confirmed)
+        XCTAssertEqual(routine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+
+        try context.save()
+        let reloadedContext = ModelContext(container)
+        let storedRoutine: Routine = try XCTUnwrap(
+            try reloadedContext.fetch(FetchDescriptor<Routine>()).first
+        )
+
+        XCTAssertEqual(storedRoutine.orderedExercises.map(\.id), confirmed)
+        XCTAssertEqual(storedRoutine.orderedExercises.map(\.sortOrder), [0, 1, 2, 3])
+        XCTAssertEqual(Set(storedRoutine.exercises.map(\.id)), Set(links.map(\.id)))
+
+        // Las propiedades individuales de cada fila siguen intactas.
+        let storedByID: [UUID: RoutineExercise] = Dictionary(
+            uniqueKeysWithValues: storedRoutine.orderedExercises.map { ($0.id, $0) }
+        )
+        let bench: RoutineExercise = try XCTUnwrap(storedByID[links[0].id])
+        XCTAssertEqual(bench.defaultSets, 5)
+        XCTAssertEqual(bench.targetRepsMin, 5)
+        XCTAssertEqual(bench.targetRepsMax, 7)
+        XCTAssertEqual(bench.defaultWeight, 82.5, accuracy: 0.0001)
+        XCTAssertEqual(bench.restSeconds, 150)
+        XCTAssertTrue(bench.hasCustomRest)
+        XCTAssertEqual(bench.notes, "Codos a 45 grados")
+        XCTAssertEqual(bench.exercise?.name, "Press banca")
+
+        let cruces: RoutineExercise = try XCTUnwrap(storedByID[links[3].id])
+        XCTAssertEqual(cruces.defaultSets, 3)
+        XCTAssertEqual(cruces.defaultWeight, 10.0, accuracy: 0.0001)
+        XCTAssertEqual(cruces.restSeconds, 45)
+        XCTAssertEqual(cruces.exercise?.name, "Cruces en polea")
+    }
+
+    // MARK: E. Borrador inconsistente
+
+    func testAnIncompleteDraftIsNotResolvableNorApplied() {
+        var draft = beginDraft()
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        let before: [Int] = routine.exercises.map(\.sortOrder)
+        let available: [UUID] = ids()
+        let incomplete: [UUID] = Array(draft.orderedIDs.dropLast())
+
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.resolve(orderedIDs: incomplete, availableIDs: available),
+            .inconsistent
+        )
+        XCTAssertFalse(routine.applyExerciseOrder(incomplete))
+
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), before)
+        XCTAssertEqual(ids(), available)
+    }
+
+    func testADuplicatedDraftIsNotResolvableNorApplied() {
+        let before: [Int] = routine.exercises.map(\.sortOrder)
+        let duplicated: [UUID] = [links[0].id, links[0].id, links[2].id, links[3].id]
+
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.resolve(orderedIDs: duplicated, availableIDs: ids()),
+            .inconsistent
+        )
+        XCTAssertFalse(routine.applyExerciseOrder(duplicated))
+
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), before)
+        XCTAssertEqual(Set(ids()), Set(links.map(\.id)))
+        XCTAssertEqual(routine.exercises.count, 4)
+    }
+
+    func testAForeignIdentifierIsNotResolvableNorApplied() {
+        var draft = beginDraft()
+        XCTAssertEqual(draft.move(from: 3, to: 0), 3)
+        let before: [Int] = routine.exercises.map(\.sortOrder)
+        let foreign: [UUID] = draft.orderedIDs + [UUID()]
+
+        XCTAssertEqual(
+            RoutineExerciseOrderDraft.resolve(orderedIDs: foreign, availableIDs: ids()),
+            .inconsistent
+        )
+        XCTAssertFalse(routine.applyExerciseOrder(foreign))
+
+        XCTAssertEqual(routine.exercises.map(\.sortOrder), before)
+        XCTAssertEqual(routine.exercises.count, 4)
+    }
 }

@@ -41,6 +41,12 @@ struct EditRoutineView: View {
     /// Generador preparado al entrar en el modo, para que la señal de cambio de
     /// posición no llegue con retardo. Se descarta al salir del modo.
     @State private var reorderImpact: UIImpactFeedbackGenerator?
+    /// Máquina de estados del gesto: un único propietario por interacción. Una
+    /// pulsación larga solo prepara la fila; el arrastre no empieza hasta que
+    /// el dedo se ha movido de verdad.
+    @State private var reorderGesture = RoutineReorderGestureState()
+    /// Error recuperable al confirmar el orden. El modo no se cierra solo.
+    @State private var reorderErrorMessage: String?
 
     private var sortedExercises: [RoutineExercise] {
         routine.orderedExercises
@@ -80,15 +86,34 @@ struct EditRoutineView: View {
                 .padding(.vertical, 16.0)
             }
             .scrollIndicators(.hidden)
+            .alert(
+                "Orden no confirmado",
+                isPresented: Binding(
+                    get: { reorderErrorMessage != nil },
+                    set: { if !$0 { reorderErrorMessage = nil } }
+                )
+            ) {
+                Button("Entendido", role: .cancel) { reorderErrorMessage = nil }
+            } message: {
+                Text(reorderErrorMessage ?? "")
+            }
         }
         .preferredColorScheme(.dark)
         .tint(EndfieldPalette.accentYellow)
         .navigationTitle("EDITAR RUTINA")
         .navigationBarTitleDisplayMode(.inline)
         .withKeyboardDismiss()
+        // Cualquier salida distinta de «HECHO» (botón atrás, cierre del editor)
+        // descarta el borrador. Nunca confirma un orden provisional.
+        .onDisappear {
+            cancelReordering()
+        }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
                 Button("Cancelar") {
+                    // Cancelar descarta toda la sesión de reordenación antes de
+                    // cerrar el editor.
+                    cancelReordering()
                     discardNewRoutineIfNeeded()
                     dismiss()
                 }
@@ -262,48 +287,111 @@ struct EditRoutineView: View {
     /// Lista compacta: una fila por ejercicio con su nombre y el asa de
     /// arrastre. La información secundaria no se borra, solo deja de pintarse
     /// mientras el modo está activo.
+    ///
+    /// Las filas salen de `reorderRows`, que exige una correspondencia exacta
+    /// entre el borrador y la rutina. Si no la hay, la lista se sustituye por
+    /// el panel de recuperación: nunca se pinta una lista incompleta.
+    @ViewBuilder
     private var reorderList: some View {
+        if let rows = reorderRows {
+            VStack(spacing: RoutineReorderRowMetrics.rowSpacing) {
+                ForEach(Array(rows.enumerated()), id: \.element.id) { index, routineExercise in
+                    RoutineReorderRow(
+                        routineExercise: routineExercise,
+                        index: index,
+                        isDragging: reorderDrag?.id == routineExercise.id,
+                        offset: reorderDrag?.id == routineExercise.id ? (reorderDrag?.visualOffset ?? 0.0) : 0.0,
+                        coordinateSpaceName: Self.reorderCoordinateSpaceName,
+                        onLongPressRecognized: { holdReorder(routineExercise.id) },
+                        onMovement: { translation in
+                            moveReorder(routineExercise.id, translation: translation)
+                        },
+                        onGestureEnded: { translation in
+                            endReorder(routineExercise.id, translation: translation)
+                        },
+                        onGestureCancelled: { cancelReorderGesture(routineExercise.id) }
+                    )
+                    .zIndex(reorderDrag?.id == routineExercise.id ? 1.0 : 0.0)
+                }
+
+                Text("Mantén pulsado un ejercicio y arrástralo. El resto de datos no cambia.")
+                    .font(EndfieldFont.mono(9.0))
+                    .foregroundStyle(EndfieldPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 4.0)
+                    .accessibilityLabel("Mantén pulsado un ejercicio y arrástralo para cambiar el orden")
+            }
+            // Todas las filas miden su gesto en este contenedor, que no cambia de
+            // sitio mientras se reordena: la referencia espacial no se desplaza con
+            // la fila agarrada.
+            .coordinateSpace(.named(Self.reorderCoordinateSpaceName))
+        } else {
+            reorderRecoveryPanel
+        }
+    }
+
+    /// Ejercicios en el orden del borrador, resueltos contra la rutina.
+    ///
+    /// Devuelve `nil` en cuanto el borrador no describe exactamente los
+    /// ejercicios de la rutina (identificador ausente, repetido o ajeno). En ese
+    /// caso no se oculta ninguna fila: el modo pasa al panel de recuperación.
+    private var reorderRows: [RoutineExercise]? {
+        switch orderDraft.resolve(against: routine.exercises) {
+        case .inconsistent:
+            return nil
+
+        case .ordered(let orderedIDs):
+            var byID: [UUID: RoutineExercise] = [:]
+            for routineExercise in routine.exercises {
+                guard byID[routineExercise.id] == nil else { return nil }
+                byID[routineExercise.id] = routineExercise
+            }
+
+            var rows: [RoutineExercise] = []
+            for id in orderedIDs {
+                guard let routineExercise = byID[id] else { return nil }
+                rows.append(routineExercise)
+            }
+            return rows
+        }
+    }
+
+    /// Recuperación segura cuando el borrador y la rutina no coinciden: se ven
+    /// todos los ejercicios en su orden guardado y se puede volver al editor sin
+    /// perder ninguno. No se aplica ningún orden parcial ni se escribe nada.
+    private var reorderRecoveryPanel: some View {
         VStack(spacing: RoutineReorderRowMetrics.rowSpacing) {
-            ForEach(Array(compactExercises.enumerated()), id: \.element.id) { index, routineExercise in
+            TacticalPanel(code: "RUT.ORD", title: "ORDEN NO VÁLIDO", contentPadding: 12.0) {
+                VStack(alignment: .leading, spacing: 8.0) {
+                    Text("El orden provisional no coincide con los ejercicios de la rutina. No se ha modificado ni guardado nada.")
+                        .font(EndfieldFont.mono(10.0))
+                        .foregroundStyle(EndfieldPalette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .multilineTextAlignment(.leading)
+
+                    Button("VOLVER AL EDITOR") {
+                        cancelReordering()
+                    }
+                    .buttonStyle(EndfieldSecondaryButtonStyle(tint: EndfieldPalette.accentYellow))
+                    .accessibilityLabel("Volver al editor descartando el orden provisional")
+                }
+            }
+
+            ForEach(Array(routine.orderedExercises.enumerated()), id: \.element.id) { index, routineExercise in
                 RoutineReorderRow(
                     routineExercise: routineExercise,
                     index: index,
-                    isDragging: reorderDrag?.id == routineExercise.id,
-                    offset: reorderDrag?.id == routineExercise.id ? (reorderDrag?.visualOffset ?? 0.0) : 0.0,
+                    isDragging: false,
+                    offset: 0.0,
                     coordinateSpaceName: Self.reorderCoordinateSpaceName,
-                    onGrab: { grab(routineExercise.id) },
-                    onDragChanged: { translation in
-                        updateDrag(routineExercise.id, translation: translation)
-                    },
-                    onDragEnded: { translation in
-                        endDrag(routineExercise.id, translation: translation)
-                    },
-                    onDragCancelled: { cancelDrag(routineExercise.id) }
+                    isInteractive: false,
+                    onLongPressRecognized: {},
+                    onMovement: { _ in },
+                    onGestureEnded: { _ in },
+                    onGestureCancelled: {}
                 )
-                .zIndex(reorderDrag?.id == routineExercise.id ? 1.0 : 0.0)
             }
-
-            Text("Mantén pulsado un ejercicio y arrástralo. El resto de datos no cambia.")
-                .font(EndfieldFont.mono(9.0))
-                .foregroundStyle(EndfieldPalette.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 4.0)
-                .accessibilityLabel("Mantén pulsado un ejercicio y arrástralo para cambiar el orden")
         }
-        // Todas las filas miden su gesto en este contenedor, que no cambia de
-        // sitio mientras se reordena: la referencia espacial no se desplaza con
-        // la fila agarrada.
-        .coordinateSpace(.named(Self.reorderCoordinateSpaceName))
-    }
-
-    /// Ejercicios en el orden del borrador. Se resuelven contra la rutina por
-    /// identificador: si algo no coincide, esa fila no se pinta en lugar de
-    /// mostrarse desordenada.
-    private var compactExercises: [RoutineExercise] {
-        let byID: [UUID: RoutineExercise] = Dictionary(
-            uniqueKeysWithValues: routine.exercises.map { ($0.id, $0) }
-        )
-        return orderDraft.orderedIDs.compactMap { byID[$0] }
     }
 
     /// Entra en el modo tras la pulsación larga. Afecta a todas las filas y
@@ -319,14 +407,77 @@ struct EditRoutineView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
-    /// Agarra una fila. Solo prepara el generador y fija el punto de partida:
-    /// ningún toque normal activa nada.
-    private func grab(_ id: UUID) {
-        guard orderDraft.isActive, reorderDrag == nil,
-              let index = orderDraft.index(of: id) else { return }
+    /// Pulsación larga reconocida. Solo prepara la fila: no crea un arrastre ni
+    /// toca el borrador. Repetir el aviso no vuelve a agarrar nada.
+    private func holdReorder(_ id: UUID) {
+        guard orderDraft.isActive else { return }
 
-        reorderImpact?.prepare()
+        switch reorderGesture.longPressRecognized(id) {
+        case .holding:
+            reorderImpact?.prepare()
+
+        case .cancelled(let previousID):
+            // Un gesto anterior se quedó sin aviso de fin: se deshace su
+            // movimiento provisional y la pulsación nueva toma el control.
+            cancelDrag(previousID)
+            reorderImpact?.prepare()
+
+        default:
+            break
+        }
+    }
+
+    /// Fotograma del gesto. El arrastre no empieza hasta que el dedo se ha
+    /// desplazado de verdad; por debajo del umbral no se toca nada.
+    private func moveReorder(_ id: UUID, translation: CGFloat) {
+        switch reorderGesture.moved(id, translation: translation) {
+        case .began(let draggedID, let startTranslation):
+            beginDrag(draggedID, translation: startTranslation)
+
+        case .moved(let draggedID, let currentTranslation):
+            updateDrag(draggedID, translation: currentTranslation)
+
+        default:
+            break
+        }
+    }
+
+    /// Arrastre confirmado por la máquina de estados: ahora sí existe un dueño
+    /// y un punto de partida.
+    private func beginDrag(_ id: UUID, translation: CGFloat) {
+        guard let index = orderDraft.index(of: id) else {
+            // El borrador no describe esta fila: el gesto termina sin cambiar nada.
+            reorderGesture.cancelled(id)
+            return
+        }
+
         reorderDrag = RoutineReorderDrag(id: id, startIndex: index)
+        updateDrag(id, translation: translation)
+    }
+
+    /// El dedo se levanta. Un arrastre real termina en su posición; una
+    /// pulsación que nunca llegó a moverse no deja rastro alguno.
+    private func endReorder(_ id: UUID, translation: CGFloat?) {
+        let finalTranslation: CGFloat = translation ?? reorderDrag?.translation ?? 0.0
+
+        switch reorderGesture.ended(id, translation: finalTranslation) {
+        case .ended(let draggedID, let finalTranslation):
+            endDrag(draggedID, translation: finalTranslation)
+
+        default:
+            break
+        }
+    }
+
+    /// El sistema cancela el gesto: se deshace solo su movimiento provisional.
+    private func cancelReorderGesture(_ id: UUID) {
+        switch reorderGesture.cancelled(id) {
+        case .cancelled(let draggedID):
+            cancelDrag(draggedID)
+
+        default:
+            break
+        }
     }
 
     /// Un fotograma del arrastre.
@@ -388,20 +539,53 @@ struct EditRoutineView: View {
         }
     }
 
-    /// «HECHO»: valida el borrador contra la rutina, aplica el orden completo
-    /// de una vez, persiste si la rutina ya existía y recupera la vista normal.
+    /// «HECHO»: la única ruta que confirma el orden.
+    ///
+    /// 1. Exige que no haya un arrastre pendiente.
+    /// 2. Exige que el borrador contenga exactamente los UUID de la rutina.
+    /// 3. Aplica el orden completo de una vez.
+    /// 4. Guarda solo si la rutina ya existía y el orden se ha aplicado.
+    /// 5. Limpia el estado de reordenación.
+    ///
+    /// Si la validación falla no se aplica nada, no se guarda nada y el modo
+    /// sigue abierto con un aviso recuperable.
     private func finishReordering() {
-        // `applyExerciseOrder` exige exactamente los mismos UUID que la rutina:
-        // si algo no coincide, no escribe nada y no se guarda nada.
+        guard reorderDrag == nil, !reorderGesture.isDragging else {
+            reorderErrorMessage = "Termina el arrastre en curso antes de confirmar el orden. No se ha guardado nada."
+            return
+        }
+
+        guard case .ordered = orderDraft.resolve(against: routine.exercises) else {
+            reorderErrorMessage = "El orden provisional no coincide con los ejercicios de la rutina. Vuelve al editor y repite el cambio: no se ha guardado nada."
+            return
+        }
+
+        let alreadyInOrder: Bool = routine.orderedExercises.map(\.id) == orderDraft.orderedIDs
         let applied: Bool = routine.applyExerciseOrder(orderDraft.orderedIDs)
+
+        guard applied || alreadyInOrder else {
+            reorderErrorMessage = "No se ha podido aplicar el orden completo. No se ha guardado nada."
+            return
+        }
 
         reorderDrag = nil
         reorderImpact = nil
+        reorderGesture.reset()
         orderDraft.finish()
 
         if applied && !isNewRoutine {
             PersistenceService.save(modelContext, operation: "guardar el orden de la rutina")
         }
+    }
+
+    /// Descarta la sesión de reordenación sin confirmar nada: restaura la
+    /// instantánea original del borrador, limpia el arrastre y el generador de
+    /// feedback y no escribe en SwiftData ni toca `sortOrder`.
+    private func cancelReordering() {
+        reorderGesture.reset()
+        reorderDrag = nil
+        reorderImpact = nil
+        orderDraft.cancel()
     }
 
     // MARK: - Lógica
@@ -428,16 +612,21 @@ private struct RoutineReorderRow: View {
     let offset: CGFloat
     /// Sistema de coordenadas del contenedor, compartido por todas las filas.
     let coordinateSpaceName: String
-    let onGrab: () -> Void
-    let onDragChanged: (CGFloat) -> Void
-    let onDragEnded: (CGFloat) -> Void
-    let onDragCancelled: () -> Void
+    /// `false` en la lista de recuperación: la fila se ve pero no se arrastra.
+    var isInteractive: Bool = true
+    let onLongPressRecognized: () -> Void
+    let onMovement: (CGFloat) -> Void
+    let onGestureEnded: (CGFloat?) -> Void
+    let onGestureCancelled: () -> Void
 
-    /// Pulsación mantenida antes de agarrar la fila. Corta a propósito: el
-    /// toque simple no mueve nada y el gesto no se queda el scroll hasta que el
-    /// dedo se queda quieto.
+    /// Pulsación mantenida antes de considerar la fila agarrada. Corta a
+    /// propósito: el toque simple no mueve nada y el gesto no se queda el
+    /// scroll hasta que el dedo se queda quieto.
     private static let grabDelay: Double = 0.15
 
+    /// El gesto solo informa de eventos: quién empieza, quién sigue y quién
+    /// termina lo decide `RoutineReorderGestureState` en la vista. Aquí no se
+    /// crea ningún arrastre ni se toca el borrador.
     private var reorderGesture: some Gesture {
         // La traslación se mide en el contenedor, no en la fila: la fila cambia
         // de sitio al reordenar y una referencia local desplazaría el punto de
@@ -452,12 +641,11 @@ private struct RoutineReorderRow: View {
             .onChanged { value in
                 switch value {
                 case .first(true):
-                    onGrab()
+                    onLongPressRecognized()
 
                 case .second(true, let drag):
-                    onGrab()
                     if let drag {
-                        onDragChanged(drag.translation.height)
+                        onMovement(drag.translation.height)
                     }
 
                 default:
@@ -467,14 +655,10 @@ private struct RoutineReorderRow: View {
             .onEnded { value in
                 switch value {
                 case .second(true, let drag):
-                    if let drag {
-                        onDragEnded(drag.translation.height)
-                    } else {
-                        onDragCancelled()
-                    }
+                    onGestureEnded(drag?.translation.height)
 
                 default:
-                    onDragCancelled()
+                    onGestureCancelled()
                 }
             }
     }
@@ -521,7 +705,7 @@ private struct RoutineReorderRow: View {
         .shadow(color: Color.black.opacity(isDragging ? 0.35 : 0.0), radius: 8.0, y: 3.0)
         .offset(y: offset)
         .contentShape(Rectangle())
-        .gesture(reorderGesture)
+        .gesture(reorderGesture, including: isInteractive ? .all : .none)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Posición \(index + 1): \(routineExercise.exercise?.name ?? "sin ejercicio")")
         .accessibilityAddTraits(isDragging ? [.isSelected] : [])
